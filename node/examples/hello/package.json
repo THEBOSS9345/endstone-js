@@ -1,0 +1,11 @@
+{
+  "name": "hello",
+  "version": "1.0.0",
+  "description": "Folder-style JavaScript plugin example.",
+  "main": "index.js",
+  "author": "The Endstone Project",
+  "homepage": "https://endstone.dev",
+  "endstone": {
+    "apiVersion": "0.11"
+  }
+}
