@@ -47,26 +47,87 @@ logger.info(`${server.name} ${server.version} (Minecraft ${server.minecraftVersi
 server.broadcastMessage("hello from a JavaScript plugin");
 ```
 
-| Member | Notes |
+| Object | Members |
 |---|---|
-| `server.name` / `.version` / `.minecraftVersion` | strings |
-| `server.protocolVersion` | number, `-1` if unavailable |
-| `server.onlinePlayerCount` | number, `-1` before the level loads |
-| `server.isAvailable` | false if the host was started without an API table |
-| `server.broadcastMessage(text)` | goes through the real server broadcast |
-| `logger.trace/debug/info/warning/error/critical` | routed to the Endstone logger at matching level |
+| `server` | `name`, `version`, `minecraftVersion`, `protocolVersion`, `onlinePlayerCount`, `isAvailable`, `level`, `logger`, `broadcastMessage(text)` |
+| `Level` | `name`, `time` (writable), `actorCount`, `dimensionCount` |
+| `Actor` | `type`, `dimension`, `x`/`y`/`z`/`pitch`/`yaw`, `isOnGround`, `isInWater`, `isInLava`, `isDead`, `isValid`, `level`, `nameTag`, `scoreTag`, `isNameTagVisible`, `health`, `maxHealth`, `sendMessage`, `teleport(x,y,z)`, `remove()` |
+| `Player` | everything on `Actor`, plus `name`, `uniqueId`, `xuid`, `locale`, `deviceOs`, `deviceId`, `gameVersion`, `address`, `ping`, `isOp`, `isSneaking`, `isSprinting`, `isFlying`, `isGliding`, `allowFlight`, `expLevel`, `expProgress`, `totalExp`, `flySpeed`, `walkSpeed`, `kick`, `performCommand`, `sendPopup`, `sendTip`, `sendTitle`, `resetTitle`, `transfer`, `giveExp`, `playSound`, `stopSound`, `updateCommands` |
+| `Block` | `type` (writable), `dimension`, `x`/`y`/`z`, `getRelative(dx,dy,dz)` |
+| `logger` | `trace`, `debug`, `info`, `warning`, `error`, `critical` |
+
+Writable members are plain assignment: `player.health = 20`, `level.time = 6000`, `block.type = "minecraft:stone"`.
 
 Implemented with `module.registerHooks()`, which is synchronous and intercepts `require()` as well as
 `import()`. The virtual module is a real ES module, so named imports work; CommonJS plugins reach it
 through Node's `require(esm)` support.
 
-Everything reaching the API runs on the BDS server thread, so no marshalling is involved. The
-Endstone side supplies an `esn_endstone_api` table of C function pointers; string getters use a
-size-then-fetch convention and every entry point catches all exceptions, since the return path passes
-through V8 frames compiled without exceptions.
+### Events
 
-**Not yet bound:** events, players, blocks, inventory. Those need the object-handle and accessor
-design decided before they are worth writing at scale.
+Names are the Endstone event class minus `Event`, camelCased, so `PlayerJoinEvent` is
+`events.playerJoin`. Handlers run **synchronously on the server thread**, which is exactly what makes
+cancellation work:
+
+```js
+import { events, logger } from "@endstone/server";
+
+events.playerJoin((event) => {
+  logger.info(`${event.player.name} joined from ${event.player.address}`);
+  event.joinMessage = `${event.player.name} joined the server`;
+});
+
+events.playerChat((event) => {
+  if (event.message.includes("badword")) {
+    event.cancelled = true;                       // blocks the message for real
+    event.player.sendMessage("Not allowed here.");
+  }
+}, { priority: "high", ignoreCancelled: true });
+```
+
+`priority` accepts Endstone's ladder (`lowest`…`monitor`), and subscriptions return
+`{ unsubscribe() }`. Keep handlers fast: time spent in one is time the server is not ticking.
+
+### Objects and handles
+
+`event.player` is a live `Player`, not a snapshot. Objects are backed by **dispatch-scoped handles**:
+valid only inside the callback that produced them. Do not stash a `Player` across ticks - copy out
+`name` or `uniqueId` instead. Touching a stale object throws a clear error rather than crashing the
+server, because handles are validated through a table rather than being raw pointers.
+
+`server.level` is the exception: it is a *persistent* handle, because the level lives as long as the
+server does, so it is safe to keep. Objects reached from it (`level.actorCount`) are still values, not
+retained references.
+
+Nested objects work to any depth - `event.player.level.name` is three hops through the accessors - and
+the JavaScript side distinguishes a returned object from a plain number by a tag the host attaches,
+so no property needs to be special-cased.
+
+> **Extending the bridge: never use `dynamic_cast` on an Endstone type.** It compiles and then silently
+> fails. `endstone_add_plugin` builds with hidden visibility and statically links libc++abi, so the
+> plugin's `type_info` for e.g. `PlayerEvent` is a different object from the one `endstone_runtime.so`
+> used to construct the event, and libc++abi compares `type_info` by pointer identity. Downcast through
+> a virtual accessor instead - compare `event->getEventName()` against the class name, then
+> `static_cast`. That needs no RTTI and works across the library boundary.
+
+Property access goes through a fixed set of generic typed accessors keyed by name, so exposing more of
+Endstone's API means adding a case in `plugin/api_bridge.cpp` plus a line of JavaScript - never an ABI
+change. String comparison per access is a deliberate trade for that; if a specific property ever shows
+up in a profile, give it its own entry point rather than redesigning the scheme.
+
+Everything reaching the API runs on the BDS server thread, so no marshalling is involved. String
+getters use a size-then-fetch convention and every entry point catches all exceptions, since the
+return path passes through V8 frames compiled without exceptions.
+
+### Types
+
+[`types/index.d.ts`](types/index.d.ts) declares the whole surface. The plugin copies it to
+`plugins/node_modules/@endstone/server/` on startup, which is where TypeScript and editors look when
+resolving from a plugin folder - so completions and type checking work with **no tsconfig and no
+install**. At runtime the module still comes from memory; the resolver hook short-circuits before the
+filesystem is consulted, so the on-disk copy is only ever read by tooling.
+
+**Not yet bound:** blocks, inventory, scoreboard, level and actor beyond `Player`. The accessor design
+above is what makes adding them incremental.
 
 ## Writing plugins
 

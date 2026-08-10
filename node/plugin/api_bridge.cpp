@@ -1,0 +1,920 @@
+// Copyright (c) 2026, The Endstone Project. (https://endstone.dev) All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include "api_bridge.h"
+
+#include <cstring>
+
+#include <endstone/actor/actor.h>
+#include <endstone/actor/mob.h>
+#include <endstone/block/block.h>
+#include <endstone/event/block/block_break_event.h>
+#include <endstone/event/block/block_event.h>
+#include <endstone/event/block/block_place_event.h>
+#include <endstone/event/cancellable.h>
+#include <endstone/event/player/player_chat_event.h>
+#include <endstone/event/player/player_command_event.h>
+#include <endstone/event/player/player_event.h>
+#include <endstone/event/player/player_join_event.h>
+#include <endstone/event/player/player_quit_event.h>
+#include <endstone/event/server/broadcast_message_event.h>
+#include <endstone/level/dimension.h>
+#include <endstone/level/level.h>
+#include <endstone/level/location.h>
+#include <endstone/player.h>
+#include <endstone/plugin/plugin_manager.h>
+#include <endstone/server.h>
+
+namespace endstone::node {
+
+namespace {
+
+/** The ABI's string convention: fill up to `cap`, NUL-terminate when it fits, report the true size. */
+esn_status emitString(std::string_view text, char *buf, std::size_t cap, std::size_t *needed)
+{
+    if (needed) {
+        *needed = text.size();
+    }
+    if (buf && cap > 0) {
+        const auto count = text.size() < cap - 1 ? text.size() : cap - 1;
+        std::memcpy(buf, text.data(), count);
+        buf[count] = '\0';
+    }
+    return ESN_OK;
+}
+
+std::string messageToString(const std::optional<Message> &message)
+{
+    if (!message.has_value()) {
+        return {};
+    }
+    // Message is a variant of a plain string and a translatable; only the former has a literal form.
+    if (const auto *text = std::get_if<std::string>(&message.value())) {
+        return *text;
+    }
+    return {};
+}
+
+/*
+ * Downcasting an Endstone event.
+ *
+ * NOT dynamic_cast. The plugin is built with hidden visibility and its own statically linked
+ * libc++abi, so its type_info for PlayerEvent is a different object from the one endstone_runtime used
+ * when it created the event. libc++abi compares type_info by pointer identity, so the cast silently
+ * fails across the library boundary - which is exactly what it did the first time a player joined.
+ *
+ * getEventName() is a virtual call, so it always works. Once the concrete type is known by name, a
+ * static_cast is safe and needs no RTTI at all.
+ */
+Player *eventPlayer(Event *event)
+{
+    const auto name = event->getEventName();
+    if (name == "PlayerJoinEvent") return &static_cast<PlayerJoinEvent *>(event)->getPlayer();
+    if (name == "PlayerQuitEvent") return &static_cast<PlayerQuitEvent *>(event)->getPlayer();
+    if (name == "PlayerChatEvent") return &static_cast<PlayerChatEvent *>(event)->getPlayer();
+    if (name == "PlayerCommandEvent") return &static_cast<PlayerCommandEvent *>(event)->getPlayer();
+    return nullptr;
+}
+
+Block *eventBlock(Event *event)
+{
+    const auto name = event->getEventName();
+    if (name == "BlockBreakEvent") return &static_cast<BlockBreakEvent *>(event)->getBlock();
+    if (name == "BlockPlaceEvent") return &static_cast<BlockPlaceEvent *>(event)->getBlock();
+    return nullptr;
+}
+
+ICancellable *eventCancellable(Event *event)
+{
+    const auto name = event->getEventName();
+    if (name == "PlayerChatEvent") return static_cast<PlayerChatEvent *>(event);
+    if (name == "PlayerCommandEvent") return static_cast<PlayerCommandEvent *>(event);
+    if (name == "BlockBreakEvent") return static_cast<BlockBreakEvent *>(event);
+    if (name == "BlockPlaceEvent") return static_cast<BlockPlaceEvent *>(event);
+    return nullptr;
+}
+
+EventPriority toPriority(int value)
+{
+    switch (value) {
+    case ESN_PRIORITY_LOWEST:
+        return EventPriority::Lowest;
+    case ESN_PRIORITY_LOW:
+        return EventPriority::Low;
+    case ESN_PRIORITY_HIGH:
+        return EventPriority::High;
+    case ESN_PRIORITY_HIGHEST:
+        return EventPriority::Highest;
+    case ESN_PRIORITY_MONITOR:
+        return EventPriority::Monitor;
+    default:
+        return EventPriority::Normal;
+    }
+}
+
+}  // namespace
+
+ApiBridge::ApiBridge(Plugin &plugin) : plugin_(plugin) {}
+
+ApiBridge::~ApiBridge()
+{
+    shutdown();
+}
+
+// --- server -------------------------------------------------------------------------------------
+
+std::size_t ApiBridge::serverName(char *buf, const std::size_t cap)
+{
+    std::size_t needed = 0;
+    (void)emitString(plugin_.getServer().getName(), buf, cap, &needed);
+    return needed;
+}
+
+std::size_t ApiBridge::serverVersion(char *buf, const std::size_t cap)
+{
+    std::size_t needed = 0;
+    (void)emitString(plugin_.getServer().getVersion(), buf, cap, &needed);
+    return needed;
+}
+
+std::size_t ApiBridge::serverMinecraftVersion(char *buf, const std::size_t cap)
+{
+    std::size_t needed = 0;
+    (void)emitString(plugin_.getServer().getMinecraftVersion(), buf, cap, &needed);
+    return needed;
+}
+
+int ApiBridge::serverProtocolVersion()
+{
+    return plugin_.getServer().getProtocolVersion();
+}
+
+int ApiBridge::serverOnlinePlayerCount()
+{
+    // Before the level loads there is no player list to ask.
+    auto &server = plugin_.getServer();
+    return server.getLevel() ? static_cast<int>(server.getOnlinePlayers().size()) : -1;
+}
+
+esn_status ApiBridge::serverLevel(esn_handle *out)
+{
+    if (!out) {
+        return ESN_ERR_BAD_ARGUMENT;
+    }
+    auto *level = plugin_.getServer().getLevel();
+    if (!level) {
+        return ESN_ERR_NOT_INITIALIZED;
+    }
+    // The level is a singleton for the server's lifetime, so its handle is minted once and kept.
+    if (level_handle_ == 0 || resolve(level_handle_, Kind::Level) != level) {
+        level_handle_ = track(level, Kind::Level, true);
+    }
+    *out = level_handle_;
+    return ESN_OK;
+}
+
+void ApiBridge::broadcastMessage(const std::string_view message)
+{
+    plugin_.getServer().broadcastMessage(Message{std::string{message}});
+}
+
+void ApiBridge::log(const int level, const std::string_view message)
+{
+    auto mapped = static_cast<Logger::Level>(level);
+    if (level < Logger::Trace || level > Logger::Critical) {
+        mapped = Logger::Info;
+    }
+    plugin_.getLogger().log(mapped, message);
+}
+
+// --- handle table --------------------------------------------------------------------------------
+
+esn_handle ApiBridge::track(void *ptr, const Kind kind, const bool persistent)
+{
+    if (!ptr) {
+        return 0;
+    }
+    const auto handle = next_handle_++;
+    handles_[handle] = Entry{ptr, kind, persistent};
+    return handle;
+}
+
+const ApiBridge::Entry *ApiBridge::find(const esn_handle handle) const
+{
+    const auto it = handles_.find(handle);
+    return it == handles_.end() ? nullptr : &it->second;
+}
+
+void *ApiBridge::resolve(const esn_handle handle, const Kind kind) const
+{
+    const auto *entry = find(handle);
+    return (entry && entry->kind == kind) ? entry->ptr : nullptr;
+}
+
+// --- events --------------------------------------------------------------------------------------
+
+void ApiBridge::setEventSink(EventSink sink)
+{
+    event_sink_ = std::move(sink);
+}
+
+esn_status ApiBridge::subscribe(const std::string_view event_name, const int priority, const bool ignore_cancelled,
+                                std::uint32_t *out)
+{
+    if (event_name.empty() || !out) {
+        return ESN_ERR_BAD_ARGUMENT;
+    }
+    const auto subscription = next_subscription_++;
+    subscriptions_.emplace(subscription, std::string{event_name});
+
+    plugin_.getServer().getPluginManager().registerEvent(
+        std::string{event_name},
+        [this, subscription](Event &event) {
+            if (subscriptions_.contains(subscription)) {
+                dispatch(subscription, event);
+            }
+        },
+        toPriority(priority), plugin_, ignore_cancelled);
+
+    *out = subscription;
+    return ESN_OK;
+}
+
+esn_status ApiBridge::unsubscribe(const std::uint32_t subscription)
+{
+    // Endstone has no per-handler unregister, so the handler stays wired and becomes a no-op. Cheap,
+    // and it keeps unsubscribe honest from JavaScript's point of view.
+    return subscriptions_.erase(subscription) > 0 ? ESN_OK : ESN_ERR_BAD_ARGUMENT;
+}
+
+void ApiBridge::dispatch(const std::uint32_t subscription, Event &event)
+{
+    if (!event_sink_) {
+        return;
+    }
+    // Everything minted from here on belongs to this dispatch only.
+    const auto scope_start = next_handle_;
+    const auto handle = track(&event, Kind::Event);
+
+    event_sink_(subscription, handle);
+
+    for (auto it = handles_.begin(); it != handles_.end();) {
+        const bool expired = it->first >= scope_start && !it->second.persistent;
+        it = expired ? handles_.erase(it) : std::next(it);
+    }
+    // Anything the bridge had to own for the duration goes with them.
+    owned_blocks_.clear();
+}
+
+void ApiBridge::shutdown()
+{
+    subscriptions_.clear();
+    handles_.clear();
+    event_sink_ = nullptr;
+}
+
+// --- property dispatch ---------------------------------------------------------------------------
+//
+// String comparison per access is deliberate: it keeps the ABI fixed and makes adding a property a
+// one-line change. If a hot path ever shows up in a profile, give that specific property its own
+// entry point rather than redesigning this.
+
+namespace {
+
+// Player derives from Mob derives from Actor, so the shared members live in helpers that each kind's
+// dispatch falls through to. Adding a property to Actor therefore reaches Player for free.
+
+esn_status actorGetBool(Actor &actor, const std::string_view name, int *out)
+{
+    if (name == "isOnGround") { *out = actor.isOnGround(); return ESN_OK; }
+    if (name == "isInWater") { *out = actor.isInWater(); return ESN_OK; }
+    if (name == "isInLava") { *out = actor.isInLava(); return ESN_OK; }
+    if (name == "isDead") { *out = actor.isDead(); return ESN_OK; }
+    if (name == "isValid") { *out = actor.isValid(); return ESN_OK; }
+    if (name == "isNameTagVisible") { *out = actor.isNameTagVisible(); return ESN_OK; }
+    if (name == "isNameTagAlwaysVisible") { *out = actor.isNameTagAlwaysVisible(); return ESN_OK; }
+    return ESN_ERR_NO_SUCH_MEMBER;
+}
+
+esn_status actorGetInt(Actor &actor, const std::string_view name, std::int64_t *out)
+{
+    (void)actor;
+    (void)name;
+    (void)out;
+    return ESN_ERR_NO_SUCH_MEMBER;
+}
+
+esn_status actorGetDouble(Actor &actor, const std::string_view name, double *out)
+{
+    const auto location = actor.getLocation();
+    if (name == "x") { *out = location.getX(); return ESN_OK; }
+    if (name == "y") { *out = location.getY(); return ESN_OK; }
+    if (name == "z") { *out = location.getZ(); return ESN_OK; }
+    if (name == "pitch") { *out = location.getPitch(); return ESN_OK; }
+    if (name == "yaw") { *out = location.getYaw(); return ESN_OK; }
+    return ESN_ERR_NO_SUCH_MEMBER;
+}
+
+esn_status actorSetBool(Actor &actor, const std::string_view name, const bool value)
+{
+    if (name == "isNameTagVisible") { actor.setNameTagVisible(value); return ESN_OK; }
+    if (name == "isNameTagAlwaysVisible") { actor.setNameTagAlwaysVisible(value); return ESN_OK; }
+    return ESN_ERR_NO_SUCH_MEMBER;
+}
+
+esn_status actorSetInt(Actor &actor, const std::string_view name, const std::int64_t value)
+{
+    (void)actor;
+    (void)name;
+    (void)value;
+    return ESN_ERR_NO_SUCH_MEMBER;
+}
+
+}  // namespace
+
+esn_status ApiBridge::getBool(const esn_handle target, const std::string_view name, int *out)
+{
+    if (!out) {
+        return ESN_ERR_BAD_ARGUMENT;
+    }
+    if (auto *player = static_cast<Player *>(resolve(target, Kind::Player))) {
+        if (name == "isOp") { *out = player->isOp(); return ESN_OK; }
+        if (name == "isSneaking") { *out = player->isSneaking(); return ESN_OK; }
+        if (name == "isSprinting") { *out = player->isSprinting(); return ESN_OK; }
+        if (name == "isFlying") { *out = player->isFlying(); return ESN_OK; }
+        if (name == "allowFlight") { *out = player->getAllowFlight(); return ESN_OK; }
+        if (name == "isGliding") { *out = player->isGliding(); return ESN_OK; }
+        return actorGetBool(*player, name, out);
+    }
+    if (auto *actor = static_cast<Actor *>(resolve(target, Kind::Actor))) {
+        return actorGetBool(*actor, name, out);
+    }
+    if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
+        // Event::isCancellable() is private to EventHandler; the ICancellable cast is the public test.
+        if (name == "isCancellable") { *out = eventCancellable(event) != nullptr; return ESN_OK; }
+        if (name == "isAsynchronous") { *out = event->isAsynchronous(); return ESN_OK; }
+        if (name == "cancelled") {
+            const auto *cancellable = eventCancellable(event);
+            if (!cancellable) {
+                return ESN_ERR_NO_SUCH_MEMBER;
+            }
+            *out = cancellable->isCancelled();
+            return ESN_OK;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    return ESN_ERR_STALE_HANDLE;
+}
+
+esn_status ApiBridge::getInt(const esn_handle target, const std::string_view name, std::int64_t *out)
+{
+    if (!out) {
+        return ESN_ERR_BAD_ARGUMENT;
+    }
+    if (auto *player = static_cast<Player *>(resolve(target, Kind::Player))) {
+        // Player derives from Mob, so these need no cast - and therefore no RTTI.
+        if (name == "health") { *out = player->getHealth(); return ESN_OK; }
+        if (name == "maxHealth") { *out = player->getMaxHealth(); return ESN_OK; }
+        if (name == "ping") { *out = player->getPing().count(); return ESN_OK; }
+        if (name == "expLevel") { *out = player->getExpLevel(); return ESN_OK; }
+        if (name == "totalExp") { *out = player->getTotalExp(); return ESN_OK; }
+        return actorGetInt(*player, name, out);
+    }
+    if (auto *actor = static_cast<Actor *>(resolve(target, Kind::Actor))) {
+        return actorGetInt(*actor, name, out);
+    }
+    if (auto *block = static_cast<Block *>(resolve(target, Kind::Block))) {
+        if (name == "x") { *out = block->getX(); return ESN_OK; }
+        if (name == "y") { *out = block->getY(); return ESN_OK; }
+        if (name == "z") { *out = block->getZ(); return ESN_OK; }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *level = static_cast<Level *>(resolve(target, Kind::Level))) {
+        if (name == "time") { *out = level->getTime(); return ESN_OK; }
+        if (name == "actorCount") { *out = static_cast<std::int64_t>(level->getActors().size()); return ESN_OK; }
+        if (name == "dimensionCount") { *out = static_cast<std::int64_t>(level->getDimensions().size()); return ESN_OK; }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    return find(target) ? ESN_ERR_NO_SUCH_MEMBER : ESN_ERR_STALE_HANDLE;
+}
+
+esn_status ApiBridge::getDouble(const esn_handle target, const std::string_view name, double *out)
+{
+    if (!out) {
+        return ESN_ERR_BAD_ARGUMENT;
+    }
+    if (auto *player = static_cast<Player *>(resolve(target, Kind::Player))) {
+        if (name == "expProgress") { *out = player->getExpProgress(); return ESN_OK; }
+        if (name == "flySpeed") { *out = player->getFlySpeed(); return ESN_OK; }
+        if (name == "walkSpeed") { *out = player->getWalkSpeed(); return ESN_OK; }
+        return actorGetDouble(*player, name, out);
+    }
+    if (auto *actor = static_cast<Actor *>(resolve(target, Kind::Actor))) {
+        return actorGetDouble(*actor, name, out);
+    }
+    return find(target) ? ESN_ERR_NO_SUCH_MEMBER : ESN_ERR_STALE_HANDLE;
+}
+
+esn_status ApiBridge::getString(const esn_handle target, const std::string_view name, char *buf, const std::size_t cap,
+                                std::size_t *needed)
+{
+    if (auto *player = static_cast<Player *>(resolve(target, Kind::Player))) {
+        if (name == "name") { return emitString(player->getName(), buf, cap, needed); }
+        if (name == "uniqueId") { return emitString(player->getUniqueId().str(), buf, cap, needed); }
+        if (name == "xuid") { return emitString(player->getXuid(), buf, cap, needed); }
+        if (name == "locale") { return emitString(player->getLocale(), buf, cap, needed); }
+        if (name == "deviceOs") { return emitString(player->getDeviceOS(), buf, cap, needed); }
+        if (name == "deviceId") { return emitString(player->getDeviceId(), buf, cap, needed); }
+        if (name == "gameVersion") { return emitString(player->getGameVersion(), buf, cap, needed); }
+        if (name == "address") { return emitString(player->getAddress().getHostname(), buf, cap, needed); }
+        if (name == "type") { return emitString(player->getType(), buf, cap, needed); }
+        if (name == "nameTag") { return emitString(player->getNameTag(), buf, cap, needed); }
+        if (name == "scoreTag") { return emitString(player->getScoreTag(), buf, cap, needed); }
+        if (name == "dimension") { return emitString(player->getDimension().getName(), buf, cap, needed); }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *actor = static_cast<Actor *>(resolve(target, Kind::Actor))) {
+        if (name == "type") { return emitString(actor->getType(), buf, cap, needed); }
+        if (name == "nameTag") { return emitString(actor->getNameTag(), buf, cap, needed); }
+        if (name == "scoreTag") { return emitString(actor->getScoreTag(), buf, cap, needed); }
+        if (name == "dimension") { return emitString(actor->getDimension().getName(), buf, cap, needed); }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *block = static_cast<Block *>(resolve(target, Kind::Block))) {
+        if (name == "type") { return emitString(block->getType(), buf, cap, needed); }
+        if (name == "dimension") { return emitString(block->getDimension().getName(), buf, cap, needed); }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *level = static_cast<Level *>(resolve(target, Kind::Level))) {
+        if (name == "name") { return emitString(level->getName(), buf, cap, needed); }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
+        if (name == "eventName") { return emitString(event->getEventName(), buf, cap, needed); }
+        if (name == "joinMessage") {
+            if (event->getEventName() == "PlayerJoinEvent") {
+                auto *join = static_cast<PlayerJoinEvent *>(event);
+                return emitString(messageToString(join->getJoinMessage()), buf, cap, needed);
+            }
+            return ESN_ERR_NO_SUCH_MEMBER;
+        }
+        if (name == "quitMessage") {
+            if (event->getEventName() == "PlayerQuitEvent") {
+                auto *quit = static_cast<PlayerQuitEvent *>(event);
+                return emitString(messageToString(quit->getQuitMessage()), buf, cap, needed);
+            }
+            return ESN_ERR_NO_SUCH_MEMBER;
+        }
+        if (name == "message") {
+            if (event->getEventName() == "PlayerChatEvent") {
+                auto *chat = static_cast<PlayerChatEvent *>(event);
+                return emitString(chat->getMessage(), buf, cap, needed);
+            }
+            return ESN_ERR_NO_SUCH_MEMBER;
+        }
+        if (name == "command") {
+            if (event->getEventName() == "PlayerCommandEvent") {
+                auto *command = static_cast<PlayerCommandEvent *>(event);
+                return emitString(command->getCommand(), buf, cap, needed);
+            }
+            return ESN_ERR_NO_SUCH_MEMBER;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    return find(target) ? ESN_ERR_NO_SUCH_MEMBER : ESN_ERR_STALE_HANDLE;
+}
+
+esn_status ApiBridge::getHandle(const esn_handle target, const std::string_view name, esn_handle *out)
+{
+    if (!out) {
+        return ESN_ERR_BAD_ARGUMENT;
+    }
+    if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
+        if (name == "player") {
+            if (auto *player = eventPlayer(event)) {
+                *out = track(player, Kind::Player);
+                return ESN_OK;
+            }
+            return ESN_ERR_NO_SUCH_MEMBER;
+        }
+        // ActorEvent is a template with no common base, so there is no single cast that reaches every
+        // actor event. Actor handles come from Player and from Level instead, until the specific actor
+        // events are bound individually.
+        if (name == "block") {
+            if (auto *block = eventBlock(event)) {
+                *out = track(block, Kind::Block);
+                return ESN_OK;
+            }
+            return ESN_ERR_NO_SUCH_MEMBER;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *player = static_cast<Player *>(resolve(target, Kind::Player))) {
+        if (name == "level") { *out = track(&player->getLevel(), Kind::Level); return ESN_OK; }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *actor = static_cast<Actor *>(resolve(target, Kind::Actor))) {
+        if (name == "level") { *out = track(&actor->getLevel(), Kind::Level); return ESN_OK; }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    return find(target) ? ESN_ERR_NO_SUCH_MEMBER : ESN_ERR_STALE_HANDLE;
+}
+
+esn_status ApiBridge::setBool(const esn_handle target, const std::string_view name, const bool value)
+{
+    if (auto *player = static_cast<Player *>(resolve(target, Kind::Player))) {
+        if (name == "isOp") { player->setOp(value); return ESN_OK; }
+        if (name == "isSneaking") { player->setSneaking(value); return ESN_OK; }
+        if (name == "isSprinting") { player->setSprinting(value); return ESN_OK; }
+        if (name == "isFlying") { player->setFlying(value); return ESN_OK; }
+        if (name == "allowFlight") { player->setAllowFlight(value); return ESN_OK; }
+        return actorSetBool(*player, name, value);
+    }
+    if (auto *actor = static_cast<Actor *>(resolve(target, Kind::Actor))) {
+        return actorSetBool(*actor, name, value);
+    }
+    if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
+        if (name == "cancelled") {
+            auto *cancellable = eventCancellable(event);
+            if (!cancellable) {
+                return ESN_ERR_WRONG_TYPE;
+            }
+            cancellable->setCancelled(value);
+            return ESN_OK;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    return ESN_ERR_STALE_HANDLE;
+}
+
+esn_status ApiBridge::setInt(const esn_handle target, const std::string_view name, const std::int64_t value)
+{
+    if (auto *player = static_cast<Player *>(resolve(target, Kind::Player))) {
+        if (name == "health") { player->setHealth(static_cast<int>(value)); return ESN_OK; }
+        if (name == "maxHealth") { player->setMaxHealth(static_cast<int>(value)); return ESN_OK; }
+        if (name == "expLevel") { player->setExpLevel(static_cast<int>(value)); return ESN_OK; }
+        return actorSetInt(*player, name, value);
+    }
+    if (auto *actor = static_cast<Actor *>(resolve(target, Kind::Actor))) {
+        return actorSetInt(*actor, name, value);
+    }
+    if (auto *level = static_cast<Level *>(resolve(target, Kind::Level))) {
+        if (name == "time") { level->setTime(static_cast<int>(value)); return ESN_OK; }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    return find(target) ? ESN_ERR_NO_SUCH_MEMBER : ESN_ERR_STALE_HANDLE;
+}
+
+esn_status ApiBridge::setDouble(const esn_handle target, const std::string_view name, const double value)
+{
+    if (auto *player = static_cast<Player *>(resolve(target, Kind::Player))) {
+        if (name == "flySpeed") { player->setFlySpeed(static_cast<float>(value)); return ESN_OK; }
+        if (name == "walkSpeed") { player->setWalkSpeed(static_cast<float>(value)); return ESN_OK; }
+        if (name == "expProgress") { player->setExpProgress(static_cast<float>(value)); return ESN_OK; }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    return find(target) ? ESN_ERR_NO_SUCH_MEMBER : ESN_ERR_STALE_HANDLE;
+}
+
+esn_status ApiBridge::setString(const esn_handle target, const std::string_view name, const std::string_view value)
+{
+    if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
+        if (name == "joinMessage") {
+            if (event->getEventName() == "PlayerJoinEvent") {
+                auto *join = static_cast<PlayerJoinEvent *>(event);
+                join->setJoinMessage(Message{std::string{value}});
+                return ESN_OK;
+            }
+            return ESN_ERR_NO_SUCH_MEMBER;
+        }
+        if (name == "quitMessage") {
+            if (event->getEventName() == "PlayerQuitEvent") {
+                auto *quit = static_cast<PlayerQuitEvent *>(event);
+                quit->setQuitMessage(Message{std::string{value}});
+                return ESN_OK;
+            }
+            return ESN_ERR_NO_SUCH_MEMBER;
+        }
+        if (name == "message") {
+            if (event->getEventName() == "PlayerChatEvent") {
+                auto *chat = static_cast<PlayerChatEvent *>(event);
+                chat->setMessage(std::string{value});
+                return ESN_OK;
+            }
+            return ESN_ERR_NO_SUCH_MEMBER;
+        }
+        if (name == "command") {
+            if (event->getEventName() == "PlayerCommandEvent") {
+                auto *command = static_cast<PlayerCommandEvent *>(event);
+                command->setCommand(std::string{value});
+                return ESN_OK;
+            }
+            return ESN_ERR_NO_SUCH_MEMBER;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *actor = static_cast<Actor *>(resolve(target, Kind::Actor))) {
+        if (name == "nameTag") { actor->setNameTag(std::string{value}); return ESN_OK; }
+        if (name == "scoreTag") { actor->setScoreTag(std::string{value}); return ESN_OK; }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *player = static_cast<Player *>(resolve(target, Kind::Player))) {
+        if (name == "nameTag") { player->setNameTag(std::string{value}); return ESN_OK; }
+        if (name == "scoreTag") { player->setScoreTag(std::string{value}); return ESN_OK; }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *block = static_cast<Block *>(resolve(target, Kind::Block))) {
+        if (name == "type") { (void)block->setType(std::string{value}); return ESN_OK; }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    return find(target) ? ESN_ERR_NO_SUCH_MEMBER : ESN_ERR_STALE_HANDLE;
+}
+
+esn_status ApiBridge::invoke(const esn_handle target, const std::string_view name, const std::string_view text,
+                             const double *numbers, const std::size_t number_count, esn_handle *out_handle)
+{
+    const auto number = [&](const std::size_t index, const double fallback = 0.0) {
+        return index < number_count ? numbers[index] : fallback;
+    };
+
+    if (auto *player = static_cast<Player *>(resolve(target, Kind::Player))) {
+        if (name == "sendMessage") { player->sendMessage(Message{std::string{text}}); return ESN_OK; }
+        if (name == "sendErrorMessage") { player->sendErrorMessage(Message{std::string{text}}); return ESN_OK; }
+        if (name == "sendPopup") { player->sendPopup(std::string{text}); return ESN_OK; }
+        if (name == "sendTip") { player->sendTip(std::string{text}); return ESN_OK; }
+        if (name == "kick") { player->kick(std::string{text}); return ESN_OK; }
+        if (name == "performCommand") { (void)player->performCommand(std::string{text}); return ESN_OK; }
+        if (name == "updateCommands") { player->updateCommands(); return ESN_OK; }
+        if (name == "giveExp") { player->giveExp(static_cast<int>(number(0))); return ESN_OK; }
+        if (name == "giveExpLevels") { player->giveExpLevels(static_cast<int>(number(0))); return ESN_OK; }
+        if (name == "transfer") {
+            player->transfer(std::string{text}, static_cast<int>(number(0, 19132)));
+            return ESN_OK;
+        }
+        if (name == "teleport") {
+            player->teleport(Location{player->getDimension(), static_cast<float>(number(0)),
+                                      static_cast<float>(number(1)), static_cast<float>(number(2))});
+            return ESN_OK;
+        }
+        if (name == "playSound") {
+            player->playSound(player->getLocation(), std::string{text}, static_cast<float>(number(0, 1.0)),
+                              static_cast<float>(number(1, 1.0)));
+            return ESN_OK;
+        }
+        if (name == "stopSound") { player->stopSound(std::string{text}); return ESN_OK; }
+        if (name == "stopAllSounds") { player->stopAllSounds(); return ESN_OK; }
+        if (name == "resetTitle") { player->resetTitle(); return ESN_OK; }
+        if (name == "sendTitle") {
+            player->sendTitle(std::string{text}, "", static_cast<int>(number(0, 10)),
+                              static_cast<int>(number(1, 70)), static_cast<int>(number(2, 20)));
+            return ESN_OK;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *actor = static_cast<Actor *>(resolve(target, Kind::Actor))) {
+        if (name == "sendMessage") { actor->sendMessage(Message{std::string{text}}); return ESN_OK; }
+        if (name == "remove") { actor->remove(); return ESN_OK; }
+        if (name == "teleport") {
+            actor->teleport(Location{actor->getDimension(), static_cast<float>(number(0)),
+                                     static_cast<float>(number(1)), static_cast<float>(number(2))});
+            return ESN_OK;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *block = static_cast<Block *>(resolve(target, Kind::Block))) {
+        if (name == "getRelative" && out_handle) {
+            auto relative = block->getRelative(static_cast<int>(number(0)), static_cast<int>(number(1)),
+                                               static_cast<int>(number(2)));
+            if (!relative) {
+                return ESN_ERR_INTERNAL;
+            }
+            // The Block is created for us, so the bridge owns it until this dispatch ends.
+            auto *raw = relative.get();
+            owned_blocks_.push_back(std::move(relative));
+            *out_handle = track(raw, Kind::Block);
+            return ESN_OK;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
+        if (name == "cancel") {
+            auto *cancellable = eventCancellable(event);
+            if (!cancellable) {
+                return ESN_ERR_WRONG_TYPE;
+            }
+            cancellable->cancel();
+            return ESN_OK;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    return ESN_ERR_STALE_HANDLE;
+}
+
+esn_status ApiBridge::typeName(const esn_handle target, char *buf, const std::size_t cap, std::size_t *needed)
+{
+    if (resolve(target, Kind::Player)) {
+        return emitString("Player", buf, cap, needed);
+    }
+    if (resolve(target, Kind::Actor)) {
+        return emitString("Actor", buf, cap, needed);
+    }
+    if (resolve(target, Kind::Block)) {
+        return emitString("Block", buf, cap, needed);
+    }
+    if (resolve(target, Kind::Level)) {
+        return emitString("Level", buf, cap, needed);
+    }
+    if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
+        return emitString(event->getEventName(), buf, cap, needed);
+    }
+    return ESN_ERR_STALE_HANDLE;
+}
+
+// --- ABI trampolines -----------------------------------------------------------------------------
+
+namespace {
+
+ApiBridge &bridge(void *context)
+{
+    return *static_cast<ApiBridge *>(context);
+}
+
+// Every trampoline swallows exceptions: the return path runs through libnode and V8 frames compiled
+// without exception support.
+#define ESN_GUARD(expr)                                                                                                \
+    try {                                                                                                              \
+        return (expr);                                                                                                 \
+    }                                                                                                                  \
+    catch (...) {                                                                                                       \
+        return ESN_ERR_INTERNAL;                                                                                        \
+    }
+
+esn_status ESN_CALL tGetBool(void *c, esn_handle t, const char *n, int *o)
+{
+    ESN_GUARD(bridge(c).getBool(t, n ? n : "", o))
+}
+esn_status ESN_CALL tGetInt(void *c, esn_handle t, const char *n, std::int64_t *o)
+{
+    ESN_GUARD(bridge(c).getInt(t, n ? n : "", o))
+}
+esn_status ESN_CALL tGetDouble(void *c, esn_handle t, const char *n, double *o)
+{
+    ESN_GUARD(bridge(c).getDouble(t, n ? n : "", o))
+}
+esn_status ESN_CALL tGetString(void *c, esn_handle t, const char *n, char *b, std::size_t cap, std::size_t *need)
+{
+    ESN_GUARD(bridge(c).getString(t, n ? n : "", b, cap, need))
+}
+esn_status ESN_CALL tGetHandle(void *c, esn_handle t, const char *n, esn_handle *o)
+{
+    ESN_GUARD(bridge(c).getHandle(t, n ? n : "", o))
+}
+esn_status ESN_CALL tSetBool(void *c, esn_handle t, const char *n, int v)
+{
+    ESN_GUARD(bridge(c).setBool(t, n ? n : "", v != 0))
+}
+esn_status ESN_CALL tSetInt(void *c, esn_handle t, const char *n, std::int64_t v)
+{
+    ESN_GUARD(bridge(c).setInt(t, n ? n : "", v))
+}
+esn_status ESN_CALL tSetDouble(void *c, esn_handle t, const char *n, double v)
+{
+    ESN_GUARD(bridge(c).setDouble(t, n ? n : "", v))
+}
+esn_status ESN_CALL tSetString(void *c, esn_handle t, const char *n, const char *v, std::size_t len)
+{
+    ESN_GUARD(bridge(c).setString(t, n ? n : "", std::string_view(v ? v : "", v ? len : 0)))
+}
+esn_status ESN_CALL tInvoke(void *c, esn_handle t, const char *n, const char *a, std::size_t len, const double *nums,
+                            std::size_t count, esn_handle *out)
+{
+    ESN_GUARD(bridge(c).invoke(t, n ? n : "", std::string_view(a ? a : "", a ? len : 0), nums, count, out))
+}
+esn_status ESN_CALL tTypeName(void *c, esn_handle t, char *b, std::size_t cap, std::size_t *need)
+{
+    ESN_GUARD(bridge(c).typeName(t, b, cap, need))
+}
+esn_status ESN_CALL tSubscribe(void *c, const char *name, int priority, int ignore_cancelled, std::uint32_t *out)
+{
+    ESN_GUARD(bridge(c).subscribe(name ? name : "", priority, ignore_cancelled != 0, out))
+}
+esn_status ESN_CALL tUnsubscribe(void *c, std::uint32_t subscription)
+{
+    ESN_GUARD(bridge(c).unsubscribe(subscription))
+}
+
+#undef ESN_GUARD
+
+// The server accessors return sizes or void rather than a status, so they guard by hand.
+std::size_t ESN_CALL tServerName(void *c, char *b, std::size_t cap)
+{
+    try {
+        return bridge(c).serverName(b, cap);
+    }
+    catch (...) {
+        return 0;
+    }
+}
+std::size_t ESN_CALL tServerVersion(void *c, char *b, std::size_t cap)
+{
+    try {
+        return bridge(c).serverVersion(b, cap);
+    }
+    catch (...) {
+        return 0;
+    }
+}
+std::size_t ESN_CALL tServerMinecraftVersion(void *c, char *b, std::size_t cap)
+{
+    try {
+        return bridge(c).serverMinecraftVersion(b, cap);
+    }
+    catch (...) {
+        return 0;
+    }
+}
+int ESN_CALL tServerProtocolVersion(void *c)
+{
+    try {
+        return bridge(c).serverProtocolVersion();
+    }
+    catch (...) {
+        return -1;
+    }
+}
+int ESN_CALL tServerOnlinePlayerCount(void *c)
+{
+    try {
+        return bridge(c).serverOnlinePlayerCount();
+    }
+    catch (...) {
+        return -1;
+    }
+}
+esn_status ESN_CALL tServerLevel(void *c, esn_handle *out)
+{
+    try {
+        return bridge(c).serverLevel(out);
+    }
+    catch (...) {
+        return ESN_ERR_INTERNAL;
+    }
+}
+void ESN_CALL tBroadcastMessage(void *c, const char *m, std::size_t len)
+{
+    try {
+        bridge(c).broadcastMessage(std::string_view(m ? m : "", m ? len : 0));
+    }
+    catch (...) {
+    }
+}
+void ESN_CALL tLog(void *c, int level, const char *m, std::size_t len)
+{
+    try {
+        bridge(c).log(level, std::string_view(m ? m : "", m ? len : 0));
+    }
+    catch (...) {
+    }
+}
+
+}  // namespace
+
+void ApiBridge::fill(esn_endstone_api &api)
+{
+    api.abi_version = ESN_ABI_VERSION;
+    api.context = this;
+    api.server_name = tServerName;
+    api.server_version = tServerVersion;
+    api.server_minecraft_version = tServerMinecraftVersion;
+    api.server_protocol_version = tServerProtocolVersion;
+    api.server_online_player_count = tServerOnlinePlayerCount;
+    api.server_level = tServerLevel;
+    api.broadcast_message = tBroadcastMessage;
+    api.log = tLog;
+    api.accessors.get_bool = tGetBool;
+    api.accessors.get_int = tGetInt;
+    api.accessors.get_double = tGetDouble;
+    api.accessors.get_string = tGetString;
+    api.accessors.get_handle = tGetHandle;
+    api.accessors.set_bool = tSetBool;
+    api.accessors.set_int = tSetInt;
+    api.accessors.set_double = tSetDouble;
+    api.accessors.set_string = tSetString;
+    api.accessors.invoke = tInvoke;
+    api.accessors.type_name = tTypeName;
+    api.subscribe = tSubscribe;
+    api.unsubscribe = tUnsubscribe;
+}
+
+}  // namespace endstone::node

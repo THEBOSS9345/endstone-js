@@ -35,6 +35,7 @@ struct HostApi {
     esn_status(ESN_CALL *plugin_get_meta)(esn_plugin *, esn_plugin_meta *){nullptr};
     esn_status(ESN_CALL *plugin_invoke)(esn_plugin *, esn_plugin_hook){nullptr};
     esn_status(ESN_CALL *plugin_unload)(esn_plugin *){nullptr};
+    esn_status(ESN_CALL *dispatch_event)(esn_host *, uint32_t, esn_handle){nullptr};
 
     [[nodiscard]] const char *message(esn_status status) const
     {

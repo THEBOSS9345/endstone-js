@@ -256,6 +256,22 @@ napi_value jsServerOnlinePlayerCount(napi_env env, napi_callback_info)
     return intResult(env, api && api->server_online_player_count ? api->server_online_player_count(api->context) : -1);
 }
 
+napi_value jsServerLevel(napi_env env, napi_callback_info)
+{
+    napi_value null_value = nullptr;
+    (void)napi_get_null(env, &null_value);
+    const auto *api = g_host ? g_host->api : nullptr;
+    if (!api || !api->server_level) {
+        return null_value;
+    }
+    esn_handle level = 0;
+    if (api->server_level(api->context, &level) != ESN_OK || level == 0) {
+        return null_value;  // no level loaded yet
+    }
+    napi_value result = nullptr;
+    return napi_create_int64(env, static_cast<std::int64_t>(level), &result) == napi_ok ? result : null_value;
+}
+
 napi_value jsBroadcastMessage(napi_env env, napi_callback_info info)
 {
     std::size_t argc = 1;
@@ -297,6 +313,295 @@ napi_value jsPluginLog(napi_env env, napi_callback_info info)
     return nullptr;
 }
 
+// --- handle-backed property access ---------------------------------------------------------------
+//
+// JavaScript passes (handle, name); these forward to the generic accessors. Unknown members and stale
+// handles come back as a thrown JS error rather than a silent undefined, so plugin bugs are loud.
+
+/** Reads (handle, name) from the callback info. Returns false if the shape is wrong. */
+bool readTargetAndName(napi_env env, napi_callback_info info, esn_handle *handle, std::string &name,
+                       napi_value *extra = nullptr)
+{
+    std::size_t argc = 3;
+    napi_value argv[3] = {nullptr, nullptr, nullptr};
+    if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc < 2) {
+        return false;
+    }
+    bool lossless = false;
+    if (napi_get_value_bigint_uint64(env, argv[0], handle, &lossless) != napi_ok) {
+        // Handles also arrive as plain numbers when small enough to be exact.
+        double as_double = 0;
+        if (napi_get_value_double(env, argv[0], &as_double) != napi_ok) {
+            return false;
+        }
+        *handle = static_cast<esn_handle>(as_double);
+    }
+    if (!readStringValue(env, argv[1], name)) {
+        return false;
+    }
+    if (extra) {
+        *extra = argc >= 3 ? argv[2] : nullptr;
+    }
+    return true;
+}
+
+const char *statusText(esn_status status)
+{
+    switch (status) {
+    case ESN_ERR_STALE_HANDLE:
+        return "the object is no longer valid - handles must not be kept past the callback that "
+               "produced them";
+    case ESN_ERR_NO_SUCH_MEMBER:
+        return "no such property or method on this object";
+    case ESN_ERR_WRONG_TYPE:
+        return "wrong type, or the property is read-only";
+    default:
+        return "Endstone API call failed";
+    }
+}
+
+/** Turns a non-OK status into a thrown JS Error and returns nullptr. */
+napi_value fail(napi_env env, esn_status status, const std::string &name)
+{
+    const std::string message = std::string(statusText(status)) + ": '" + name + "'";
+    (void)napi_throw_error(env, nullptr, message.c_str());
+    return nullptr;
+}
+
+const esn_accessors *accessors()
+{
+    return g_host && g_host->api ? &g_host->api->accessors : nullptr;
+}
+
+napi_value jsGet(napi_env env, napi_callback_info info)
+{
+    esn_handle handle = 0;
+    std::string name;
+    const auto *acc = accessors();
+    if (!acc || !readTargetAndName(env, info, &handle, name)) {
+        return nullptr;
+    }
+    void *context = g_host->api->context;
+    napi_value result = nullptr;
+
+    // Probe in order of cheapness. ESN_ERR_WRONG_TYPE means "exists, different type", so keep going;
+    // ESN_ERR_NO_SUCH_MEMBER from every probe means it genuinely is not there.
+    std::size_t needed = 0;
+    if (acc->get_string) {
+        const auto status = acc->get_string(context, handle, name.c_str(), nullptr, 0, &needed);
+        if (status == ESN_OK) {
+            std::vector<char> buffer(needed + 1, '\0');
+            (void)acc->get_string(context, handle, name.c_str(), buffer.data(), buffer.size(), &needed);
+            return napi_create_string_utf8(env, buffer.data(), needed, &result) == napi_ok ? result : nullptr;
+        }
+        if (status == ESN_ERR_STALE_HANDLE) {
+            return fail(env, status, name);
+        }
+    }
+    if (acc->get_bool) {
+        int value = 0;
+        if (acc->get_bool(context, handle, name.c_str(), &value) == ESN_OK) {
+            return napi_get_boolean(env, value != 0, &result) == napi_ok ? result : nullptr;
+        }
+    }
+    if (acc->get_int) {
+        std::int64_t value = 0;
+        if (acc->get_int(context, handle, name.c_str(), &value) == ESN_OK) {
+            return napi_create_int64(env, value, &result) == napi_ok ? result : nullptr;
+        }
+    }
+    if (acc->get_double) {
+        double value = 0;
+        if (acc->get_double(context, handle, name.c_str(), &value) == ESN_OK) {
+            return napi_create_double(env, value, &result) == napi_ok ? result : nullptr;
+        }
+    }
+    if (acc->get_handle) {
+        esn_handle value = 0;
+        if (acc->get_handle(context, handle, name.c_str(), &value) == ESN_OK) {
+            // Tagged so JavaScript can tell a nested object from a plain number and wrap it.
+            napi_value tagged = nullptr;
+            napi_value inner = nullptr;
+            if (napi_create_object(env, &tagged) == napi_ok &&
+                napi_create_int64(env, static_cast<std::int64_t>(value), &inner) == napi_ok &&
+                napi_set_named_property(env, tagged, "__esn_handle", inner) == napi_ok) {
+                return tagged;
+            }
+            return nullptr;
+        }
+    }
+    return fail(env, ESN_ERR_NO_SUCH_MEMBER, name);
+}
+
+napi_value jsSet(napi_env env, napi_callback_info info)
+{
+    esn_handle handle = 0;
+    std::string name;
+    napi_value value = nullptr;
+    const auto *acc = accessors();
+    if (!acc || !readTargetAndName(env, info, &handle, name, &value) || !value) {
+        return nullptr;
+    }
+    void *context = g_host->api->context;
+
+    napi_valuetype type = napi_undefined;
+    if (napi_typeof(env, value, &type) != napi_ok) {
+        return nullptr;
+    }
+    esn_status status = ESN_ERR_NO_SUCH_MEMBER;
+    switch (type) {
+    case napi_boolean: {
+        bool flag = false;
+        (void)napi_get_value_bool(env, value, &flag);
+        status = acc->set_bool ? acc->set_bool(context, handle, name.c_str(), flag ? 1 : 0) : status;
+        break;
+    }
+    case napi_number: {
+        double number = 0;
+        (void)napi_get_value_double(env, value, &number);
+        // Try the integer setter first so whole numbers keep their exact type.
+        if (acc->set_int && number == static_cast<double>(static_cast<std::int64_t>(number))) {
+            status = acc->set_int(context, handle, name.c_str(), static_cast<std::int64_t>(number));
+        }
+        if (status != ESN_OK && acc->set_double) {
+            status = acc->set_double(context, handle, name.c_str(), number);
+        }
+        break;
+    }
+    case napi_string: {
+        std::string text;
+        if (readStringValue(env, value, text) && acc->set_string) {
+            status = acc->set_string(context, handle, name.c_str(), text.data(), text.size());
+        }
+        break;
+    }
+    default:
+        status = ESN_ERR_WRONG_TYPE;
+        break;
+    }
+    if (status != ESN_OK) {
+        return fail(env, status, name);
+    }
+    return nullptr;
+}
+
+// invoke(handle, name, text, ...numbers) - one optional string plus any number of numeric arguments.
+napi_value jsInvoke(napi_env env, napi_callback_info info)
+{
+    std::size_t argc = 8;
+    napi_value argv[8] = {};
+    const auto *acc = accessors();
+    if (!acc || !acc->invoke || napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc < 2) {
+        return nullptr;
+    }
+    double as_double = 0;
+    if (napi_get_value_double(env, argv[0], &as_double) != napi_ok) {
+        return nullptr;
+    }
+    const auto handle = static_cast<esn_handle>(as_double);
+    std::string name;
+    if (!readStringValue(env, argv[1], name)) {
+        return nullptr;
+    }
+    std::string text;
+    if (argc >= 3) {
+        (void)readStringValue(env, argv[2], text);
+    }
+    std::vector<double> numbers;
+    for (std::size_t i = 3; i < argc; ++i) {
+        double value = 0;
+        if (napi_get_value_double(env, argv[i], &value) == napi_ok) {
+            numbers.push_back(value);
+        }
+    }
+
+    esn_handle result_handle = 0;
+    const auto status = acc->invoke(g_host->api->context, handle, name.c_str(), text.data(), text.size(),
+                                    numbers.empty() ? nullptr : numbers.data(), numbers.size(), &result_handle);
+    if (status != ESN_OK) {
+        return fail(env, status, name);
+    }
+    if (result_handle != 0) {
+        napi_value tagged = nullptr;
+        napi_value inner = nullptr;
+        if (napi_create_object(env, &tagged) == napi_ok &&
+            napi_create_int64(env, static_cast<std::int64_t>(result_handle), &inner) == napi_ok &&
+            napi_set_named_property(env, tagged, "__esn_handle", inner) == napi_ok) {
+            return tagged;
+        }
+    }
+    return nullptr;
+}
+
+napi_value jsTypeName(napi_env env, napi_callback_info info)
+{
+    std::size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    const auto *acc = accessors();
+    if (!acc || !acc->type_name || napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc < 1) {
+        return nullptr;
+    }
+    double as_double = 0;
+    if (napi_get_value_double(env, argv[0], &as_double) != napi_ok) {
+        return nullptr;
+    }
+    const auto handle = static_cast<esn_handle>(as_double);
+    std::size_t needed = 0;
+    if (acc->type_name(g_host->api->context, handle, nullptr, 0, &needed) != ESN_OK) {
+        return nullptr;
+    }
+    std::vector<char> buffer(needed + 1, '\0');
+    (void)acc->type_name(g_host->api->context, handle, buffer.data(), buffer.size(), &needed);
+    napi_value result = nullptr;
+    return napi_create_string_utf8(env, buffer.data(), needed, &result) == napi_ok ? result : nullptr;
+}
+
+napi_value jsSubscribe(napi_env env, napi_callback_info info)
+{
+    std::size_t argc = 3;
+    napi_value argv[3] = {nullptr, nullptr, nullptr};
+    const auto *api = g_host ? g_host->api : nullptr;
+    if (!api || !api->subscribe || napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc < 1) {
+        return nullptr;
+    }
+    std::string event_name;
+    if (!readStringValue(env, argv[0], event_name)) {
+        return nullptr;
+    }
+    std::int32_t priority = ESN_PRIORITY_NORMAL;
+    if (argc >= 2) {
+        (void)napi_get_value_int32(env, argv[1], &priority);
+    }
+    bool ignore_cancelled = false;
+    if (argc >= 3) {
+        (void)napi_get_value_bool(env, argv[2], &ignore_cancelled);
+    }
+
+    std::uint32_t subscription = 0;
+    const auto status = api->subscribe(api->context, event_name.c_str(), priority, ignore_cancelled ? 1 : 0,
+                                       &subscription);
+    if (status != ESN_OK) {
+        return fail(env, status, event_name);
+    }
+    napi_value result = nullptr;
+    return napi_create_uint32(env, subscription, &result) == napi_ok ? result : nullptr;
+}
+
+napi_value jsUnsubscribe(napi_env env, napi_callback_info info)
+{
+    std::size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    const auto *api = g_host ? g_host->api : nullptr;
+    if (!api || !api->unsubscribe || napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok ||
+        argc < 1) {
+        return nullptr;
+    }
+    std::uint32_t subscription = 0;
+    (void)napi_get_value_uint32(env, argv[0], &subscription);
+    (void)api->unsubscribe(api->context, subscription);
+    return nullptr;
+}
+
 napi_value jsApiAvailable(napi_env env, napi_callback_info)
 {
     napi_value result = nullptr;
@@ -331,7 +636,14 @@ napi_value registerBinding(napi_env env, napi_value exports)
     defineFunction(env, exports, "serverMinecraftVersion", jsServerMinecraftVersion);
     defineFunction(env, exports, "serverProtocolVersion", jsServerProtocolVersion);
     defineFunction(env, exports, "serverOnlinePlayerCount", jsServerOnlinePlayerCount);
+    defineFunction(env, exports, "serverLevel", jsServerLevel);
     defineFunction(env, exports, "broadcastMessage", jsBroadcastMessage);
+    defineFunction(env, exports, "get", jsGet);
+    defineFunction(env, exports, "set", jsSet);
+    defineFunction(env, exports, "invoke", jsInvoke);
+    defineFunction(env, exports, "typeName", jsTypeName);
+    defineFunction(env, exports, "subscribe", jsSubscribe);
+    defineFunction(env, exports, "unsubscribe", jsUnsubscribe);
     if (g_host) {
         defineString(env, exports, "scriptPath", g_host->script_path.c_str());
     }
@@ -413,11 +725,106 @@ const server = {
   get protocolVersion() { return binding.serverProtocolVersion(); },
   get onlinePlayerCount() { return binding.serverOnlinePlayerCount(); },
   get isAvailable() { return binding.apiAvailable(); },
+  /** The loaded level, or null before one exists. Safe to keep: the level outlives any callback. */
+  get level() { return wrap(binding.serverLevel()); },
   logger: makeLogger(null),
   broadcastMessage(message) { binding.broadcastMessage(String(message)); },
 };
 
-const endstoneModule = { server, logger: server.logger, LogLevel: LEVELS };
+// Handle-backed objects. A Proxy forwards property reads and writes straight to the generic
+// accessors, so `event.player.name` and `event.cancelled = true` work without a binding per property.
+// Handles are dispatch-scoped: valid only inside the callback that produced them.
+const HANDLE = Symbol('endstone.handle');
+
+// Methods rather than properties. Names are shared across object kinds; the Endstone side dispatches
+// on the handle's actual type, so a name only has to appear once here.
+const METHODS = new Set([
+  'sendMessage', 'sendErrorMessage', 'sendPopup', 'sendTip', 'sendTitle', 'resetTitle',
+  'kick', 'performCommand', 'updateCommands', 'transfer', 'teleport',
+  'giveExp', 'giveExpLevels', 'playSound', 'stopSound', 'stopAllSounds',
+  'remove', 'getRelative', 'cancel',
+]);
+
+/** The host tags nested objects so they can be told apart from plain numbers. */
+const asHandle = (value) =>
+  value !== null && typeof value === 'object' && typeof value.__esn_handle === 'number'
+    ? value.__esn_handle
+    : null;
+
+function wrap(handle) {
+  if (!handle) return null;
+  return new Proxy({ [HANDLE]: handle }, {
+    get(_t, prop) {
+      if (prop === HANDLE || prop === 'handle') return handle;
+      if (typeof prop !== 'string') return undefined;
+      if (prop === 'then') return undefined;            // do not look like a thenable
+      if (prop === 'constructor') return Object;
+      if (prop === 'toString') return () => `${binding.typeName(handle)}(${handle})`;
+      if (prop === 'endstoneType') return binding.typeName(handle);
+      if (METHODS.has(prop)) {
+        // (text, ...numbers): a string first if there is one, then any numeric arguments.
+        return (...args) => {
+          const text = typeof args[0] === 'string' ? args[0] : '';
+          const numbers = args.filter((a) => typeof a === 'number');
+          const result = binding.invoke(handle, prop, text, ...numbers);
+          const nested = asHandle(result);
+          return nested === null ? result : wrap(nested);
+        };
+      }
+      const value = binding.get(handle, prop);
+      const nested = asHandle(value);
+      return nested === null ? value : wrap(nested);
+    },
+    set(_t, prop, value) {
+      if (typeof prop !== 'string') return false;
+      binding.set(handle, prop, value);
+      return true;
+    },
+    has(_t, prop) { return typeof prop === 'string'; },
+  });
+}
+
+// --- events ---------------------------------------------------------------------------------
+// Named after Endstone's event classes minus the "Event" suffix, camelCased, so the mapping back to
+// the Endstone documentation is mechanical.
+const PRIORITIES = { lowest: 0, low: 1, normal: 2, high: 3, highest: 4, monitor: 5 };
+const handlers = new Map();
+
+function dispatchEvent(subscription, handle) {
+  const entry = handlers.get(subscription);
+  if (!entry) return;
+  const event = wrap(handle);
+  for (const fn of entry) {
+    try {
+      fn(event);
+    } catch (err) {
+      binding.log(4, `event handler threw: ${(err && err.stack) || err}`);
+    }
+  }
+}
+
+const EVENT_NAMES = [
+  'playerJoin', 'playerQuit', 'playerChat', 'playerCommand', 'playerDeath', 'playerLogin',
+  'playerKick', 'playerInteract', 'playerMove', 'playerJump', 'playerTeleport', 'playerRespawn',
+  'playerGameModeChange', 'playerItemConsume', 'playerPickupItem', 'playerDropItem',
+  'blockBreak', 'blockPlace', 'serverLoad', 'serverListPing', 'thunderChange', 'weatherChange',
+];
+
+const toEndstoneName = (camel) => camel.charAt(0).toUpperCase() + camel.slice(1) + 'Event';
+
+const events = {};
+for (const name of EVENT_NAMES) {
+  events[name] = (handler, options = {}) => {
+    if (typeof handler !== 'function') throw new TypeError(`${name}: handler must be a function`);
+    const priority = PRIORITIES[String(options.priority ?? 'normal').toLowerCase()] ?? PRIORITIES.normal;
+    const subscription = binding.subscribe(toEndstoneName(name), priority, options.ignoreCancelled === true);
+    if (!handlers.has(subscription)) handlers.set(subscription, []);
+    handlers.get(subscription).push(handler);
+    return { unsubscribe() { handlers.delete(subscription); binding.unsubscribe(subscription); } };
+  };
+}
+
+const endstoneModule = { server, events, logger: server.logger, LogLevel: LEVELS, EventPriority: PRIORITIES };
 
 // Handed to the virtual module's source through a well-known symbol rather than a bare global.
 const API_SYMBOL = Symbol.for('endstone.api');
@@ -432,8 +839,10 @@ const VIRTUAL_URL = 'endstone:server';
 const VIRTUAL_SOURCE = `
 const api = globalThis[Symbol.for('endstone.api')];
 export const server = api.server;
+export const events = api.events;
 export const logger = api.logger;
 export const LogLevel = api.LogLevel;
+export const EventPriority = api.EventPriority;
 export default api;
 `;
 
@@ -598,7 +1007,7 @@ function unloadPlugin(id) {
   plugins.delete(id);
 }
 
-binding.setRuntime({ beginLoad, pollLoad, invoke: invokePlugin, unload: unloadPlugin });
+binding.setRuntime({ beginLoad, pollLoad, invoke: invokePlugin, unload: unloadPlugin, dispatchEvent });
 
 // Optional standalone entry point; the smoke test uses it, plugin mode does not require it.
 if (binding.scriptPath && nodeFs.existsSync(binding.scriptPath)) {
@@ -957,6 +1366,28 @@ esn_status ESN_CALL esn_plugin_unload(esn_plugin *handle)
     }
     delete plugin;
     return ESN_OK;
+}
+
+esn_status ESN_CALL esn_host_dispatch_event(esn_host *handle, uint32_t subscription, esn_handle event)
+{
+    auto *host = reinterpret_cast<HostImpl *>(handle);
+    if (!host || !host->node || !host->started || !host->napi) {
+        return ESN_ERR_NOT_INITIALIZED;
+    }
+    try {
+        const embed::Scope scope(host->node);
+        napi_env env = host->napi;
+        napi_value args[2] = {nullptr, nullptr};
+        if (napi_create_uint32(env, subscription, &args[0]) != napi_ok ||
+            napi_create_int64(env, static_cast<std::int64_t>(event), &args[1]) != napi_ok) {
+            return ESN_ERR_INTERNAL;
+        }
+        // Synchronous on purpose: the handler must be able to cancel the event before we return.
+        return callRuntime(host, "dispatchEvent", 2, args, nullptr) ? ESN_OK : ESN_ERR_SCRIPT_FAILED;
+    }
+    catch (...) {
+        return ESN_ERR_INTERNAL;
+    }
 }
 
 esn_status ESN_CALL esn_host_destroy(esn_host *handle, int *out_exit_code)

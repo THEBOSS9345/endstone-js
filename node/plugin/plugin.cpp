@@ -33,6 +33,7 @@
 #include <endstone/plugin/plugin.h>
 #include <endstone/scheduler/scheduler.h>
 
+#include "api_bridge.h"
 #include "endstone_node_abi.h"
 #include "host_api.h"
 #include "js_plugin_loader.h"
@@ -161,6 +162,7 @@ public:
             getLogger().error("failed to schedule the Node event loop pump");
         }
 
+        publishTypes(data_folder, data_folder.parent_path());
         loadJsPlugins(data_folder.parent_path());
     }
 
@@ -176,6 +178,10 @@ public:
         if (loader_) {
             loader_->releaseAll();
             loader_ = nullptr;
+        }
+        // Same reasoning for events: a dispatch after the host is gone would call into freed code.
+        if (bridge_) {
+            bridge_->shutdown();
         }
 
         if (host_ && api_.destroy) {
@@ -248,7 +254,8 @@ private:
                               resolve(module_, "esn_host_load_plugin", api_.load_plugin) &&
                               resolve(module_, "esn_plugin_get_meta", api_.plugin_get_meta) &&
                               resolve(module_, "esn_plugin_invoke", api_.plugin_invoke) &&
-                              resolve(module_, "esn_plugin_unload", api_.plugin_unload);
+                              resolve(module_, "esn_plugin_unload", api_.plugin_unload) &&
+                              resolve(module_, "esn_host_dispatch_event", api_.dispatch_event);
         if (!resolved) {
             getLogger().error("Node host is missing expected entry points");
             return false;
@@ -262,110 +269,16 @@ private:
         return true;
     }
 
-    // --- the esn_endstone_api table -------------------------------------------------------------
-    // Called from JavaScript, therefore always on the BDS server thread. Each one catches everything:
-    // the return path runs through libnode and V8 frames compiled without exceptions.
-
-    static NodeJsPlugin *self(void *context) { return static_cast<NodeJsPlugin *>(context); }
-
-    static std::size_t ESN_CALL apiServerName(void *context, char *buf, std::size_t cap)
-    {
-        try {
-            return copyOut(self(context)->getServer().getName(), buf, cap);
-        }
-        catch (...) {
-            return 0;
-        }
-    }
-
-    static std::size_t ESN_CALL apiServerVersion(void *context, char *buf, std::size_t cap)
-    {
-        try {
-            return copyOut(self(context)->getServer().getVersion(), buf, cap);
-        }
-        catch (...) {
-            return 0;
-        }
-    }
-
-    static std::size_t ESN_CALL apiServerMinecraftVersion(void *context, char *buf, std::size_t cap)
-    {
-        try {
-            return copyOut(self(context)->getServer().getMinecraftVersion(), buf, cap);
-        }
-        catch (...) {
-            return 0;
-        }
-    }
-
-    static int ESN_CALL apiServerProtocolVersion(void *context)
-    {
-        try {
-            return self(context)->getServer().getProtocolVersion();
-        }
-        catch (...) {
-            return -1;
-        }
-    }
-
-    static int ESN_CALL apiServerOnlinePlayerCount(void *context)
-    {
-        try {
-            // Before the level loads there is no player list to ask.
-            auto &server = self(context)->getServer();
-            if (!server.getLevel()) {
-                return -1;
-            }
-            return static_cast<int>(server.getOnlinePlayers().size());
-        }
-        catch (...) {
-            return -1;
-        }
-    }
-
-    static void ESN_CALL apiBroadcastMessage(void *context, const char *message, std::size_t length)
-    {
-        if (!message) {
-            return;
-        }
-        try {
-            self(context)->getServer().broadcastMessage(endstone::Message{std::string(message, length)});
-        }
-        catch (...) {
-        }
-    }
-
-    static void ESN_CALL apiLog(void *context, int level, const char *message, std::size_t length)
-    {
-        if (!message) {
-            return;
-        }
-        try {
-            auto mapped = static_cast<endstone::Logger::Level>(level);
-            if (level < endstone::Logger::Trace || level > endstone::Logger::Critical) {
-                mapped = endstone::Logger::Info;
-            }
-            self(context)->getLogger().log(mapped, std::string_view(message, length));
-        }
-        catch (...) {
-        }
-    }
-
     bool startNode(const fs::path &script)
     {
         script_path_ = script.string();
         exec_path_ = "endstone";
 
+        // The whole API surface lives in ApiBridge, which also owns the handle table and event
+        // subscriptions. The ABI carries one `context`, so everything routes through it.
+        bridge_ = std::make_unique<endstone::node::ApiBridge>(*this);
         api_table_ = {};
-        api_table_.abi_version = ESN_ABI_VERSION;
-        api_table_.context = this;
-        api_table_.server_name = &NodeJsPlugin::apiServerName;
-        api_table_.server_version = &NodeJsPlugin::apiServerVersion;
-        api_table_.server_minecraft_version = &NodeJsPlugin::apiServerMinecraftVersion;
-        api_table_.server_protocol_version = &NodeJsPlugin::apiServerProtocolVersion;
-        api_table_.server_online_player_count = &NodeJsPlugin::apiServerOnlinePlayerCount;
-        api_table_.broadcast_message = &NodeJsPlugin::apiBroadcastMessage;
-        api_table_.log = &NodeJsPlugin::apiLog;
+        bridge_->fill(api_table_);
 
         esn_host_config config{};
         config.abi_version = ESN_ABI_VERSION;
@@ -380,12 +293,82 @@ private:
             getLogger().error("esn_host_create failed: {}", api_.status_message(status));
             return false;
         }
+        // Wire dispatch only once the host exists, then start: subscriptions made by a plugin's
+        // onEnable must already have somewhere to deliver to.
+        if (api_.dispatch_event) {
+            auto *api = &api_;
+            auto *host = host_;
+            bridge_->setEventSink([api, host](const std::uint32_t subscription, const esn_handle event) {
+                (void)api->dispatch_event(host, subscription, event);
+            });
+        }
+
         status = api_.start(host_);
         if (status != ESN_OK) {
             getLogger().error("esn_host_start failed: {}", api_.status_message(status));
             return false;
         }
         return true;
+    }
+
+    /**
+     * Publishes the TypeScript declarations as a stub package at plugins/node_modules/@endstone/server.
+     *
+     * TypeScript and editors resolve `@endstone/server` by walking up from the plugin folder, so this
+     * gives completions and type checking with no tsconfig or install step. At runtime the module still
+     * comes from the host's in-memory copy: the resolver hook short-circuits before the filesystem is
+     * consulted, so the stub is only ever read by tooling.
+     */
+    void publishTypes(const fs::path &data_folder, const fs::path &plugin_dir)
+    {
+        std::error_code ec;
+        const auto source = data_folder / "index.d.ts";
+        if (!exists(source, ec)) {
+            getLogger().debug("no index.d.ts in {} - skipping type publication", data_folder.string());
+            return;
+        }
+
+        const auto package_dir = plugin_dir / "node_modules" / "@endstone" / "server";
+        create_directories(package_dir, ec);
+        if (ec) {
+            getLogger().warning("could not create {}: {}", package_dir.string(), ec.message());
+            return;
+        }
+
+        // Only rewrite when the content actually changed, so we do not churn timestamps every boot.
+        const auto destination = package_dir / "index.d.ts";
+        const auto read = [](const fs::path &path) {
+            std::ifstream in(path, std::ios::binary);
+            return std::string{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+        };
+        const auto declarations = read(source);
+        if (!exists(destination, ec) || read(destination) != declarations) {
+            std::ofstream out(destination, std::ios::binary | std::ios::trunc);
+            out << declarations;
+        }
+
+        const auto manifest = package_dir / "package.json";
+        if (!exists(manifest, ec)) {
+            std::ofstream out(manifest, std::ios::binary | std::ios::trunc);
+            out << "{\n"
+                   "  \"name\": \"@endstone/server\",\n"
+                   "  \"version\": \"" ENDSTONE_API_VERSION "\",\n"
+                   "  \"description\": \"Type declarations for the Endstone JavaScript API. Provided by the "
+                   "server; the implementation lives in the host, not on disk.\",\n"
+                   "  \"types\": \"index.d.ts\",\n"
+                   "  \"main\": \"index.js\"\n"
+                   "}\n";
+        }
+
+        const auto shim = package_dir / "index.js";
+        if (!exists(shim, ec)) {
+            std::ofstream out(shim, std::ios::binary | std::ios::trunc);
+            out << "// The real module is served from memory by the Endstone Node host, so this file is\n"
+                   "// never loaded in a running server. It exists only so package.json \"main\" resolves.\n"
+                   "throw new Error('@endstone/server is only available inside an Endstone server');\n";
+        }
+
+        getLogger().info("published @endstone/server types to {}", package_dir.string());
     }
 
     // Registers the JavaScript loader and loads what it finds. Discovery has to be driven from here
@@ -437,6 +420,7 @@ private:
     ModuleHandle module_{nullptr};
     HostApi api_{};
     esn_host *host_{nullptr};
+    std::unique_ptr<endstone::node::ApiBridge> bridge_;
     esn_endstone_api api_table_{};  // borrowed by the host, so it must outlive it
     std::string script_path_;
     std::string exec_path_;

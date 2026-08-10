@@ -52,7 +52,7 @@ extern "C" {
 #endif
 
 /* Bumped on any incompatible change below. Checked by both sides at load time. */
-#define ESN_ABI_VERSION 3u
+#define ESN_ABI_VERSION 6u
 
 typedef enum esn_status {
     ESN_OK = 0,
@@ -62,7 +62,13 @@ typedef enum esn_status {
     ESN_ERR_NOT_INITIALIZED = 4,
     ESN_ERR_INIT_FAILED = 5,
     ESN_ERR_SCRIPT_FAILED = 6,
-    ESN_ERR_INTERNAL = 7
+    ESN_ERR_INTERNAL = 7,
+    /* The handle has outlived the dispatch it came from. */
+    ESN_ERR_STALE_HANDLE = 8,
+    /* No such property or method on that object type. */
+    ESN_ERR_NO_SUCH_MEMBER = 9,
+    /* The property exists but is not of the requested type, or is read-only. */
+    ESN_ERR_WRONG_TYPE = 10
 } esn_status;
 
 /* Mirrors endstone::Logger::Level numerically, but is declared independently on purpose: the host
@@ -97,6 +103,53 @@ typedef void(ESN_CALL *esn_log_fn)(void *user_data, int level, const char *messa
  * to return should write nothing and return 0. Any member may be NULL if unsupported, and the host
  * checks before calling.
  */
+/*
+ * A reference to an Endstone object (a Player, an Event, ...). Zero is never valid.
+ *
+ * LIFETIME: handles are dispatch-scoped. One obtained during an event callback is valid only until
+ * that callback returns, and the Endstone side invalidates it afterwards. To keep information beyond
+ * the callback, copy the primitives out (name, uuid, coordinates); never retain a handle. Using a
+ * stale handle is detected and fails with ESN_ERR_STALE_HANDLE rather than crashing.
+ */
+typedef uint64_t esn_handle;
+
+/*
+ * Generic typed accessors, keyed by property name.
+ *
+ * This is deliberately a small fixed surface: Endstone's API has hundreds of properties, and one C
+ * entry point per property would neither scale nor survive upstream additions. Exposing a new
+ * property means adding a dispatch entry on the Endstone side and a line of JavaScript - never an ABI
+ * change. Unknown names fail with ESN_ERR_NO_SUCH_MEMBER; type mismatches with ESN_ERR_WRONG_TYPE.
+ */
+typedef struct esn_accessors {
+    esn_status(ESN_CALL *get_bool)(void *context, esn_handle target, const char *name, int *out);
+    esn_status(ESN_CALL *get_int)(void *context, esn_handle target, const char *name, int64_t *out);
+    esn_status(ESN_CALL *get_double)(void *context, esn_handle target, const char *name, double *out);
+    /* Size-then-fetch, as elsewhere: `out_needed` receives the length excluding the NUL. */
+    esn_status(ESN_CALL *get_string)(void *context, esn_handle target, const char *name, char *buf, size_t cap,
+                                     size_t *out_needed);
+    esn_status(ESN_CALL *get_handle)(void *context, esn_handle target, const char *name, esn_handle *out);
+
+    esn_status(ESN_CALL *set_bool)(void *context, esn_handle target, const char *name, int value);
+    esn_status(ESN_CALL *set_int)(void *context, esn_handle target, const char *name, int64_t value);
+    esn_status(ESN_CALL *set_double)(void *context, esn_handle target, const char *name, double value);
+    esn_status(ESN_CALL *set_string)(void *context, esn_handle target, const char *name, const char *value,
+                                     size_t length);
+
+    /*
+     * Calls a method. Arguments are one optional string plus an optional array of doubles, which
+     * between them cover Endstone's method surface (sendMessage(text), teleport(x,y,z),
+     * playSound(x,y,z,name,volume,pitch)). Keeping the shape fixed means new methods never touch
+     * the ABI. `out_handle` is optional and receives a result object for methods that return one.
+     */
+    esn_status(ESN_CALL *invoke)(void *context, esn_handle target, const char *name, const char *text,
+                                size_t text_length, const double *numbers, size_t number_count,
+                                esn_handle *out_handle);
+
+    /* Names the concrete Endstone type behind a handle, for diagnostics and JS class selection. */
+    esn_status(ESN_CALL *type_name)(void *context, esn_handle target, char *buf, size_t cap, size_t *out_needed);
+} esn_accessors;
+
 typedef struct esn_endstone_api {
     uint32_t abi_version; /* must be ESN_ABI_VERSION */
     void *context;        /* opaque, passed back as the first argument */
@@ -108,11 +161,38 @@ typedef struct esn_endstone_api {
     int(ESN_CALL *server_protocol_version)(void *context);
     /* Number of players currently online, or -1 if the level is not loaded yet. */
     int(ESN_CALL *server_online_player_count)(void *context);
+    /*
+     * The loaded level, or ESN_ERR_NOT_INITIALIZED before one exists. Unlike handles obtained during
+     * dispatch this one is persistent: the level outlives any single callback, so it is safe to keep.
+     */
+    esn_status(ESN_CALL *server_level)(void *context, esn_handle *out);
 
     void(ESN_CALL *broadcast_message)(void *context, const char *message, size_t length);
     /* Logs through the owning plugin's logger. `level` is an esn_log_level. */
     void(ESN_CALL *log)(void *context, int level, const char *message, size_t length);
+
+    /* Property access on handles. */
+    esn_accessors accessors;
+
+    /*
+     * Registers interest in an Endstone event by its class name, e.g. "PlayerJoinEvent".
+     * `priority` is an esn_event_priority; `ignore_cancelled` skips already-cancelled events.
+     * The resulting subscription id is passed back to esn_event_fn on every dispatch.
+     */
+    esn_status(ESN_CALL *subscribe)(void *context, const char *event_name, int priority, int ignore_cancelled,
+                                    uint32_t *out_subscription);
+    esn_status(ESN_CALL *unsubscribe)(void *context, uint32_t subscription);
 } esn_endstone_api;
+
+/* Mirrors endstone::EventPriority. */
+typedef enum esn_event_priority {
+    ESN_PRIORITY_LOWEST = 0,
+    ESN_PRIORITY_LOW = 1,
+    ESN_PRIORITY_NORMAL = 2,
+    ESN_PRIORITY_HIGH = 3,
+    ESN_PRIORITY_HIGHEST = 4,
+    ESN_PRIORITY_MONITOR = 5
+} esn_event_priority;
 
 typedef struct esn_host_config {
     uint32_t abi_version;   /* must be ESN_ABI_VERSION */
@@ -209,6 +289,13 @@ ESN_EXPORT esn_status ESN_CALL esn_plugin_invoke(esn_plugin *plugin, esn_plugin_
 
 /* Releases the plugin's module reference and its metadata storage. */
 ESN_EXPORT esn_status ESN_CALL esn_plugin_unload(esn_plugin *plugin);
+
+/*
+ * Delivers a subscribed event to JavaScript. Called by Endstone on the server thread, synchronously,
+ * so a handler can mutate the event - including cancelling it - before this returns. `event` is a
+ * dispatch-scoped handle and must not be retained by the host past this call.
+ */
+ESN_EXPORT esn_status ESN_CALL esn_host_dispatch_event(esn_host *host, uint32_t subscription, esn_handle event);
 
 #ifdef __cplusplus
 } /* extern "C" */
