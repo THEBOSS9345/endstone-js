@@ -203,7 +203,7 @@ typedef struct esn_host_config {
     const char *exec_path;   /* UTF-8 argv[0] for Node, NUL-terminated */
     /*
      * Optional. Borrowed, and must outlive the host: the Endstone side owns it. When NULL, the
-     * @endstone/server module still loads but reports itself unavailable rather than crashing.
+     * @endstone-js/server module still loads but reports itself unavailable rather than crashing.
      */
     const esn_endstone_api *api;
 } esn_host_config;

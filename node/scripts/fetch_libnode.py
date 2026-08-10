@@ -92,14 +92,18 @@ def main() -> int:
     parser.add_argument("--version", default=DEFAULT_VERSION, help=f"libnode version (default: {DEFAULT_VERSION})")
     parser.add_argument("--dest", default="build/libnode", help="output root (default: build/libnode)")
     parser.add_argument("--cache", default="build/libnode-cache", help="download cache directory")
+    # Cross-fetching is normal here: a Windows host building for the Linux container needs the .so.
+    parser.add_argument("--platform", choices=("win32", "linux"), help="target platform (default: this host)")
     args = parser.parse_args()
 
     if args.version not in ARTIFACTS:
         raise SystemExit(f"no pinned artifacts for {args.version}; known: {', '.join(ARTIFACTS)}")
 
-    platform = "win32" if sys.platform.startswith("win") else "linux" if sys.platform.startswith("linux") else None
+    platform = args.platform
     if platform is None:
-        raise SystemExit(f"{sys.platform} is not supported")
+        platform = "win32" if sys.platform.startswith("win") else "linux" if sys.platform.startswith("linux") else None
+    if platform is None:
+        raise SystemExit(f"{sys.platform} is not supported; pass --platform")
 
     pins = ARTIFACTS[args.version]
     base = BASE_URL.format(version=args.version)

@@ -11,7 +11,7 @@ have. Nothing outside `node/` and `recipes/libnode/` is modified: the layer atta
 through the public plugin API.
 
 TypeScript definitions are a separate project, published to npm as
-[`@endstone/server`](https://github.com/THEBOSS9345/endstone-server-types). Its minor version tracks the
+[`@endstone-js/server`](https://github.com/THEBOSS9345/endstone-server-types). Its minor version tracks the
 Endstone API version, so `0.11.x` targets API `0.11`. Anything added to `plugin/api_bridge.cpp` needs a
 matching declaration added there, or the types will describe an API that does not exist.
 
@@ -45,14 +45,14 @@ mangled C++ symbols on it   : (none)
 
 ## The API
 
-`@endstone/server` is a **virtual module** served from memory by the host - nothing to install, and it
+`@endstone-js/server` is a **virtual module** served from memory by the host - nothing to install, and it
 works identically from CommonJS and ESM. It is shaped after **Endstone's own API**, not Bedrock's
 ScriptAPI, so it reads 1:1 with the Endstone documentation: `Server`, `Logger`, and (once bound) the
 `Player` and `PlayerXxxEvent` family, rather than `world.afterEvents`.
 
 ```js
-import { server, logger } from "@endstone/server";   // ESM
-const { server, logger } = require("@endstone/server");  // CommonJS
+import { server, logger } from "@endstone-js/server";   // ESM
+const { server, logger } = require("@endstone-js/server");  // CommonJS
 
 logger.info(`${server.name} ${server.version} (Minecraft ${server.minecraftVersion})`);
 server.broadcastMessage("hello from a JavaScript plugin");
@@ -80,7 +80,7 @@ Names are the Endstone event class minus `Event`, camelCased, so `PlayerJoinEven
 cancellation work:
 
 ```js
-import { events, logger } from "@endstone/server";
+import { events, logger } from "@endstone-js/server";
 
 events.playerJoin((event) => {
   logger.info(`${event.player.name} joined from ${event.player.address}`);
@@ -132,7 +132,7 @@ return path passes through V8 frames compiled without exceptions.
 ### Types
 
 TypeScript definitions live in a **separate project**, published to npm as
-[`@endstone/server`](https://www.npmjs.com/package/@endstone/server). They are not part of this
+[`@endstone-js/server`](https://www.npmjs.com/package/@endstone-js/server). They are not part of this
 repository: the server provides the implementation, the package provides only declarations - the same
 split Mojang uses for `@minecraft/server`.
 
@@ -140,7 +140,7 @@ Install them in your plugin folder when you want completions:
 
 ```shell
 cd plugins/my-plugin
-npm install --save-dev @endstone/server
+npm install --save-dev @endstone-js/server
 ```
 
 A `devDependency`, because they are needed to *write* a plugin and never to run one - the runtime module

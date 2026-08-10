@@ -9,6 +9,6 @@
     "apiVersion": "0.11"
   },
   "devDependencies": {
-    "@endstone/server": "^0.11.0"
+    "@endstone-js/server": "^0.11.0"
   }
 }

@@ -1,11 +1,11 @@
-// Folder-style CommonJS plugin, and the API demo. @endstone/server is a virtual module served by the
-// host - nothing to install - and its types are published to plugins/node_modules/@endstone/server so
+// Folder-style CommonJS plugin, and the API demo. @endstone-js/server is a virtual module served by the
+// host - nothing to install - and its types are published to plugins/node_modules/@endstone-js/server so
 // editors give you completions.
 //
 // Join and try: hello !pos !heal !gm !toast !title !particle !vel !spin !time badword
 // Then break/place a block, and hit something.
 
-const { server, events, logger } = require("@endstone/server");
+const { server, events, logger } = require("@endstone-js/server");
 
 // Everything goes to the console; anything with a player behind it is also shown in chat. Note that
 // only player events have `event.player` - an actor event has `event.actor`, and a lifecycle hook has

@@ -24,3 +24,9 @@ __pycache__/
 *.py[cod]
 conan_provider.cmake
 .env
+
+# JavaScript plugin dependencies (node/), installed per plugin by npm
+node_modules/
+
+# Throwaway venv used to test against a prebuilt Endstone wheel
+.spike-venv/

@@ -1,7 +1,7 @@
 // ES module plugin. "type": "module" in package.json selects ESM; the default export supplies the
-// lifecycle hooks. The same @endstone/server module works here with real named imports.
+// lifecycle hooks. The same @endstone-js/server module works here with real named imports.
 
-import { server, logger } from "@endstone/server";
+import { server, logger } from "@endstone-js/server";
 
 export default {
     onLoad() {

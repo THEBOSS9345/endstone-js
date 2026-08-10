@@ -713,7 +713,7 @@ const nodeFs = require('node:fs');
 const nodeUrl = require('node:url');
 const NodeModule = require('node:module');
 
-// --- @endstone/server -----------------------------------------------------------------------
+// --- @endstone-js/server -----------------------------------------------------------------------
 // The API surface. Shaped after Endstone's own API (Server, Logger, and later Player and the
 // PlayerXxxEvent family) rather than Bedrock's ScriptAPI, so it reads 1:1 with the Endstone docs.
 const LEVELS = { trace: 0, debug: 1, info: 2, warning: 3, error: 4, critical: 5 };
@@ -877,7 +877,7 @@ export default api;
 
 NodeModule.registerHooks({
   resolve(specifier, context, nextResolve) {
-    if (specifier === '@endstone/server') {
+    if (specifier === '@endstone-js/server') {
       return { url: VIRTUAL_URL, shortCircuit: true };
     }
     return nextResolve(specifier, context);

@@ -160,5 +160,5 @@ Drop JavaScript plugins into $plugins as either a folder with package.json or a 
 If a plugin declares dependencies, run "npm install" inside its folder first.
 
 For editor completions and type checking, install the types in your plugin folder:
-    npm install --save-dev @endstone/server
+    npm install --save-dev @endstone-js/server
 "@

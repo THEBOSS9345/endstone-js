@@ -10,7 +10,7 @@
 > or C++ one.
 >
 > ```js
-> import { server, events, logger } from "@endstone/server";
+> import { server, events, logger } from "@endstone-js/server";
 >
 > export default {
 >   onEnable() {
@@ -32,7 +32,7 @@
 > - real npm packages, resolved per plugin (discord.js is part of the test suite)
 > - the Endstone API exposed to JS: `Server`, `Level`, `Actor`, `Player`, `Block`, `DamageSource`, and
 >   all 55 events with working cancellation
-> - TypeScript definitions published as [`@endstone/server`](https://github.com/THEBOSS9345/endstone-server-types)
+> - TypeScript definitions published as [`@endstone-js/server`](https://github.com/THEBOSS9345/endstone-server-types)
 >
 > See [`node/README.md`](node/README.md) for the architecture and how to build it.
 >
