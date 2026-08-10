@@ -44,15 +44,6 @@ else ()
     target_link_options(endstone_node_host PRIVATE "-Wl,-rpath-link,${LIBNODE_DIR}")
 endif ()
 
-# A C-only consumer. Proves the boundary needs no C++ runtime agreement at all.
-add_executable(endstone_node_host_smoke standalone_main.c)
-target_link_libraries(endstone_node_host_smoke PRIVATE endstone_node_host)
-target_compile_features(endstone_node_host_smoke PRIVATE c_std_11)
-if (NOT WIN32)
-    set_target_properties(endstone_node_host_smoke PROPERTIES BUILD_RPATH "$ORIGIN;${LIBNODE_DIR}")
-    target_link_options(endstone_node_host_smoke PRIVATE "-Wl,-rpath-link,${LIBNODE_DIR}")
-endif ()
-
 if (LIBNODE_RUNTIME)
     add_custom_command(TARGET endstone_node_host POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different

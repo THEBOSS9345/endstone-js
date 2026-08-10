@@ -19,6 +19,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <deque>
 #include <unordered_map>
 #include <vector>
 
@@ -29,11 +30,18 @@
 namespace endstone {
 class Actor;
 class Block;
+class CommandSender;
 class DamageSource;
 class Event;
+class Inventory;
+class ItemStack;
 class Level;
+class Location;
+class MapView;
 class Mob;
 class Player;
+class PlayerInventory;
+class Vector;
 }  // namespace endstone
 
 namespace endstone::node {
@@ -93,16 +101,70 @@ public:
                       std::size_t string_count, const double *numbers, std::size_t number_count,
                       esn_handle *out_handle);
     esn_status typeName(esn_handle target, char *buf, std::size_t cap, std::size_t *needed);
+
+    /** Resends the permission-filtered command list to every online player. */
+    void updateCommands();
+
+    /**
+     * @brief Registers the subscriptions that were made before this plugin was enabled.
+     *
+     * Must be called from the owning plugin's onEnable. Until then Endstone rejects listeners, so
+     * subscriptions made during plugin load are held back rather than lost.
+     */
+    void flushPendingSubscriptions();
+
+    /**
+     * @brief Wraps a command sender for the duration of one command dispatch.
+     *
+     * A player sender is tracked as a Player so a handler gets the whole Player surface; anything else
+     * is tracked as a CommandSender. Release it with releaseDispatch() when the handler returns.
+     */
+    esn_handle trackSender(CommandSender &sender);
+
+    /** Invalidates every non-persistent handle, as the end of an event dispatch does. */
+    void releaseDispatch();
     esn_status subscribe(std::string_view event_name, int priority, bool ignore_cancelled, std::uint32_t *out);
     esn_status unsubscribe(std::uint32_t subscription);
 
 private:
     // Mob is distinct from Actor because only living things have health, and Endstone's actor events
     // are templated on one or the other (ActorEvent<Mob> vs ActorEvent<Actor>).
-    enum class Kind : std::uint8_t { Player, Mob, Actor, Block, Level, DamageSource, Event };
+    enum class Kind : std::uint8_t {
+        Player, Mob, Actor, Block, Level, DamageSource, ItemStack, Location, Vector, CommandSender,
+        // PlayerInventory is distinct from Inventory only so the equipment slots can be reached; every
+        // generic inventory operation accepts either.
+        Inventory, PlayerInventory, Plugin, MapView, Event
+    };
+
+    /** Invalidates every non-persistent handle minted at or after `scope_start`. */
+    void releaseScope(esn_handle scope_start);
+
+    void registerWithEndstone(std::uint32_t subscription, std::string_view event_name, int priority,
+                              bool ignore_cancelled);
+
+    /** A subscription made before the plugin was enabled, waiting for flushPendingSubscriptions(). */
+    struct PendingSubscription {
+        std::uint32_t subscription;
+        std::string event_name;
+        int priority;
+        bool ignore_cancelled;
+    };
+    std::vector<PendingSubscription> pending_;
+
+    /** Where the current command dispatch's handles begin, for releaseDispatch(). */
+    esn_handle command_scope_start_{0};
 
     /** Owns anything created on demand whose lifetime is not the caller's, e.g. Block instances. */
     std::vector<std::unique_ptr<Block>> owned_blocks_;
+    // deques so push_back never invalidates an already-tracked pointer within one dispatch.
+    std::deque<Location> owned_locations_;
+    std::deque<Vector> owned_vectors_;
+    // Inventory::getItem returns by value, so the stack handed to JavaScript has to live somewhere.
+    // unique_ptr because ItemStack is only forward-declared here, and because the pointee never moves.
+    std::vector<std::unique_ptr<ItemStack>> owned_items_;
+
+    /** The inventory behind a handle, whether it was tracked as a plain or a player inventory. */
+    Inventory *resolveInventory(esn_handle target);
 
     struct Entry {
         void *ptr{nullptr};

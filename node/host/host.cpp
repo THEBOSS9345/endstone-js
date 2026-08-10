@@ -26,6 +26,7 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <deque>
 #include <vector>
 
 #include <node_api.h>
@@ -69,6 +70,21 @@ struct PluginImpl {
     std::vector<std::string> depend;
     std::vector<const char *> author_ptrs;
     std::vector<const char *> depend_ptrs;
+
+    // Command declarations, kept in a deque so the strings the pointer arrays refer to keep their
+    // addresses as more commands are appended.
+    struct CommandStorage {
+        std::string name;
+        std::string description;
+        std::deque<std::string> usages;
+        std::deque<std::string> aliases;
+        std::deque<std::string> permissions;
+        std::vector<const char *> usage_ptrs;
+        std::vector<const char *> alias_ptrs;
+        std::vector<const char *> permission_ptrs;
+    };
+    std::deque<CommandStorage> commands;
+    std::vector<esn_command_decl> command_decls;
 };
 
 // Node's per-process initialization happens once, so the host is a process singleton. The N-API
@@ -158,6 +174,66 @@ void readStringArray(napi_env env, napi_value object, const char *key, std::vect
         if (napi_get_element(env, array, i, &element) == napi_ok && readStringValue(env, element, text)) {
             out.emplace_back(std::move(text));
         }
+    }
+}
+
+/**
+ * Copies meta.commands into storage the plugin owns, so the pointers handed across the ABI stay valid
+ * until the plugin is unloaded.
+ *
+ * These declarations are produced by the runtime's own collector rather than read from user input, so
+ * a malformed entry means a bug here; such an entry is skipped rather than reported.
+ */
+void readCommandDecls(napi_env env, napi_value meta, PluginImpl &plugin)
+{
+    napi_value array = nullptr;
+    bool is_array = false;
+    if (napi_get_named_property(env, meta, "commands", &array) != napi_ok ||
+        napi_is_array(env, array, &is_array) != napi_ok || !is_array) {
+        return;
+    }
+    std::uint32_t length = 0;
+    (void)napi_get_array_length(env, array, &length);
+
+    const auto fill = [env](napi_value object, const char *key, std::deque<std::string> &storage,
+                            std::vector<const char *> &ptrs) {
+        std::vector<std::string> values;
+        readStringArray(env, object, key, values);
+        for (auto &value : values) {
+            storage.push_back(std::move(value));
+            ptrs.push_back(storage.back().c_str());
+        }
+    };
+
+    for (std::uint32_t i = 0; i < length; ++i) {
+        napi_value entry = nullptr;
+        if (napi_get_element(env, array, i, &entry) != napi_ok) {
+            continue;
+        }
+        PluginImpl::CommandStorage storage;
+        if (!readString(env, entry, "name", storage.name) || storage.name.empty()) {
+            continue;
+        }
+        (void)readString(env, entry, "description", storage.description);
+        plugin.commands.push_back(std::move(storage));
+        auto &kept = plugin.commands.back();
+        fill(entry, "usages", kept.usages, kept.usage_ptrs);
+        fill(entry, "aliases", kept.aliases, kept.alias_ptrs);
+        fill(entry, "permissions", kept.permissions, kept.permission_ptrs);
+    }
+
+    plugin.command_decls.reserve(plugin.commands.size());
+    for (const auto &command : plugin.commands) {
+        esn_command_decl decl{};
+        decl.name = command.name.c_str();
+        decl.description = command.description.empty() ? nullptr : command.description.c_str();
+        decl.usages = command.usage_ptrs.empty() ? nullptr : command.usage_ptrs.data();
+        decl.usage_count = command.usage_ptrs.size();
+        decl.aliases = command.alias_ptrs.empty() ? nullptr : command.alias_ptrs.data();
+        decl.alias_count = command.alias_ptrs.size();
+        decl.permissions = command.permission_ptrs.empty() ? nullptr : command.permission_ptrs.data();
+        decl.permission_count = command.permission_ptrs.size();
+        plugin.command_decls.push_back(decl);
     }
 }
 
@@ -430,7 +506,9 @@ napi_value jsGet(napi_env env, napi_callback_info info)
             return nullptr;
         }
     }
-    return fail(env, ESN_ERR_NO_SUCH_MEMBER, name);
+    // Unknown members read as undefined rather than throwing; stale handles still throw above.
+    napi_value undefined_value = nullptr;
+    return napi_get_undefined(env, &undefined_value) == napi_ok ? undefined_value : nullptr;
 }
 
 napi_value jsSet(napi_env env, napi_callback_info info)
@@ -641,6 +719,17 @@ void defineString(napi_env env, napi_value exports, const char *name, const char
     }
 }
 
+napi_value jsUpdateCommands(napi_env env, napi_callback_info info)
+{
+    (void)info;
+    const auto *api = g_host ? g_host->api : nullptr;
+    if (api && api->update_commands) {
+        api->update_commands(api->context);
+    }
+    napi_value undefined_value = nullptr;
+    return napi_get_undefined(env, &undefined_value) == napi_ok ? undefined_value : nullptr;
+}
+
 napi_value registerBinding(napi_env env, napi_value exports)
 {
     defineFunction(env, exports, "log", jsLog);
@@ -660,6 +749,7 @@ napi_value registerBinding(napi_env env, napi_value exports)
     defineFunction(env, exports, "typeName", jsTypeName);
     defineFunction(env, exports, "subscribe", jsSubscribe);
     defineFunction(env, exports, "unsubscribe", jsUnsubscribe);
+    defineFunction(env, exports, "updateCommands", jsUpdateCommands);
     if (g_host) {
         defineString(env, exports, "scriptPath", g_host->script_path.c_str());
     }
@@ -759,7 +849,57 @@ const METHODS = new Set([
   'kick', 'performCommand', 'updateCommands', 'transfer', 'teleport', 'setRotation',
   'giveExp', 'giveExpLevels', 'playSound', 'stopSound', 'stopAllSounds', 'spawnParticle',
   'remove', 'getRelative', 'cancel',
+  // Inventory
+  'getItem', 'setItem', 'addItem', 'removeItem', 'clear', 'setHeldItemSlot',
+  'setHelmet', 'setChestplate', 'setLeggings', 'setBoots', 'setItemInMainHand', 'setItemInOffHand',
 ]);
+
+// An item is described by { type, amount, data } rather than by constructing an ItemStack, so the
+// flattening is the same trick vectors use: strings and numbers in the order the host reads them.
+const ITEM_KEYS = ['amount', 'data'];
+const flattenItem = (item) => {
+  if (item === null || item === undefined) return [''];  // empty type clears the slot
+  if (typeof item === 'string') return [item, 1, 0];
+  const type = typeof item.type === 'string' ? item.type : '';
+  return [type, ...ITEM_KEYS.map((key) => (Number.isFinite(item[key]) ? item[key] : key === 'amount' ? 1 : 0))];
+};
+
+// Derived from size and getItem rather than crossing the ABI: the host has no way to return a boolean
+// or an array from a method call, and looping a few dozen slots in JS costs nothing.
+// Methods whose arguments include an item description rather than plain scalars.
+const ITEM_METHODS = new Set([
+  'setItem', 'addItem', 'removeItem',
+  'setHelmet', 'setChestplate', 'setLeggings', 'setBoots', 'setItemInMainHand', 'setItemInOffHand',
+]);
+
+const INVENTORY_HELPERS = {
+  contents() {
+    const all = [];
+    for (let slot = 0; slot < this.size; ++slot) all.push(this.getItem(slot));
+    return all;
+  },
+  contains(type) {
+    return this.first(type) !== -1;
+  },
+  first(type) {
+    for (let slot = 0; slot < this.size; ++slot) {
+      const item = this.getItem(slot);
+      if (item && item.type === type) return slot;
+    }
+    return -1;
+  },
+  countOf(type) {
+    let total = 0;
+    for (let slot = 0; slot < this.size; ++slot) {
+      const item = this.getItem(slot);
+      if (item && item.type === type) total += item.amount;
+    }
+    return total;
+  },
+  containsAtLeast(type, amount) {
+    return this.countOf(type) >= amount;
+  },
+};
 
 /** The host tags nested objects so they can be told apart from plain numbers. */
 const asHandle = (value) =>
@@ -767,9 +907,51 @@ const asHandle = (value) =>
     ? value.__esn_handle
     : null;
 
+// Vector and rotation arguments arrive as objects ({x,y,z} / {yaw,pitch}). Flatten them back into
+// the positional numbers the host reads: x, y, z, then yaw, pitch. Reading through the Proxy works,
+// so teleport(p.location, {...}) and teleport({x,y,z}) both behave; a missing member throws, which
+// is fine - it just means that key is absent.
+// A vector contributes exactly x, y, z; a rotation contributes yaw, pitch. A Location satisfies both,
+// and the vector reading wins, so facing is always passed as its own argument - that is what makes
+// teleport(location) keep the current facing while teleport(location, rotation) turns the actor.
+const POSITION_KEYS = ['x', 'y', 'z'];
+const ROTATION_KEYS = ['yaw', 'pitch'];
+const readNumber = (obj, key) => {
+  try {
+    const value = obj[key];
+    return typeof value === 'number' ? value : NaN;
+  } catch {
+    return NaN;
+  }
+};
+// All of the keys must be present, so a partial object is passed through untouched rather than
+// silently flattening into the wrong positions.
+const numbersOf = (arg, keys) => {
+  if (arg === null || typeof arg !== 'object') return null;
+  const values = keys.map((key) => readNumber(arg, key));
+  return values.every((value) => Number.isFinite(value)) ? values : null;
+};
+const flatten = (args) => {
+  const flat = [];
+  for (const arg of args) {
+    const spread = numbersOf(arg, POSITION_KEYS) ?? numbersOf(arg, ROTATION_KEYS);
+    if (spread) {
+      flat.push(...spread);
+    } else {
+      flat.push(arg);
+    }
+  }
+  return flat;
+};
+
+// Rotation writes go through their own flattening: only yaw/pitch are picked, so assigning
+// `actor.rotation = actor.location` reads the facing off the location rather than the position.
+const flattenRotation = (value) =>
+  ['yaw', 'pitch'].filter((key) => Number.isFinite(readNumber(value, key))).map((key) => value[key]);
+
 function wrap(handle) {
   if (!handle) return null;
-  return new Proxy({ [HANDLE]: handle }, {
+  const proxy = new Proxy({ [HANDLE]: handle }, {
     get(_t, prop) {
       if (prop === HANDLE || prop === 'handle') return handle;
       if (typeof prop !== 'string') return undefined;
@@ -777,10 +959,44 @@ function wrap(handle) {
       if (prop === 'constructor') return Object;
       if (prop === 'toString') return () => `${binding.typeName(handle)}(${handle})`;
       if (prop === 'endstoneType') return binding.typeName(handle);
-      if (METHODS.has(prop)) {
-        // Arguments pass through as-is; the host sorts strings and numbers into their own arrays.
+      // teleport is the one method whose second argument is an options object rather than a value,
+      // so it is assembled here instead of going through flatten(). Rotation and dimension are both
+      // left out when absent, and the host then keeps the actor's current ones.
+      if (prop === 'teleport') {
+        return (location, options = {}) => {
+          const position = numbersOf(location, POSITION_KEYS);
+          if (!position) {
+            throw new TypeError('teleport(location): location needs numeric x, y and z');
+          }
+          const rotation = numbersOf(options && options.rotation, ROTATION_KEYS);
+          const args = rotation ? [...position, ...rotation] : [...position];
+          const dimension = options && options.dimension;
+          if (dimension !== undefined && dimension !== null) args.push(String(dimension));
+          binding.invoke(handle, 'teleport', ...args);
+        };
+      }
+      // Inventory helpers are plain JavaScript over size/getItem, bound to this proxy.
+      if (INVENTORY_HELPERS[prop] && binding.typeName(handle).endsWith('Inventory')) {
+        return INVENTORY_HELPERS[prop].bind(proxy);
+      }
+      // Item arguments describe a stack; slot indices stay as plain numbers before them.
+      if (ITEM_METHODS.has(prop)) {
         return (...args) => {
-          const result = binding.invoke(handle, prop, ...args);
+          const flat = [];
+          for (const arg of args) {
+            if (typeof arg === 'number') flat.push(arg);
+            else flat.push(...flattenItem(arg));
+          }
+          const result = binding.invoke(handle, prop, ...flat);
+          const nested = asHandle(result);
+          return nested === null ? result : wrap(nested);
+        };
+      }
+      if (METHODS.has(prop)) {
+        // Arguments pass through as-is except vector/rotation objects, which flatten into the
+        // positional numbers the host reads; the host sorts strings and numbers into their arrays.
+        return (...args) => {
+          const result = binding.invoke(handle, prop, ...flatten(args));
           const nested = asHandle(result);
           return nested === null ? result : wrap(nested);
         };
@@ -791,26 +1007,36 @@ function wrap(handle) {
     },
     set(_t, prop, value) {
       if (typeof prop !== 'string') return false;
-      binding.set(handle, prop, value);
+      if (prop === 'rotation') {
+        // The `rotation` field is two numbers behind one object; route it through the same
+        // dispatch as a method so the host reads yaw, pitch.
+        binding.invoke(handle, 'setRotation', ...flattenRotation(value));
+      } else {
+        binding.set(handle, prop, value);
+      }
       return true;
     },
     has(_t, prop) { return typeof prop === 'string'; },
   });
+  return proxy;
 }
 
 // --- events ---------------------------------------------------------------------------------
 // Named after Endstone's event classes minus the "Event" suffix, camelCased, so the mapping back to
 // the Endstone documentation is mechanical.
 const PRIORITIES = { lowest: 0, low: 1, normal: 2, high: 3, highest: 4, monitor: 5 };
+// Subscriptions carry the plugin that made them so a reload can drop a plugin's handlers wholesale.
+// A null plugin tag belongs to the runtime itself and survives reloads.
 const handlers = new Map();
+let activePluginId = null;
 
 function dispatchEvent(subscription, handle) {
   const entry = handlers.get(subscription);
   if (!entry) return;
   const event = wrap(handle);
-  for (const fn of entry) {
+  for (const { handler } of entry) {
     try {
-      fn(event);
+      handler(event);
     } catch (err) {
       binding.log(4, `event handler threw: ${(err && err.stack) || err}`);
     }
@@ -848,12 +1074,211 @@ for (const name of EVENT_NAMES) {
     const priority = PRIORITIES[String(options.priority ?? 'normal').toLowerCase()] ?? PRIORITIES.normal;
     const subscription = binding.subscribe(toEndstoneName(name), priority, options.ignoreCancelled === true);
     if (!handlers.has(subscription)) handlers.set(subscription, []);
-    handlers.get(subscription).push(handler);
-    return { unsubscribe() { handlers.delete(subscription); binding.unsubscribe(subscription); } };
+    const record = { handler, plugin: activePluginId };
+    handlers.get(subscription).push(record);
+    return {
+      unsubscribe() {
+        const list = handlers.get(subscription);
+        if (!list) return;
+        for (let i = list.length - 1; i >= 0; --i) {
+          if (list[i] === record) list.splice(i, 1);
+        }
+        if (list.length === 0) {
+          handlers.delete(subscription);
+          binding.unsubscribe(subscription);
+        }
+      },
+    };
   };
 }
 
-const endstoneModule = { server, events, logger: server.logger, LogLevel: LEVELS, EventPriority: PRIORITIES };
+// --- commands -----------------------------------------------------------------------------------
+// Commands are registered in code rather than declared in a manifest, so a plugin can add or drop one
+// at any time and a reload picks up the change. Every command is a slash command, reached as `/name`
+// from a player or the console. Registering a name the server already uses shadows it, since the
+// command line is intercepted and cancelled before it reaches the server.
+const commandsByName = new Map();
+let commandRouters = null;
+// Non-null only while a plugin's module is being evaluated. Commands registered into it are declared
+// to Endstone, which is what gets them into Bedrock's registry - and therefore into the client's
+// command list, with autocomplete and validated arguments. Anything registered later can only be
+// intercepted.
+let collectingDeclarations = null;
+// True until the bootstrap has finished. The runtime's own commands are registered during it and can
+// never be declared - there is no plugin module for them to be declared in - so they are exempt from
+// the "registered too late" warning, which would otherwise give advice that cannot be followed.
+let bootstrapping = true;
+
+// Console commands need a sender too. `isConsole` tells a handler which it has - a wrapped Player
+// returns undefined for it, since unknown members read as undefined.
+const consoleSender = {
+  name: 'Console',
+  isConsole: true,
+  isOp: true,
+  sendMessage(text) { binding.log(2, String(text).replace(/§./g, '')); },
+  sendErrorMessage(text) { binding.log(4, String(text).replace(/§./g, '')); },
+};
+
+const splitArgs = (rest) => {
+  const trimmed = String(rest ?? '').trim();
+  return trimmed === '' ? [] : trimmed.split(/\s+/);
+};
+
+const lower = (value) => String(value).toLowerCase();
+
+/** Matches a bare command word against registered names and aliases. */
+function findCommand(token) {
+  const key = lower(token);
+  const direct = commandsByName.get(key);
+  if (direct) return direct;
+  for (const command of commandsByName.values()) {
+    if (command.aliases.includes(key)) return command;
+  }
+  return null;
+}
+
+function runCommand(command, sender, args, raw) {
+  if (command.op && sender.isOp !== true) {
+    // Logged as well as replied to: a refusal that only appears in the player's chat is impossible
+    // to tell apart from a command that never fired at all.
+    binding.log(2, `refused '/${command.name}' for ${sender.name}: operators only`);
+    sender.sendMessage('§cYou do not have permission to use that command.');
+    return;
+  }
+  try {
+    command.handler(sender, args, raw);
+  } catch (err) {
+    binding.log(4, `command '${command.name}' threw: ${(err && err.stack) || err}`);
+    sender.sendMessage('§cThat command failed. See the server log.');
+  }
+}
+
+function ensureCommandRouters() {
+  if (commandRouters || !binding.apiAvailable()) return;
+  // The routers belong to the runtime, not to whichever plugin happened to register first, so the
+  // attribution is cleared - otherwise reloading that plugin would drop command handling entirely.
+  const previous = activePluginId;
+  activePluginId = null;
+  try {
+    const route = (event, sender) => {
+      const line = String(event.command ?? '').trim().replace(/^\//, '');
+      const match = /^(\S+)([\s\S]*)$/.exec(line);
+      if (!match) return;
+      const command = findCommand(match[1]);
+      if (!command || command.declared) return;
+      event.cancelled = true;
+      runCommand(command, sender, splitArgs(match[2]), line);
+    };
+    commandRouters = [
+      // Lowest priority so a plugin watching playerCommand still sees the line first.
+      // Declared commands are dispatched by Endstone through onCommand, so the router must not
+      // cancel them here - it would swallow the command before Endstone ever ran it.
+      events.playerCommand((event) => route(event, event.player), { priority: 'lowest' }),
+      events.serverCommand((event) => route(event, consoleSender), { priority: 'lowest' }),
+    ];
+  }
+  finally {
+    activePluginId = previous;
+  }
+}
+
+const commands = {
+  register(name, handler, options = {}) {
+    if (typeof name !== 'string' || name.trim() === '') {
+      throw new TypeError('commands.register: name must be a non-empty string');
+    }
+    if (typeof handler !== 'function') {
+      throw new TypeError(`commands.register('${name}'): handler must be a function`);
+    }
+    const key = lower(name.trim());
+    if (commandsByName.has(key)) {
+      throw new Error(`commands.register: '${key}' is already registered`);
+    }
+    // `usages` is the real thing - Endstone parses each one to build the client's argument list.
+    // `usage` stays accepted as the singular shorthand. An empty list means a bare "/name".
+    const usages = options.usages ? options.usages.map(String)
+      : options.usage ? [String(options.usage)]
+      : [];
+    const record = {
+      name: key,
+      handler,
+      description: String(options.description ?? ''),
+      usages,
+      aliases: (options.aliases ?? []).map(lower),
+      op: options.op === true,
+      permissions: (options.permissions ?? []).map(String),
+      plugin: activePluginId,
+      declared: false,
+    };
+
+    if (collectingDeclarations) {
+      record.declared = true;
+      record.plugin = collectingDeclarations.pluginId;
+      collectingDeclarations.records.push(record);
+    }
+    else if (!bootstrapping) {
+      // Registered after the module finished loading, so it missed the description Endstone builds at
+      // load time. It still runs, via interception - it just cannot appear in the client's list.
+      binding.log(3,
+        `command '/${key}' was registered after loading, so it will not appear in the client's ` +
+        `command list or autocomplete. Move the commands.register call to the top level of your ` +
+        `plugin module to have it registered properly.`);
+    }
+
+    commandsByName.set(key, record);
+    ensureCommandRouters();
+    return {
+      unregister() {
+        if (commandsByName.get(key) === record) commandsByName.delete(key);
+      },
+    };
+  },
+
+  list() {
+    return [...commandsByName.values()].map((command) => ({
+      name: command.name,
+      description: command.description,
+      usages: [...command.usages],
+      aliases: [...command.aliases],
+      op: command.op,
+      permissions: [...command.permissions],
+      declared: command.declared,
+    }));
+  },
+};
+
+/**
+ * Drops the commands a plugin registered, so a reload does not leave duplicates behind.
+ *
+ * Returns the names that were declared to Endstone. Those stay registered on the Endstone side for the
+ * life of the server, so a reload has to re-declare them rather than treat them as new.
+ */
+function dropCommands(pluginId) {
+  const wasDeclared = new Set();
+  for (const [key, record] of commandsByName) {
+    if (record.plugin !== pluginId) continue;
+    if (record.declared) wasDeclared.add(key);
+    commandsByName.delete(key);
+  }
+  return wasDeclared;
+}
+
+/**
+ * Runs a declared command, called from C++ when Endstone dispatches one.
+ *
+ * Returns false when nothing handled it, which makes Endstone show the command's usage.
+ */
+function runDeclaredCommand(pluginId, name, senderHandle, args) {
+  const command = commandsByName.get(lower(name)) ?? findCommand(name);
+  if (!command) return false;
+  const sender = wrap(senderHandle) ?? consoleSender;
+  runCommand(command, sender, args, [name, ...args].join(' '));
+  return true;
+}
+
+const endstoneModule = {
+  server, events, commands, logger: server.logger, LogLevel: LEVELS, EventPriority: PRIORITIES,
+};
 
 // Handed to the virtual module's source through a well-known symbol rather than a bare global.
 const API_SYMBOL = Symbol.for('endstone.api');
@@ -865,15 +1290,15 @@ Object.defineProperty(globalThis, API_SYMBOL, {
 // to require() as well as import(), so one hook covers CommonJS and ESM plugins alike. CommonJS
 // plugins get the namespace through Node's require(esm) support.
 const VIRTUAL_URL = 'endstone:server';
-const VIRTUAL_SOURCE = `
-const api = globalThis[Symbol.for('endstone.api')];
-export const server = api.server;
-export const events = api.events;
-export const logger = api.logger;
-export const LogLevel = api.LogLevel;
-export const EventPriority = api.EventPriority;
-export default api;
-`;
+// The named exports are generated from the API object rather than listed by hand: a hand-written list
+// silently goes out of date, and the failure lands on the plugin author as "does not provide an export
+// named 'x'" rather than on whoever added x.
+const VIRTUAL_SOURCE = [
+  `const api = globalThis[Symbol.for('endstone.api')];`,
+  ...Object.keys(endstoneModule).map((name) => `export const ${name} = api.${name};`),
+  `export default api;`,
+  ``,
+].join('\n');
 
 NodeModule.registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -893,6 +1318,7 @@ const plugins = new Map();
 const pendingLoads = new Map();
 let nextPluginId = 1;
 let nextToken = 1;
+let nextReloadCopy = 1;
 
 const asArray = (value) =>
   value == null ? [] : Array.isArray(value) ? value.map(String) : [String(value)];
@@ -961,23 +1387,25 @@ async function loadPluginAsync(target) {
   // ES modules synchronously and returns their namespace, so one path serves both formats.
   const isEsm = manifest.type === 'module' || /\.mjs$/i.test(entry);
   const pluginRequire = NodeModule.createRequire(nodePath.join(dir, 'package.json'));
+
+  // The plugin gets its id before its module runs, so commands registered at the top level can be
+  // attributed to it and travel back with the metadata Endstone builds its description from.
+  const id = nextPluginId++;
+  const declarations = { pluginId: id, records: [] };
+  const previousCollector = collectingDeclarations;
+  collectingDeclarations = declarations;
   let loaded;
   try {
     loaded = pluginRequire(entry);
-  } catch (err) {
-    if (err && err.code === 'ERR_REQUIRE_ASYNC_MODULE') {
-      throw new Error(
-        `plugin '${manifest.name}' uses top-level await, which cannot be loaded by an embedded ` +
-        `Node.js host. Move the awaited work into onEnable() instead.`);
-    }
-    throw err;
+  }
+  finally {
+    collectingDeclarations = previousCollector;
   }
   // An ES module namespace exposes its default export as .default.
   const instance = (loaded && loaded.default) || loaded;
   const endstone = manifest.endstone || {};
 
-  const id = nextPluginId++;
-  plugins.set(id, { id, dir, entry, instance, manifest, esm: isEsm });
+  plugins.set(id, { id, dir, entry, instance, manifest, esm: isEsm, dirPlugin: isDirectory });
   return {
     id,
     // Endstone requires lowercase [a-z0-9_]; strip any npm scope and normalize separators.
@@ -989,7 +1417,60 @@ async function loadPluginAsync(target) {
     loadOrder: endstone.load == null ? null : String(endstone.load).toLowerCase(),
     authors: asArray(manifest.author ?? manifest.authors),
     depend: asArray(endstone.depend),
+    // Endstone registers these with Bedrock, so a usage like "/gm <survival|creative>" becomes a real
+    // enum argument the client completes. A usage must start with "/" + the command name.
+    commands: declarations.records.map((command) => ({
+      name: command.name,
+      description: command.description,
+      usages: command.usages.length ? command.usages : [`/${command.name}`],
+      aliases: command.aliases,
+      permissions: command.permissions,
+    })),
   };
+}
+
+// One plugin load failure becomes a concise, actionable report. The first line says what happened and
+// where; the full stack survives separately as `detail` for the cases where that is not enough.
+function formatLoadError(err, target) {
+  if (!err) return "unknown load failure";
+  const name = err.name || "Error";
+  const raw = (err.message || String(err)).trim();
+  const code = err.code;
+
+  if (code === "ERR_REQUIRE_ASYNC_MODULE") {
+    return `${target}: the plugin uses top-level await, which an embedded Node.js host cannot load. ` +
+           "Move the awaited work into onEnable() instead.";
+  }
+  if (code === "MODULE_NOT_FOUND" || code === "ERR_MODULE_NOT_FOUND") {
+    const missing = /['"]([^'"]+)['"]/.exec(raw);
+    const from = (err.requireStack && err.requireStack[0]) || "";
+    return `${target}: cannot find module${missing ? ` '${missing[1]}'` : ""}` +
+           `${from ? ` required from ${from}` : ""}. Run "npm install" in the plugin folder, or fix the import path.`;
+  }
+  if (code === "ERR_REQUIRE_ESM") {
+    return `${target}: this file is an ES module and must be imported, not required. ` +
+           'Add "type": "module" to the plugin\'s package.json or rename it to .mjs.';
+  }
+
+  // First stack frame that points at a real file rather than into Node itself.
+  let frame = "";
+  if (typeof err.stack === "string") {
+    for (const line of err.stack.split("\n").slice(1)) {
+      const trimmed = line.trim();
+      if (!trimmed || /node:internal|internal\//.test(trimmed)) continue;
+      frame = trimmed;
+      break;
+    }
+  }
+
+  if (name === "SyntaxError") {
+    const at = /\((\S+?):(\d+):(\d+)\)$/.exec(frame) || /^(\S+?):(\d+):(\d+)$/.exec(frame);
+    return `${target}: syntax error${at ? ` in ${at[1]} at line ${at[2]}, column ${at[3]}` : ""}: ${raw}`;
+  }
+  if (frame) {
+    return `${target}: ${raw} at ${frame.replace(/^at\s+/, "")}`;
+  }
+  return `${target}: ${raw}`;
 }
 
 // Loading is asynchronous because ESM imports are. The host starts a load, then pumps the loop and
@@ -1001,7 +1482,11 @@ function beginLoad(target) {
     try {
       pendingLoads.set(token, { ok: true, meta: await loadPluginAsync(target) });
     } catch (err) {
-      pendingLoads.set(token, { ok: false, message: (err && err.stack) || String(err) });
+      pendingLoads.set(token, {
+        ok: false,
+        message: formatLoadError(err, target),
+        detail: (err && err.stack) || String(err),
+      });
     }
   })();
   return token;
@@ -1024,21 +1509,249 @@ function invokePlugin(id, hook) {
   if (!target || typeof target[name] !== 'function') return;
   // A hook may be async. The server does not wait for it, but a rejection is still reported rather
   // than surfacing later as an unhandledRejection with no context.
-  const result = target[name]();
-  if (result && typeof result.then === 'function') {
-    result.catch((err) => {
-      binding.log(4, `${record.manifest.name}.${name}() rejected: ${(err && err.stack) || err}`);
-    });
+  activePluginId = id;
+  try {
+    const result = target[name]();
+    if (result && typeof result.then === 'function') {
+      result.catch((err) => {
+        binding.log(4, `${record.manifest.name}.${name}() rejected: ${(err && err.stack) || err}`);
+      });
+    }
+  } catch (err) {
+    binding.log(4, `${record.manifest.name}.${name}() threw: ${(err && err.stack) || err}`);
+  }
+  finally {
+    activePluginId = null;
   }
 }
 
 function unloadPlugin(id) {
+  // Commands are dropped here but subscriptions are not: unload runs during shutdown, and
+  // binding.unsubscribe would call back into a plugin manager that may already be tearing down.
+  dropCommands(id);
   plugins.delete(id);
 }
 
-binding.setRuntime({ beginLoad, pollLoad, invoke: invokePlugin, unload: unloadPlugin, dispatchEvent });
+// --- plugin reload ------------------------------------------------------------------------------
+// The Node host is not re-creatable, so a reload re-runs the plugin's own module instead: disable
+// the old instance, drop its event subscriptions, purge its files from the require cache, then
+// require the entry again and run onLoad/onEnable. The esn_plugin handle and the plugin's identity
+// in Endstone never change, so the C++ side needs no involvement. Plugins must clear their own
+// timers in onDisable, since only event subscriptions are tracked here.
 
-// Optional standalone entry point; the smoke test uses it, plugin mode does not require it.
+function dropSubscriptions(pluginId) {
+  for (const [subscription, list] of handlers) {
+    let removed = false;
+    for (let i = list.length - 1; i >= 0; --i) {
+      if (list[i].plugin === pluginId) {
+        list.splice(i, 1);
+        removed = true;
+      }
+    }
+    if (removed && list.length === 0) {
+      handlers.delete(subscription);
+      binding.unsubscribe(subscription);
+    }
+  }
+}
+
+function purgeModuleCache(dir) {
+  // Local code under the plugin's directory is what a reload must pick up; node_modules deps are
+  // left cached so shared state is not disturbed.
+  //
+  // Both the given path and its realpath count as roots: a plugin directory is often a symlink into
+  // a checkout, and Node keys the require cache by realpath, so matching only the link path would
+  // purge nothing and the reload would silently re-run the old code.
+  const roots = [nodePath.resolve(dir)];
+  try {
+    const real = nodeFs.realpathSync(dir);
+    if (real !== roots[0]) roots.push(real);
+  } catch { /* the directory may have gone away; the resolved path is enough */ }
+  const under = (file) => roots.some((root) => file.startsWith(root + nodePath.sep));
+  const inNodeModules = (file) =>
+    roots.some((root) => file.startsWith(nodePath.join(root, 'node_modules') + nodePath.sep));
+  // The bootstrap's `require` is the embedder's stripped require with no .cache property; the real
+  // registry is Module._cache.
+  const cache = NodeModule._cache || {};
+  for (const filename of Object.keys(cache)) {
+    if (under(filename) && !inNodeModules(filename)) delete cache[filename];
+  }
+  const pathCache = NodeModule._pathCache || {};
+  for (const key of Object.keys(pathCache)) delete pathCache[key];
+}
+
+/** Runs a lifecycle hook, tagging the plugin for subscription attribution and reporting rejections. */
+function runHook(record, id, name) {
+  const target = record.instance;
+  if (!target || typeof target[name] !== 'function') return;
+  activePluginId = id;
+  try {
+    const result = target[name]();
+    if (result && typeof result.then === 'function') {
+      result.catch((err) => {
+        binding.log(4, `${record.manifest.name}.${name}() rejected: ${(err && err.stack) || err}`);
+      });
+    }
+  } catch (err) {
+    binding.log(4, `${record.manifest.name}.${name}() threw: ${(err && err.stack) || err}`);
+  }
+  finally {
+    activePluginId = null;
+  }
+}
+
+/** Recursively copies a plugin directory, leaving node_modules (and its contents) out. */
+function copyPluginTree(dir, copy) {
+  for (const entry of nodeFs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name === 'node_modules') continue;
+    const src = nodePath.join(dir, entry.name);
+    const dst = nodePath.join(copy, entry.name);
+    if (entry.isDirectory()) {
+      nodeFs.mkdirSync(dst, { recursive: true });
+      copyPluginTree(src, dst);
+    }
+    else if (entry.isFile()) {
+      nodeFs.copyFileSync(src, dst);
+    }
+  }
+}
+
+// The ES module loader keys its cache by realpath and exposes no way to clear it, so an in-place
+// re-require returns the module from the first load. Loading from a uniquely named sibling copy gives
+// the loader a fresh realpath: the plugin's edits are re-read, while node_modules (junctioned through)
+// stays shared and cached, matching the CommonJS reload path.
+function shadowCopyForReload(record) {
+  const root = nodePath.dirname(record.dir);
+  const prefix = `.${nodePath.basename(record.dir)}-reload-`;
+  for (const stale of nodeFs.readdirSync(root)) {
+    if (stale.startsWith(prefix)) {
+      nodeFs.rmSync(nodePath.join(root, stale), { recursive: true, force: true });
+    }
+  }
+  const copy = nodePath.join(root, prefix + nextReloadCopy++);
+  nodeFs.mkdirSync(copy, { recursive: true });
+  copyPluginTree(record.dir, copy);
+  const realNodeModules = nodePath.join(record.dir, 'node_modules');
+  if (nodeFs.existsSync(realNodeModules)) {
+    nodeFs.symlinkSync(realNodeModules, nodePath.join(copy, 'node_modules'),
+      process.platform === 'win32' ? 'junction' : 'dir');
+  }
+  return copy;
+}
+
+/** Reloads every loaded JavaScript plugin, or just the one named. Returns a per-plugin report. */
+function reloadPlugins(filter) {
+  const wanted = [...plugins.values()].filter((record) => {
+    if (!filter) return true;
+    if (typeof filter === 'number') return record.id === filter;
+    return record.manifest.name === filter || nodePath.basename(record.dir) === filter;
+  });
+  const report = [];
+  for (const record of wanted) {
+    try {
+      runHook(record, record.id, 'onDisable');
+      dropSubscriptions(record.id);
+      const wasDeclared = dropCommands(record.id);
+
+      // Pick up edits to package.json, including a changed main entry point.
+      if (nodeFs.existsSync(nodePath.join(record.dir, 'package.json'))) {
+        record.manifest = readManifest(record.dir);
+      }
+      record.entry = nodePath.resolve(record.dir, record.manifest.main || 'index.js');
+      purgeModuleCache(record.dir);
+
+      let loadDir = record.dir;
+      let entry = record.entry;
+      if (record.esm && record.dirPlugin) {
+        try {
+          loadDir = shadowCopyForReload(record);
+          entry = nodePath.resolve(loadDir, record.manifest.main || 'index.js');
+        }
+        catch (copyErr) {
+          binding.log(3,
+            `reload of '${record.manifest.name}': shadow copy failed ` +
+            `(${(copyErr && copyErr.message) || copyErr}); reloading in place - ESM edits may not apply`);
+        }
+      }
+
+      // Collect again, so top-level registrations are re-attached to this plugin.
+      const declarations = { pluginId: record.id, records: [] };
+      const previousCollector = collectingDeclarations;
+      collectingDeclarations = declarations;
+      let loaded;
+      try {
+        const pluginRequire = NodeModule.createRequire(nodePath.join(loadDir, 'package.json'));
+        loaded = pluginRequire(entry);
+      }
+      finally {
+        collectingDeclarations = previousCollector;
+      }
+      record.instance = (loaded && loaded.default) || loaded;
+
+      // A name Endstone never saw cannot reach Bedrock's registry now - the description was built at
+      // load. It still works by interception, so say so rather than failing the reload.
+      for (const declared of declarations.records) {
+        if (!wasDeclared.has(declared.name)) {
+          declared.declared = false;
+          binding.log(3,
+            `'/${declared.name}' is new since the server started, so it will not appear in the ` +
+            `client's command list until the server restarts. It works in the meantime.`);
+        }
+      }
+
+      runHook(record, record.id, 'onLoad');
+      runHook(record, record.id, 'onEnable');
+      report.push({ name: record.manifest.name, ok: true });
+    }
+    catch (err) {
+      binding.log(4, `reload of '${record.manifest.name}' failed: ${(err && err.stack) || err}`);
+      report.push({ name: record.manifest.name, ok: false });
+    }
+  }
+  // Which commands a player is allowed to see can have changed; push the refreshed list so it takes
+  // effect without anyone reconnecting.
+  if (binding.apiAvailable()) binding.updateCommands();
+  return report;
+}
+
+binding.setRuntime({
+  beginLoad, pollLoad, invoke: invokePlugin, unload: unloadPlugin, dispatchEvent,
+  reload: reloadPlugins, command: runDeclaredCommand,
+});
+
+// --- the built-in reload command ----------------------------------------------------------------
+// Registered by the runtime rather than by a plugin, so it works on every server and survives a
+// reload of anything - and it is the first user of the command API. Operator-only: reloading every
+// plugin is not something an ordinary player should be able to do.
+if (binding.apiAvailable()) {
+  // Named jsreload, not reload: registering `reload` would intercept and cancel the server's own
+  // /reload before it ever ran.
+  commands.register('jsreload', (sender, args) => {
+    const report = reloadPlugins(args[0]);
+    const ok = report.filter((r) => r.ok).length;
+    const summary = args[0]
+      ? `Reloaded ${ok}/${report.length} matching plugin(s).`
+      : `Reloaded ${ok}/${report.length} plugin(s).`;
+    binding.log(2, `[reload] ${summary}`);
+    sender.sendMessage(`§a${summary}`);
+    for (const entry of report) {
+      binding.log(2, `[reload] ${entry.name}: ${entry.ok ? 'ok' : 'failed'}`);
+      if (!entry.ok) {
+        sender.sendMessage(`§c${entry.name}: failed to reload`);
+      }
+    }
+  }, {
+    description: 'Reloads JavaScript plugins, or just the one named.',
+    usage: '/jsreload [plugin]',
+    op: true,
+  });
+}
+
+// From here on, a registration that is not part of a plugin's module load really is too late, and the
+// warning's advice - move it to the top level - is something the author can act on.
+bootstrapping = false;
+
+// Optional standalone entry point for a script run without BDS; plugin mode does not require it.
 if (binding.scriptPath && nodeFs.existsSync(binding.scriptPath)) {
   const publicRequire = NodeModule.createRequire(binding.scriptPath);
   globalThis.require = publicRequire;
@@ -1278,9 +1991,14 @@ esn_status ESN_CALL esn_host_load_plugin(esn_host *handle, const char *path, esn
             }
             if (!ok) {
                 std::string message;
+                std::string detail;
                 (void)readString(env, result, "message", message);
+                (void)readString(env, result, "detail", detail);
                 emitf(host, ESN_LOG_ERROR, "failed to load '%s': %s", path,
                       message.empty() ? "<unknown>" : message.c_str());
+                if (!detail.empty()) {
+                    emitf(host, ESN_LOG_ERROR, "  %s", detail.c_str());
+                }
                 return ESN_ERR_SCRIPT_FAILED;
             }
 
@@ -1306,6 +2024,7 @@ esn_status ESN_CALL esn_host_load_plugin(esn_host *handle, const char *path, esn
             (void)readString(env, meta, "loadOrder", plugin->load_order);
             readStringArray(env, meta, "authors", plugin->authors);
             readStringArray(env, meta, "depend", plugin->depend);
+            readCommandDecls(env, meta, *plugin);
             settled = true;
         }
 
@@ -1346,6 +2065,8 @@ esn_status ESN_CALL esn_plugin_get_meta(esn_plugin *handle, esn_plugin_meta *out
     out_meta->author_count = plugin->author_ptrs.size();
     out_meta->depend = plugin->depend_ptrs.empty() ? nullptr : plugin->depend_ptrs.data();
     out_meta->depend_count = plugin->depend_ptrs.size();
+    out_meta->commands = plugin->command_decls.empty() ? nullptr : plugin->command_decls.data();
+    out_meta->command_count = plugin->command_decls.size();
     return ESN_OK;
 }
 
@@ -1395,6 +2116,103 @@ esn_status ESN_CALL esn_plugin_unload(esn_plugin *handle)
     }
     delete plugin;
     return ESN_OK;
+}
+
+esn_status ESN_CALL esn_plugin_command(esn_plugin *handle, const char *name, esn_handle sender,
+                                      const char *const *args, size_t arg_count, int *out_handled)
+{
+    auto *plugin = reinterpret_cast<PluginImpl *>(handle);
+    if (!plugin || !plugin->host || !plugin->host->node) {
+        return ESN_ERR_NOT_INITIALIZED;
+    }
+    if (!name || !out_handled) {
+        return ESN_ERR_BAD_ARGUMENT;
+    }
+    *out_handled = 0;
+
+    try {
+        auto *host = plugin->host;
+        const embed::Scope scope(host->node);
+        napi_env env = host->napi;
+        if (!env) {
+            return ESN_ERR_INTERNAL;
+        }
+
+        napi_value argv[4] = {nullptr, nullptr, nullptr, nullptr};
+        napi_value arg_array = nullptr;
+        if (napi_create_int32(env, plugin->id, &argv[0]) != napi_ok ||
+            napi_create_string_utf8(env, name, NAPI_AUTO_LENGTH, &argv[1]) != napi_ok ||
+            napi_create_double(env, static_cast<double>(sender), &argv[2]) != napi_ok ||
+            napi_create_array_with_length(env, arg_count, &arg_array) != napi_ok) {
+            return ESN_ERR_INTERNAL;
+        }
+        for (size_t i = 0; i < arg_count; ++i) {
+            napi_value element = nullptr;
+            const char *text = args && args[i] ? args[i] : "";
+            if (napi_create_string_utf8(env, text, NAPI_AUTO_LENGTH, &element) != napi_ok ||
+                napi_set_element(env, arg_array, static_cast<std::uint32_t>(i), element) != napi_ok) {
+                return ESN_ERR_INTERNAL;
+            }
+        }
+        argv[3] = arg_array;
+
+        napi_value result = nullptr;
+        if (!callRuntime(host, "command", 4, argv, &result)) {
+            return ESN_ERR_SCRIPT_FAILED;
+        }
+        bool handled = false;
+        if (napi_get_value_bool(env, result, &handled) == napi_ok) {
+            *out_handled = handled ? 1 : 0;
+        }
+        return ESN_OK;
+    }
+    catch (...) {
+        return ESN_ERR_INTERNAL;
+    }
+}
+
+esn_status ESN_CALL esn_plugin_reload(esn_plugin *handle)
+{
+    auto *plugin = reinterpret_cast<PluginImpl *>(handle);
+    if (!plugin || !plugin->host || !plugin->host->node) {
+        return ESN_ERR_NOT_INITIALIZED;
+    }
+
+    try {
+        auto *host = plugin->host;
+        const embed::Scope scope(host->node);
+        napi_env env = host->napi;
+        napi_value arg = nullptr;
+        if (!env || napi_create_int32(env, plugin->id, &arg) != napi_ok) {
+            return ESN_ERR_INTERNAL;
+        }
+        napi_value report = nullptr;
+        if (!callRuntime(host, "reload", 1, &arg, &report)) {
+            return ESN_ERR_SCRIPT_FAILED;
+        }
+        napi_valuetype type = napi_undefined;
+        bool is_array = false;
+        if (napi_typeof(env, report, &type) != napi_ok || napi_is_array(env, report, &is_array) != napi_ok) {
+            return ESN_ERR_INTERNAL;
+        }
+        if (!is_array) {
+            return ESN_ERR_BAD_ARGUMENT;  // unknown plugin id
+        }
+        napi_value first = nullptr;
+        if (napi_get_element(env, report, 0, &first) != napi_ok) {
+            return ESN_ERR_INTERNAL;
+        }
+        napi_value ok_value = nullptr;
+        bool ok = false;
+        if (napi_get_named_property(env, first, "ok", &ok_value) != napi_ok ||
+            napi_get_value_bool(env, ok_value, &ok) != napi_ok) {
+            return ESN_ERR_INTERNAL;
+        }
+        return ok ? ESN_OK : ESN_ERR_SCRIPT_FAILED;
+    }
+    catch (...) {
+        return ESN_ERR_INTERNAL;
+    }
 }
 
 esn_status ESN_CALL esn_host_dispatch_event(esn_host *handle, uint32_t subscription, esn_handle event)

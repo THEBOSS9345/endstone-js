@@ -143,9 +143,6 @@ New-Item -ItemType Directory -Force -Path $nodeData | Out-Null
 
 Copy-Item $pluginDll $plugins -Force
 Copy-Item $hostDll, $libnodeDll $nodeData -Force
-# Only seed the sample entry point if the user has not written their own.
-$mainJs = Join-Path $nodeData "main.js"
-if (-not (Test-Path $mainJs)) { Copy-Item (Join-Path $nodeDir "js\main.js") $mainJs -Force }
 
 Write-Host "  plugins\endstone_nodejs.dll"
 Write-Host "  plugins\nodejs\endstone_node_host.dll"

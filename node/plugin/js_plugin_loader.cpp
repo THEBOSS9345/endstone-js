@@ -17,19 +17,34 @@
 #include <algorithm>
 #include <system_error>
 
+#include <endstone/command/command.h>
+#include <endstone/command/command_sender.h>
+#include <endstone/permissions/permission.h>
+
+#include "api_bridge.h"
+
 namespace fs = std::filesystem;
 
 namespace endstone::node {
 
 namespace {
 
-PluginLoadOrder parseLoadOrder(const char *value)
+/**
+ * JavaScript plugins are always PostWorld.
+ *
+ * A startup order cannot work here: the host plugin is itself enabled at startup, and JS plugins enter
+ * the plugin list before it, so a startup-order JS plugin would be enabled first - before the host is
+ * enabled and before commands are registered. Its events would be refused and its commands lost.
+ */
+PluginLoadOrder parseLoadOrder(const char *value, Server &server, const std::string &name)
 {
     if (value) {
         std::string text{value};
         std::ranges::transform(text, text.begin(), [](unsigned char c) { return std::tolower(c); });
         if (text == "startup") {
-            return PluginLoadOrder::Startup;
+            server.getLogger().warning("JavaScript plugin '{}' asks for \"load\": \"startup\", which is not "
+                                       "supported; loading it after the world instead.",
+                                       name);
         }
     }
     return PluginLoadOrder::PostWorld;
@@ -47,11 +62,60 @@ std::vector<std::string> toVector(const char *const *items, std::size_t count)
     return result;
 }
 
+/**
+ * Turns the declarations the plugin made during load into Endstone commands.
+ *
+ * Endstone parses each usage and registers the result with Bedrock's command registry, which is what
+ * gives the client its listing, autocompletion and argument validation. A usage Endstone cannot parse
+ * is reported by Endstone itself, so nothing is validated twice here.
+ */
+std::vector<Command> toCommands(const esn_command_decl *decls, std::size_t count)
+{
+    std::vector<Command> commands;
+    commands.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto &decl = decls[i];
+        if (!decl.name || !*decl.name) {
+            continue;
+        }
+        commands.emplace_back(decl.name, decl.description ? decl.description : "",
+                              toVector(decl.usages, decl.usage_count), toVector(decl.aliases, decl.alias_count),
+                              toVector(decl.permissions, decl.permission_count));
+    }
+    return commands;
+}
+
 }  // namespace
 
-JsPlugin::JsPlugin(const HostApi &api, esn_plugin *handle, PluginDescription description)
-    : api_(api), handle_(handle), description_(std::move(description))
+JsPlugin::JsPlugin(const HostApi &api, esn_plugin *handle, PluginDescription description, ApiBridge *bridge)
+    : api_(api), handle_(handle), description_(std::move(description)), bridge_(bridge)
 {
+}
+
+bool JsPlugin::onCommand(CommandSender &sender, const Command &command, const std::vector<std::string> &args)
+{
+    if (!handle_ || !api_.plugin_command || !bridge_) {
+        return false;
+    }
+
+    std::vector<const char *> argv;
+    argv.reserve(args.size());
+    for (const auto &arg : args) {
+        argv.push_back(arg.c_str());
+    }
+
+    // The sender handle is scoped to this call, exactly like an event's handles.
+    const auto sender_handle = bridge_->trackSender(sender);
+    int handled = 0;
+    const auto status = api_.plugin_command(handle_, command.getName().c_str(), sender_handle,
+                                           argv.empty() ? nullptr : argv.data(), argv.size(), &handled);
+    bridge_->releaseDispatch();
+
+    if (status != ESN_OK) {
+        getLogger().error("Command '{}' failed: {}", command.getName(), api_.message(status));
+        return true;  // reported already; showing the usage on top would only be noise
+    }
+    return handled != 0;
 }
 
 JsPlugin::~JsPlugin()
@@ -92,8 +156,8 @@ void JsPlugin::onDisable()
     invoke(ESN_HOOK_DISABLE, "onDisable");
 }
 
-JsPluginLoader::JsPluginLoader(Server &server, const HostApi &api, esn_host *host)
-    : PluginLoader(server), api_(api), host_(host)
+JsPluginLoader::JsPluginLoader(Server &server, const HostApi &api, esn_host *host, ApiBridge *bridge)
+    : PluginLoader(server), api_(api), host_(host), bridge_(bridge)
 {
 }
 
@@ -162,7 +226,14 @@ Plugin *JsPluginLoader::loadPlugin(std::string file)
 
     esn_plugin *handle = nullptr;
     if (const auto status = api_.load_plugin(host_, path.string().c_str(), &handle); status != ESN_OK || !handle) {
-        logger.error("Could not load JavaScript plugin from '{}': {}", path.string(), api_.message(status));
+        if (status == ESN_ERR_SCRIPT_FAILED) {
+            // The host already logged the JavaScript error (and the stack) itself.
+            logger.error("Could not load JavaScript plugin from '{}' - see the error above for what went wrong.",
+                         path.string());
+        }
+        else {
+            logger.error("Could not load JavaScript plugin from '{}': {}", path.string(), api_.message(status));
+        }
         return nullptr;
     }
 
@@ -177,13 +248,17 @@ Plugin *JsPluginLoader::loadPlugin(std::string file)
         meta.name ? meta.name : "",
         meta.version ? meta.version : "0.0.0",
         meta.description ? meta.description : "",
-        parseLoadOrder(meta.load_order),
+        parseLoadOrder(meta.load_order, server_, meta.name ? meta.name : "<unnamed>"),
         toVector(meta.authors, meta.author_count),
         {},  // contributors
         meta.website ? meta.website : "",
         {},  // prefix, derived from the name by Endstone
         {},  // provides
         toVector(meta.depend, meta.depend_count),
+        {},  // soft_depend
+        {},  // load_before
+        PermissionDefault::Operator,
+        toCommands(meta.commands, meta.command_count),
     };
 
     if (meta.api_version) {
@@ -201,7 +276,7 @@ Plugin *JsPluginLoader::loadPlugin(std::string file)
                        description.getName());
     }
 
-    return plugins_.emplace_back(std::make_unique<JsPlugin>(api_, handle, std::move(description))).get();
+    return plugins_.emplace_back(std::make_unique<JsPlugin>(api_, handle, std::move(description), bridge_)).get();
 }
 
 }  // namespace endstone::node

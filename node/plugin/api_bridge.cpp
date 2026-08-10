@@ -21,10 +21,24 @@
 #include <endstone/actor/actor.h>
 #include <endstone/actor/mob.h>
 #include <endstone/block/block.h>
+#include <endstone/command/command_sender.h>
+#include <endstone/command/console_command_sender.h>
 #include <endstone/damage/damage_source.h>
+#include <endstone/permissions/permission_level.h>
 #include <endstone/game_mode.h>
+#include <endstone/inventory/inventory.h>
+#include <endstone/inventory/item_stack.h>
+#include <endstone/inventory/player_inventory.h>
+#include <endstone/map/map_view.h>
+#include <endstone/util/socket_address.h>
 #include <endstone/event/actor/actor_damage_event.h>
 #include <endstone/event/actor/actor_death_event.h>
+#include <endstone/event/actor/player_death_event.h>
+#include <endstone/event/server/map_initialize_event.h>
+#include <endstone/event/server/packet_receive_event.h>
+#include <endstone/event/server/packet_send_event.h>
+#include <endstone/event/server/plugin_disable_event.h>
+#include <endstone/event/server/plugin_enable_event.h>
 #include <endstone/event/actor/actor_explode_event.h>
 #include <endstone/event/actor/actor_knockback_event.h>
 #include <endstone/event/actor/actor_remove_event.h>
@@ -42,6 +56,7 @@
 #include <endstone/event/block/block_place_event.h>
 #include <endstone/event/block/leaves_decay_event.h>
 #include <endstone/event/cancellable.h>
+#include <endstone/event/chunk/chunk_event.h>
 #include <endstone/event/player/player_bed_enter_event.h>
 #include <endstone/event/player/player_bed_leave_event.h>
 #include <endstone/event/player/player_chat_event.h>
@@ -78,6 +93,7 @@
 #include <endstone/player.h>
 #include <endstone/plugin/plugin_manager.h>
 #include <endstone/server.h>
+#include <endstone/util/vector.h>
 
 namespace endstone::node {
 
@@ -176,6 +192,8 @@ struct EventTrait {
 #define ESN_BLOCK_EVENT_C(E)  {#E, nullptr, nullptr, nullptr, blockOf<E>, cancellableOf<E>}
 // Block events that also name the player responsible.
 #define ESN_BLOCK_PLAYER_EVENT_C(E) {#E, playerOf<E>, nullptr, nullptr, blockOf<E>, cancellableOf<E>}
+// A player death is an ActorEvent<Mob> that also knows it is a player, so both accessors work.
+#define ESN_PLAYER_MOB_EVENT(E) {#E, playerOf<E>, nullptr, mobOf<E>, nullptr, nullptr}
 #define ESN_PLAIN_EVENT_C(E)  {#E, nullptr, nullptr, nullptr, nullptr, cancellableOf<E>}
 
 const EventTrait kEventTraits[] = {
@@ -205,6 +223,7 @@ const EventTrait kEventTraits[] = {
     ESN_PLAYER_EVENT_C(PlayerSkinChangeEvent),
     // Actor
     ESN_MOB_EVENT(ActorDeathEvent),
+    ESN_PLAYER_MOB_EVENT(PlayerDeathEvent),
     ESN_ACTOR_EVENT(ActorRemoveEvent),
     ESN_MOB_EVENT_C(ActorDamageEvent),
     ESN_ACTOR_EVENT_C(ActorExplodeEvent),
@@ -474,6 +493,24 @@ esn_status ApiBridge::subscribe(const std::string_view event_name, const int pri
     const auto subscription = next_subscription_++;
     subscriptions_.emplace(subscription, std::string{event_name});
 
+    // Endstone refuses to register a listener while the owning plugin is not enabled, and every
+    // JavaScript subscription is registered in this plugin's name. Plugins subscribe during load -
+    // before this plugin is enabled - so those are queued and registered on enable. The subscription
+    // id is minted here either way, so JavaScript never has to know which path was taken.
+    if (plugin_.isEnabled()) {
+        registerWithEndstone(subscription, event_name, priority, ignore_cancelled);
+    }
+    else {
+        pending_.push_back({subscription, std::string{event_name}, priority, ignore_cancelled});
+    }
+
+    *out = subscription;
+    return ESN_OK;
+}
+
+void ApiBridge::registerWithEndstone(const std::uint32_t subscription, const std::string_view event_name,
+                                     const int priority, const bool ignore_cancelled)
+{
     plugin_.getServer().getPluginManager().registerEvent(
         std::string{event_name},
         [this, subscription](Event &event) {
@@ -482,9 +519,18 @@ esn_status ApiBridge::subscribe(const std::string_view event_name, const int pri
             }
         },
         toPriority(priority), plugin_, ignore_cancelled);
+}
 
-    *out = subscription;
-    return ESN_OK;
+void ApiBridge::flushPendingSubscriptions()
+{
+    const auto pending = std::move(pending_);
+    pending_.clear();
+    for (const auto &entry : pending) {
+        // Anything unsubscribed before the flush is skipped rather than registered and dropped.
+        if (subscriptions_.contains(entry.subscription)) {
+            registerWithEndstone(entry.subscription, entry.event_name, entry.priority, entry.ignore_cancelled);
+        }
+    }
 }
 
 esn_status ApiBridge::unsubscribe(const std::uint32_t subscription)
@@ -505,12 +551,52 @@ void ApiBridge::dispatch(const std::uint32_t subscription, Event &event)
 
     event_sink_(subscription, handle);
 
+    releaseScope(scope_start);
+}
+
+void ApiBridge::releaseScope(const esn_handle scope_start)
+{
     for (auto it = handles_.begin(); it != handles_.end();) {
         const bool expired = it->first >= scope_start && !it->second.persistent;
         it = expired ? handles_.erase(it) : std::next(it);
     }
     // Anything the bridge had to own for the duration goes with them.
     owned_blocks_.clear();
+    owned_locations_.clear();
+    owned_vectors_.clear();
+    owned_items_.clear();
+}
+
+Inventory *ApiBridge::resolveInventory(const esn_handle target)
+{
+    if (auto *player_inventory = static_cast<PlayerInventory *>(resolve(target, Kind::PlayerInventory))) {
+        return player_inventory;
+    }
+    return static_cast<Inventory *>(resolve(target, Kind::Inventory));
+}
+
+void ApiBridge::updateCommands()
+{
+    for (auto *player : plugin_.getServer().getOnlinePlayers()) {
+        if (player) {
+            player->updateCommands();
+        }
+    }
+}
+
+esn_handle ApiBridge::trackSender(CommandSender &sender)
+{
+    command_scope_start_ = next_handle_;
+    // A player gets the full Player surface; the console and anything else gets the sender surface.
+    if (auto *player = sender.asPlayer()) {
+        return track(player, Kind::Player);
+    }
+    return track(&sender, Kind::CommandSender);
+}
+
+void ApiBridge::releaseDispatch()
+{
+    releaseScope(command_scope_start_);
 }
 
 void ApiBridge::shutdown()
@@ -548,21 +634,6 @@ esn_status actorGetInt(Actor &actor, const std::string_view name, std::int64_t *
     (void)actor;
     (void)name;
     (void)out;
-    return ESN_ERR_NO_SUCH_MEMBER;
-}
-
-esn_status actorGetDouble(Actor &actor, const std::string_view name, double *out)
-{
-    const auto location = actor.getLocation();
-    if (name == "x") { *out = location.getX(); return ESN_OK; }
-    if (name == "y") { *out = location.getY(); return ESN_OK; }
-    if (name == "z") { *out = location.getZ(); return ESN_OK; }
-    if (name == "pitch") { *out = location.getPitch(); return ESN_OK; }
-    if (name == "yaw") { *out = location.getYaw(); return ESN_OK; }
-    const auto velocity = actor.getVelocity();
-    if (name == "velocityX") { *out = velocity.getX(); return ESN_OK; }
-    if (name == "velocityY") { *out = velocity.getY(); return ESN_OK; }
-    if (name == "velocityZ") { *out = velocity.getZ(); return ESN_OK; }
     return ESN_ERR_NO_SUCH_MEMBER;
 }
 
@@ -605,6 +676,27 @@ esn_status ApiBridge::getBool(const esn_handle target, const std::string_view na
         if (name == "isIndirect") { *out = source->isIndirect(); return ESN_OK; }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
+    if (auto *inventory = resolveInventory(target)) {
+        if (name == "isEmpty") { *out = inventory->isEmpty(); return ESN_OK; }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *map = static_cast<MapView *>(resolve(target, Kind::MapView))) {
+        if (name == "isLocked") { *out = map->isLocked(); return ESN_OK; }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
+        if (name == "hasItemMeta") { *out = stack->hasItemMeta(); return ESN_OK; }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *sender = static_cast<CommandSender *>(resolve(target, Kind::CommandSender))) {
+        // There is no isOp on CommandSender; the console reports Operator or Console here.
+        if (name == "isOp") {
+            *out = sender->getPermissionLevel() != PermissionLevel::Default;
+            return ESN_OK;
+        }
+        if (name == "isConsole") { *out = sender->asConsole() != nullptr; return ESN_OK; }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
     if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
         // Event::isCancellable() is private to EventHandler; the ICancellable cast is the public test.
         if (name == "isCancellable") { *out = eventCancellable(event) != nullptr; return ESN_OK; }
@@ -643,16 +735,73 @@ esn_status ApiBridge::getInt(const esn_handle target, const std::string_view nam
     if (auto *actor = resolveActor(target)) {
         return actorGetInt(*actor, name, out);
     }
-    if (auto *block = static_cast<Block *>(resolve(target, Kind::Block))) {
-        if (name == "x") { *out = block->getX(); return ESN_OK; }
-        if (name == "y") { *out = block->getY(); return ESN_OK; }
-        if (name == "z") { *out = block->getZ(); return ESN_OK; }
+    if (auto *location = static_cast<Location *>(resolve(target, Kind::Location))) {
+        if (name == "blockX") { *out = location->getBlockX(); return ESN_OK; }
+        if (name == "blockY") { *out = location->getBlockY(); return ESN_OK; }
+        if (name == "blockZ") { *out = location->getBlockZ(); return ESN_OK; }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *vector = static_cast<Vector *>(resolve(target, Kind::Vector))) {
+        if (name == "blockX") { *out = vector->getBlockX(); return ESN_OK; }
+        if (name == "blockY") { *out = vector->getBlockY(); return ESN_OK; }
+        if (name == "blockZ") { *out = vector->getBlockZ(); return ESN_OK; }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *level = static_cast<Level *>(resolve(target, Kind::Level))) {
         if (name == "time") { *out = level->getTime(); return ESN_OK; }
         if (name == "actorCount") { *out = static_cast<std::int64_t>(level->getActors().size()); return ESN_OK; }
         if (name == "dimensionCount") { *out = static_cast<std::int64_t>(level->getDimensions().size()); return ESN_OK; }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
+        if (name == "amount") { *out = stack->getAmount(); return ESN_OK; }
+        if (name == "data") { *out = stack->getData(); return ESN_OK; }
+        if (name == "maxStackSize") { *out = stack->getMaxStackSize(); return ESN_OK; }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *inventory = resolveInventory(target)) {
+        if (name == "size") { *out = inventory->getSize(); return ESN_OK; }
+        if (name == "maxStackSize") { *out = inventory->getMaxStackSize(); return ESN_OK; }
+        if (name == "firstEmpty") { *out = inventory->firstEmpty(); return ESN_OK; }
+        if (name == "heldItemSlot") {
+            if (auto *player_inventory = static_cast<PlayerInventory *>(resolve(target, Kind::PlayerInventory))) {
+                *out = player_inventory->getHeldItemSlot();
+                return ESN_OK;
+            }
+            return ESN_ERR_NO_SUCH_MEMBER;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *map = static_cast<MapView *>(resolve(target, Kind::MapView))) {
+        if (name == "id") { *out = map->getId(); return ESN_OK; }
+        if (name == "centerX") { *out = map->getCenterX(); return ESN_OK; }
+        if (name == "centerZ") { *out = map->getCenterZ(); return ESN_OK; }
+        if (name == "scale") { *out = static_cast<std::int64_t>(map->getScale()); return ESN_OK; }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
+        if (name == "packetId" || name == "subClientId") {
+            const auto event_name = event->getEventName();
+            if (event_name == "PacketReceiveEvent") {
+                auto *packet = static_cast<PacketReceiveEvent *>(event);
+                *out = name == "packetId" ? packet->getPacketId() : packet->getSubClientId();
+                return ESN_OK;
+            }
+            if (event_name == "PacketSendEvent") {
+                auto *packet = static_cast<PacketSendEvent *>(event);
+                *out = name == "packetId" ? packet->getPacketId() : packet->getSubClientId();
+                return ESN_OK;
+            }
+            return ESN_ERR_NO_SUCH_MEMBER;
+        }
+        if (name == "chunkX" || name == "chunkZ") {
+            if (event->getEventName() == "ChunkLoadEvent" || event->getEventName() == "ChunkUnloadEvent") {
+                auto &chunk = static_cast<ChunkEvent *>(event)->getChunk();
+                *out = name == "chunkX" ? chunk.getX() : chunk.getZ();
+                return ESN_OK;
+            }
+            return ESN_ERR_NO_SUCH_MEMBER;
+        }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     return find(target) ? ESN_ERR_NO_SUCH_MEMBER : ESN_ERR_STALE_HANDLE;
@@ -667,10 +816,21 @@ esn_status ApiBridge::getDouble(const esn_handle target, const std::string_view 
         if (name == "expProgress") { *out = player->getExpProgress(); return ESN_OK; }
         if (name == "flySpeed") { *out = player->getFlySpeed(); return ESN_OK; }
         if (name == "walkSpeed") { *out = player->getWalkSpeed(); return ESN_OK; }
-        return actorGetDouble(*player, name, out);
+        return ESN_ERR_NO_SUCH_MEMBER;
     }
-    if (auto *actor = resolveActor(target)) {
-        return actorGetDouble(*actor, name, out);
+    if (auto *location = static_cast<Location *>(resolve(target, Kind::Location))) {
+        if (name == "x") { *out = location->getX(); return ESN_OK; }
+        if (name == "y") { *out = location->getY(); return ESN_OK; }
+        if (name == "z") { *out = location->getZ(); return ESN_OK; }
+        if (name == "pitch") { *out = location->getPitch(); return ESN_OK; }
+        if (name == "yaw") { *out = location->getYaw(); return ESN_OK; }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *vector = static_cast<Vector *>(resolve(target, Kind::Vector))) {
+        if (name == "x") { *out = vector->getX(); return ESN_OK; }
+        if (name == "y") { *out = vector->getY(); return ESN_OK; }
+        if (name == "z") { *out = vector->getZ(); return ESN_OK; }
+        return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
         if (name == "damage" && event->getEventName() == "ActorDamageEvent") {
@@ -713,8 +873,30 @@ esn_status ApiBridge::getString(const esn_handle target, const std::string_view 
         if (name == "dimension") { return emitString(block->getDimension().getName(), buf, cap, needed); }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
+    if (auto *location = static_cast<Location *>(resolve(target, Kind::Location))) {
+        if (name == "dimension") { return emitString(location->getDimension().getName(), buf, cap, needed); }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
     if (auto *level = static_cast<Level *>(resolve(target, Kind::Level))) {
         if (name == "name") { return emitString(level->getName(), buf, cap, needed); }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *sender = static_cast<CommandSender *>(resolve(target, Kind::CommandSender))) {
+        if (name == "name") { return emitString(sender->getName(), buf, cap, needed); }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
+        if (name == "type") { return emitString(std::string{stack->getType().getId()}, buf, cap, needed); }
+        if (name == "translationKey") { return emitString(stack->getTranslationKey(), buf, cap, needed); }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *plugin = static_cast<Plugin *>(resolve(target, Kind::Plugin))) {
+        const auto &description = plugin->getDescription();
+        if (name == "name") { return emitString(description.getName(), buf, cap, needed); }
+        if (name == "version") { return emitString(description.getVersion(), buf, cap, needed); }
+        if (name == "fullName") { return emitString(description.getFullName(), buf, cap, needed); }
+        if (name == "description") { return emitString(description.getDescription(), buf, cap, needed); }
+        if (name == "website") { return emitString(description.getWebsite(), buf, cap, needed); }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *source = static_cast<DamageSource *>(resolve(target, Kind::DamageSource))) {
@@ -750,6 +932,37 @@ esn_status ApiBridge::getString(const esn_handle target, const std::string_view 
                 auto *command = static_cast<PlayerCommandEvent *>(event);
                 return emitString(command->getCommand(), buf, cap, needed);
             }
+            if (event->getEventName() == "ServerCommandEvent") {
+                auto *command = static_cast<ServerCommandEvent *>(event);
+                return emitString(command->getCommand(), buf, cap, needed);
+            }
+            return ESN_ERR_NO_SUCH_MEMBER;
+        }
+        if (name == "deathMessage" && event->getEventName() == "PlayerDeathEvent") {
+            const auto message = static_cast<PlayerDeathEvent *>(event)->getDeathMessage();
+            return emitString(message ? messageToString(*message) : std::string{}, buf, cap, needed);
+        }
+        // The payload is raw packet bytes, so it can contain NUL and is not text. It crosses as a
+        // sized string and JavaScript should treat it as binary.
+        if (name == "payload") {
+            if (event->getEventName() == "PacketReceiveEvent") {
+                const auto payload = static_cast<PacketReceiveEvent *>(event)->getPayload();
+                return emitString(std::string{payload}, buf, cap, needed);
+            }
+            if (event->getEventName() == "PacketSendEvent") {
+                const auto payload = static_cast<PacketSendEvent *>(event)->getPayload();
+                return emitString(std::string{payload}, buf, cap, needed);
+            }
+            return ESN_ERR_NO_SUCH_MEMBER;
+        }
+        if (name == "address") {
+            if (event->getEventName() == "PacketReceiveEvent") {
+                return emitString(static_cast<PacketReceiveEvent *>(event)->getAddress().getHostname(), buf, cap,
+                                  needed);
+            }
+            if (event->getEventName() == "PacketSendEvent") {
+                return emitString(static_cast<PacketSendEvent *>(event)->getAddress().getHostname(), buf, cap, needed);
+            }
             return ESN_ERR_NO_SUCH_MEMBER;
         }
         return ESN_ERR_NO_SUCH_MEMBER;
@@ -768,6 +981,16 @@ esn_status ApiBridge::getHandle(const esn_handle target, const std::string_view 
                 *out = track(player, Kind::Player);
                 return ESN_OK;
             }
+            // Packet events carry a Player* that is genuinely null before login, so they cannot go in
+            // the trait table - it dereferences. A null player reads as null, not as a missing member.
+            const auto event_name = event->getEventName();
+            if (event_name == "PacketReceiveEvent" || event_name == "PacketSendEvent") {
+                auto *player = event_name == "PacketReceiveEvent"
+                                   ? static_cast<PacketReceiveEvent *>(event)->getPlayer()
+                                   : static_cast<PacketSendEvent *>(event)->getPlayer();
+                *out = player ? track(player, Kind::Player) : 0;
+                return ESN_OK;
+            }
             return ESN_ERR_NO_SUCH_MEMBER;
         }
         if (name == "actor") {
@@ -779,8 +1002,18 @@ esn_status ApiBridge::getHandle(const esn_handle target, const std::string_view 
             return ESN_ERR_NO_SUCH_MEMBER;
         }
         if (name == "damageSource") {
-            if (event->getEventName() == "ActorDamageEvent") {
+            const auto event_name = event->getEventName();
+            if (event_name == "ActorDamageEvent") {
                 *out = track(&static_cast<ActorDamageEvent *>(event)->getDamageSource(), Kind::DamageSource);
+                return ESN_OK;
+            }
+            // What killed them, which is the useful half of a death event.
+            if (event_name == "ActorDeathEvent") {
+                *out = track(&static_cast<ActorDeathEvent *>(event)->getDamageSource(), Kind::DamageSource);
+                return ESN_OK;
+            }
+            if (event_name == "PlayerDeathEvent") {
+                *out = track(&static_cast<PlayerDeathEvent *>(event)->getDamageSource(), Kind::DamageSource);
                 return ESN_OK;
             }
             return ESN_ERR_NO_SUCH_MEMBER;
@@ -792,6 +1025,30 @@ esn_status ApiBridge::getHandle(const esn_handle target, const std::string_view 
             }
             return ESN_ERR_NO_SUCH_MEMBER;
         }
+        if (name == "item") {
+            if (event->getEventName() == "PlayerDropItemEvent") {
+                auto &drop = const_cast<ItemStack &>(static_cast<PlayerDropItemEvent *>(event)->getItem());
+                *out = track(&drop, Kind::ItemStack);
+                return ESN_OK;
+            }
+            return ESN_ERR_NO_SUCH_MEMBER;
+        }
+        if (name == "plugin") {
+            const auto event_name = event->getEventName();
+            if (event_name == "PluginEnableEvent") {
+                *out = track(&static_cast<PluginEnableEvent *>(event)->getPlugin(), Kind::Plugin);
+                return ESN_OK;
+            }
+            if (event_name == "PluginDisableEvent") {
+                *out = track(&static_cast<PluginDisableEvent *>(event)->getPlugin(), Kind::Plugin);
+                return ESN_OK;
+            }
+            return ESN_ERR_NO_SUCH_MEMBER;
+        }
+        if (name == "map" && event->getEventName() == "MapInitializeEvent") {
+            *out = track(&static_cast<MapInitializeEvent *>(event)->getMap(), Kind::MapView);
+            return ESN_OK;
+        }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *source = static_cast<DamageSource *>(resolve(target, Kind::DamageSource))) {
@@ -802,10 +1059,92 @@ esn_status ApiBridge::getHandle(const esn_handle target, const std::string_view 
     }
     if (auto *player = static_cast<Player *>(resolve(target, Kind::Player))) {
         if (name == "level") { *out = track(&player->getLevel(), Kind::Level); return ESN_OK; }
+        if (name == "inventory") {
+            *out = track(&player->getInventory(), Kind::PlayerInventory);
+            return ESN_OK;
+        }
+        if (name == "enderChest") {
+            *out = track(&player->getEnderChest(), Kind::Inventory);
+            return ESN_OK;
+        }
+        if (name == "location") {
+            owned_locations_.push_back(player->getLocation());
+            *out = track(&owned_locations_.back(), Kind::Location);
+            return ESN_OK;
+        }
+        if (name == "rotation") {
+            owned_locations_.push_back(player->getLocation());
+            *out = track(&owned_locations_.back(), Kind::Location);
+            return ESN_OK;
+        }
+        if (name == "velocity") {
+            owned_vectors_.push_back(player->getVelocity());
+            *out = track(&owned_vectors_.back(), Kind::Vector);
+            return ESN_OK;
+        }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *actor = resolveActor(target)) {
         if (name == "level") { *out = track(&actor->getLevel(), Kind::Level); return ESN_OK; }
+        if (name == "location") {
+            owned_locations_.push_back(actor->getLocation());
+            *out = track(&owned_locations_.back(), Kind::Location);
+            return ESN_OK;
+        }
+        if (name == "rotation") {
+            owned_locations_.push_back(actor->getLocation());
+            *out = track(&owned_locations_.back(), Kind::Location);
+            return ESN_OK;
+        }
+        if (name == "velocity") {
+            owned_vectors_.push_back(actor->getVelocity());
+            *out = track(&owned_vectors_.back(), Kind::Vector);
+            return ESN_OK;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *block = static_cast<Block *>(resolve(target, Kind::Block))) {
+        if (name == "location") {
+            owned_locations_.push_back(block->getLocation());
+            *out = track(&owned_locations_.back(), Kind::Location);
+            return ESN_OK;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *inventory = resolveInventory(target)) {
+        // The equipment slots, which only a player inventory has.
+        auto *player_inventory = static_cast<PlayerInventory *>(resolve(target, Kind::PlayerInventory));
+        if (player_inventory) {
+            const auto equipment = [&](std::optional<endstone::ItemStack> item) -> esn_status {
+                if (!item) {
+                    *out = 0;  // an empty slot reads as null
+                    return ESN_OK;
+                }
+                owned_items_.push_back(std::make_unique<endstone::ItemStack>(std::move(*item)));
+                *out = track(owned_items_.back().get(), Kind::ItemStack);
+                return ESN_OK;
+            };
+            if (name == "helmet") { return equipment(player_inventory->getHelmet()); }
+            if (name == "chestplate") { return equipment(player_inventory->getChestplate()); }
+            if (name == "leggings") { return equipment(player_inventory->getLeggings()); }
+            if (name == "boots") { return equipment(player_inventory->getBoots()); }
+            if (name == "itemInMainHand") { return equipment(player_inventory->getItemInMainHand()); }
+            if (name == "itemInOffHand") { return equipment(player_inventory->getItemInOffHand()); }
+        }
+        (void)inventory;
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *location = static_cast<Location *>(resolve(target, Kind::Location))) {
+        if (name == "block") {
+            auto block = location->getBlock();
+            if (!block) {
+                return ESN_ERR_INTERNAL;
+            }
+            auto *raw = block.get();
+            owned_blocks_.push_back(std::move(block));
+            *out = track(raw, Kind::Block);
+            return ESN_OK;
+        }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     return find(target) ? ESN_ERR_NO_SUCH_MEMBER : ESN_ERR_STALE_HANDLE;
@@ -840,6 +1179,17 @@ esn_status ApiBridge::setBool(const esn_handle target, const std::string_view na
 
 esn_status ApiBridge::setInt(const esn_handle target, const std::string_view name, const std::int64_t value)
 {
+    if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
+        // Writes reach the world only for a stack the server handed out live, such as the one on
+        // PlayerDropItemEvent. A stack read out of an inventory is a copy - change the inventory.
+        if (name == "amount") { stack->setAmount(static_cast<int>(value)); return ESN_OK; }
+        if (name == "data") { stack->setData(static_cast<int>(value)); return ESN_OK; }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *player_inventory = static_cast<PlayerInventory *>(resolve(target, Kind::PlayerInventory))) {
+        if (name == "heldItemSlot") { player_inventory->setHeldItemSlot(static_cast<int>(value)); return ESN_OK; }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
     if (auto *player = static_cast<Player *>(resolve(target, Kind::Player))) {
         if (name == "health") { player->setHealth(static_cast<int>(value)); return ESN_OK; }
         if (name == "maxHealth") { player->setMaxHealth(static_cast<int>(value)); return ESN_OK; }
@@ -880,6 +1230,10 @@ esn_status ApiBridge::setDouble(const esn_handle target, const std::string_view 
 
 esn_status ApiBridge::setString(const esn_handle target, const std::string_view name, const std::string_view value)
 {
+    if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
+        if (name == "type") { stack->setType(std::string{value}); return ESN_OK; }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
     if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
         if (name == "joinMessage") {
             if (event->getEventName() == "PlayerJoinEvent") {
@@ -909,6 +1263,28 @@ esn_status ApiBridge::setString(const esn_handle target, const std::string_view 
             if (event->getEventName() == "PlayerCommandEvent") {
                 auto *command = static_cast<PlayerCommandEvent *>(event);
                 command->setCommand(std::string{value});
+                return ESN_OK;
+            }
+            if (event->getEventName() == "ServerCommandEvent") {
+                auto *command = static_cast<ServerCommandEvent *>(event);
+                command->setCommand(std::string{value});
+                return ESN_OK;
+            }
+            return ESN_ERR_NO_SUCH_MEMBER;
+        }
+        if (name == "deathMessage" && event->getEventName() == "PlayerDeathEvent") {
+            // An empty string suppresses the announcement, matching join and quit messages.
+            auto *death = static_cast<PlayerDeathEvent *>(event);
+            death->setDeathMessage(value.empty() ? std::optional<Message>{} : Message{std::string{value}});
+            return ESN_OK;
+        }
+        if (name == "payload") {
+            if (event->getEventName() == "PacketReceiveEvent") {
+                static_cast<PacketReceiveEvent *>(event)->setPayload(value);
+                return ESN_OK;
+            }
+            if (event->getEventName() == "PacketSendEvent") {
+                static_cast<PacketSendEvent *>(event)->setPayload(value);
                 return ESN_OK;
             }
             return ESN_ERR_NO_SUCH_MEMBER;
@@ -966,9 +1342,19 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
             player->transfer(std::string{text}, static_cast<int>(number(0, 19132)));
             return ESN_OK;
         }
+        // teleport(location, { rotation, dimension }). Rotation and dimension default to the
+        // player's current ones. Only a teleport can turn a player's view - setRotation moves the
+        // server-side rotation but the client owns its camera.
         if (name == "teleport") {
             const auto current = player->getLocation();
-            player->teleport(Location{player->getDimension(), static_cast<float>(number(0)),
+            auto *dimension = &player->getDimension();
+            if (const auto requested = str(0); !requested.empty()) {
+                dimension = player->getLevel().getDimension(requested);
+                if (!dimension) {
+                    return ESN_ERR_BAD_ARGUMENT;
+                }
+            }
+            player->teleport(Location{*dimension, static_cast<float>(number(0)),
                                       static_cast<float>(number(1)), static_cast<float>(number(2)),
                                       static_cast<float>(number(4, current.getPitch())),
                                       static_cast<float>(number(3, current.getYaw()))});
@@ -994,11 +1380,82 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
                                   string_count > 1 ? std::optional<std::string>{str(1)} : std::nullopt);
             return ESN_OK;
         }
-        // setRotation(yaw, pitch), matching Endstone. For a player this only moves the server-side
-        // rotation; the client owns its own camera, so turning the view needs a teleport (below).
+        // Backend for the `rotation` property: setRotation(yaw, pitch), matching Endstone. For a
+        // player this only moves the server-side rotation; the client owns its own camera.
         if (name == "setRotation") {
             player->setRotation(static_cast<float>(number(0)), static_cast<float>(number(1)));
             return ESN_OK;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *sender = static_cast<CommandSender *>(resolve(target, Kind::CommandSender))) {
+        if (name == "sendMessage") { sender->sendMessage(Message{std::string{text}}); return ESN_OK; }
+        if (name == "sendErrorMessage") { sender->sendErrorMessage(Message{std::string{text}}); return ESN_OK; }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *inventory = resolveInventory(target)) {
+        // An item is described by a type plus optional amount and data, so nothing has to construct an
+        // ItemStack from JavaScript. An empty type means "no item", which clears the slot.
+        const auto described = [&](const std::size_t number_base) -> std::optional<endstone::ItemStack> {
+            if (text.empty()) {
+                return std::nullopt;
+            }
+            return endstone::ItemStack{text, static_cast<int>(number(number_base, 1)),
+                                      static_cast<int>(number(number_base + 1, 0))};
+        };
+
+        if (name == "getItem" && out_handle) {
+            auto item = inventory->getItem(static_cast<int>(number(0)));
+            if (!item) {
+                *out_handle = 0;
+                return ESN_OK;
+            }
+            owned_items_.push_back(std::make_unique<endstone::ItemStack>(std::move(*item)));
+            *out_handle = track(owned_items_.back().get(), Kind::ItemStack);
+            return ESN_OK;
+        }
+        // setItem(slot, item): numbers are slot, then the item's amount and data.
+        if (name == "setItem") {
+            inventory->setItem(static_cast<int>(number(0)), described(1));
+            return ESN_OK;
+        }
+        if (name == "addItem") {
+            if (auto item = described(0)) {
+                (void)inventory->addItem({*item});
+            }
+            return ESN_OK;
+        }
+        if (name == "removeItem") {
+            if (auto item = described(0)) {
+                (void)inventory->removeItem({*item});
+            }
+            return ESN_OK;
+        }
+        if (name == "remove") { inventory->remove(std::string{text}); return ESN_OK; }
+        if (name == "clear") {
+            // clear() empties everything; clear(slot) empties one slot.
+            if (number_count > 0) {
+                inventory->clear(static_cast<int>(number(0)));
+            }
+            else {
+                inventory->clear();
+            }
+            return ESN_OK;
+        }
+        if (name == "setHeldItemSlot") {
+            if (auto *player_inventory = static_cast<PlayerInventory *>(resolve(target, Kind::PlayerInventory))) {
+                player_inventory->setHeldItemSlot(static_cast<int>(number(0)));
+                return ESN_OK;
+            }
+            return ESN_ERR_NO_SUCH_MEMBER;
+        }
+        if (auto *player_inventory = static_cast<PlayerInventory *>(resolve(target, Kind::PlayerInventory))) {
+            if (name == "setHelmet") { player_inventory->setHelmet(described(0)); return ESN_OK; }
+            if (name == "setChestplate") { player_inventory->setChestplate(described(0)); return ESN_OK; }
+            if (name == "setLeggings") { player_inventory->setLeggings(described(0)); return ESN_OK; }
+            if (name == "setBoots") { player_inventory->setBoots(described(0)); return ESN_OK; }
+            if (name == "setItemInMainHand") { player_inventory->setItemInMainHand(described(0)); return ESN_OK; }
+            if (name == "setItemInOffHand") { player_inventory->setItemInOffHand(described(0)); return ESN_OK; }
         }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
@@ -1011,7 +1468,14 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
         }
         if (name == "teleport") {
             const auto current = actor->getLocation();
-            actor->teleport(Location{actor->getDimension(), static_cast<float>(number(0)),
+            auto *dimension = &actor->getDimension();
+            if (const auto requested = str(0); !requested.empty()) {
+                dimension = actor->getLevel().getDimension(requested);
+                if (!dimension) {
+                    return ESN_ERR_BAD_ARGUMENT;
+                }
+            }
+            actor->teleport(Location{*dimension, static_cast<float>(number(0)),
                                      static_cast<float>(number(1)), static_cast<float>(number(2)),
                                      static_cast<float>(number(4, current.getPitch())),
                                      static_cast<float>(number(3, current.getYaw()))});
@@ -1067,6 +1531,30 @@ esn_status ApiBridge::typeName(const esn_handle target, char *buf, const std::si
     }
     if (resolve(target, Kind::DamageSource)) {
         return emitString("DamageSource", buf, cap, needed);
+    }
+    if (resolve(target, Kind::ItemStack)) {
+        return emitString("ItemStack", buf, cap, needed);
+    }
+    if (resolve(target, Kind::Location)) {
+        return emitString("Location", buf, cap, needed);
+    }
+    if (resolve(target, Kind::Vector)) {
+        return emitString("Vector", buf, cap, needed);
+    }
+    if (resolve(target, Kind::CommandSender)) {
+        return emitString("CommandSender", buf, cap, needed);
+    }
+    if (resolve(target, Kind::PlayerInventory)) {
+        return emitString("PlayerInventory", buf, cap, needed);
+    }
+    if (resolve(target, Kind::Inventory)) {
+        return emitString("Inventory", buf, cap, needed);
+    }
+    if (resolve(target, Kind::Plugin)) {
+        return emitString("Plugin", buf, cap, needed);
+    }
+    if (resolve(target, Kind::MapView)) {
+        return emitString("MapView", buf, cap, needed);
     }
     if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
         return emitString(event->getEventName(), buf, cap, needed);
@@ -1212,6 +1700,14 @@ void ESN_CALL tBroadcastMessage(void *c, const char *m, std::size_t len)
     catch (...) {
     }
 }
+void ESN_CALL tUpdateCommands(void *c)
+{
+    try {
+        bridge(c).updateCommands();
+    }
+    catch (...) {
+    }
+}
 void ESN_CALL tLog(void *c, int level, const char *m, std::size_t len)
 {
     try {
@@ -1248,6 +1744,7 @@ void ApiBridge::fill(esn_endstone_api &api)
     api.accessors.type_name = tTypeName;
     api.subscribe = tSubscribe;
     api.unsubscribe = tUnsubscribe;
+    api.update_commands = tUpdateCommands;
 }
 
 }  // namespace endstone::node

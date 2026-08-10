@@ -40,6 +40,8 @@ endstone plugin (clang/libc++)  : [libm.so.6] [libc.so.6]          <- no libstdc
 
 exported surface of the host: esn_abi_version esn_host_create esn_host_destroy
                               esn_host_pump esn_host_start esn_status_message
+                              esn_host_load_plugin esn_plugin_get_meta esn_plugin_invoke
+                              esn_plugin_unload esn_plugin_reload esn_host_dispatch_event
 mangled C++ symbols on it   : (none)
 ```
 
@@ -62,9 +64,12 @@ server.broadcastMessage("hello from a JavaScript plugin");
 |---|---|
 | `server` | `name`, `version`, `minecraftVersion`, `protocolVersion`, `onlinePlayerCount`, `isAvailable`, `level`, `logger`, `broadcastMessage(text)` |
 | `Level` | `name`, `time` (writable), `actorCount`, `dimensionCount` |
-| `Actor` | `type`, `dimension`, `x`/`y`/`z`/`pitch`/`yaw`, `isOnGround`, `isInWater`, `isInLava`, `isDead`, `isValid`, `level`, `nameTag`, `scoreTag`, `isNameTagVisible`, `health`, `maxHealth`, `sendMessage`, `teleport(x,y,z)`, `remove()` |
+| `Actor` | `type`, `dimension`, `location` (`x`, `y`, `z`, `pitch`, `yaw`, `blockX`/`blockY`/`blockZ`, `dimension`), `rotation` (writable `{ yaw, pitch }`), `velocity` (`x`, `y`, `z`), `isOnGround`, `isInWater`, `isInLava`, `isDead`, `isValid`, `level`, `nameTag`, `scoreTag`, `isNameTagVisible`, `health`, `maxHealth`, `sendMessage`, `teleport(location)`, `remove()` |
 | `Player` | everything on `Actor`, plus `name`, `uniqueId`, `xuid`, `locale`, `deviceOs`, `deviceId`, `gameVersion`, `address`, `ping`, `isOp`, `isSneaking`, `isSprinting`, `isFlying`, `isGliding`, `allowFlight`, `expLevel`, `expProgress`, `totalExp`, `flySpeed`, `walkSpeed`, `kick`, `performCommand`, `sendPopup`, `sendTip`, `sendTitle`, `resetTitle`, `transfer`, `giveExp`, `playSound`, `stopSound`, `updateCommands` |
-| `Block` | `type` (writable), `dimension`, `x`/`y`/`z`, `getRelative(dx,dy,dz)` |
+| `Block` | `type` (writable), `dimension`, `location` (`x`, `y`, `z`, ...), `getRelative(offset)` |
+| `Vector3` | `{ x, y, z }`; `location` and `velocity` return these handle-backed objects (a location also carries `pitch`, `yaw`, `blockX`/`blockY`/`blockZ`, `dimension`) |
+| `Vector2` | `{ x, z }`, for horizontal-only positions |
+| `Rotation` | `{ yaw, pitch }`, read and written through the `rotation` field |
 | `logger` | `trace`, `debug`, `info`, `warning`, `error`, `critical` |
 
 Writable members are plain assignment: `player.health = 20`, `level.time = 6000`, `block.type = "minecraft:stone"`.
@@ -191,8 +196,7 @@ from it reaches only `node:` builtins. Inside a plugin, `import()` works normall
 `process.exit()`, `process.abort()` and `process.reallyExit()` are neutralized: a plugin must not be
 able to stop the Minecraft server.
 
-Working examples live in [`examples/`](examples): `hello` (CJS), `esm-hello` (ESM + async hook),
-`standalone.js` (single file), `discord-bot` (a real npm package).
+Working examples live in [`examples/`](examples): `hello` (ESM).
 
 ## Threading
 
@@ -290,21 +294,11 @@ cmake --build build/node-plugin
 The plugin logs a warning and stays inert if the host is missing, so a server without libnode still
 boots normally.
 
-## Testing without BDS
-
-`endstone_node_host_smoke` is a **C** program that drives the host directly - if it links, the
-boundary really needs no C++ runtime agreement:
-
-```
-./endstone_node_host_smoke node/js/main.js
-```
-
-It pumps 60 times at 50 ms to imitate the tick loop.
-
 ## Known limitations
 
 - `process.execPath` is the BDS executable, so packages that re-spawn it will not work.
 - Node's per-process initialization is not repeatable: exactly one host per process, and
-  `/reload` will not re-create it.
+  `/reload` will not re-create it. A JS plugin reloads in place with `!reload [name]` in chat, which
+  re-runs its module without touching the host.
 - `console.trace` is mapped to a plain debug line rather than printing a stack.
 - `worker_threads` is untested.

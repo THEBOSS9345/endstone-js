@@ -128,14 +128,17 @@ console.log(`node=${process.versions.node} v8=${process.versions.v8} uv=${proces
 
 class NodeJsPlugin : public endstone::Plugin {
 public:
+    /**
+     * Starts Node and loads the JavaScript plugins.
+     *
+     * This has to happen in onLoad rather than onEnable: EndstoneServer::enablePlugins() calls
+     * setPluginCommands() before it enables anything, and that is the only pass that registers a
+     * plugin's declared commands with Bedrock. A JsPlugin created later is simply not in the list
+     * when it runs, so its commands never reach the client.
+     */
     void onLoad() override
     {
         getLogger().info("onLoad: thread={} primary={}", currentThreadId(), getServer().isPrimaryThread());
-    }
-
-    void onEnable() override
-    {
-        getLogger().info("onEnable: thread={} primary={}", currentThreadId(), getServer().isPrimaryThread());
 
         const auto data_folder = getDataFolder();
         std::error_code ec;
@@ -154,15 +157,28 @@ public:
         if (!startNode(script)) {
             return;
         }
+        loadJsPlugins(data_folder.parent_path());
+    }
+
+    void onEnable() override
+    {
+        getLogger().info("onEnable: thread={} primary={}", currentThreadId(), getServer().isPrimaryThread());
+        if (!host_) {
+            return;
+        }
+
+        // Subscriptions made while the JavaScript plugins were loading could not be registered yet -
+        // Endstone rejects listeners for a plugin that is not enabled. Now it is.
+        if (bridge_) {
+            bridge_->flushPendingSubscriptions();
+        }
 
         // The pump. Period 1 = once per BDS tick, on the server thread, which is the same thread
-        // that just initialized Node.
+        // that initialized Node.
         task_ = getServer().getScheduler().runTaskTimer(*this, [this]() { pump(); }, 1, 1);
         if (!task_) {
             getLogger().error("failed to schedule the Node event loop pump");
         }
-
-        loadJsPlugins(data_folder.parent_path());
     }
 
     void onDisable() override
@@ -254,6 +270,8 @@ private:
                               resolve(module_, "esn_plugin_get_meta", api_.plugin_get_meta) &&
                               resolve(module_, "esn_plugin_invoke", api_.plugin_invoke) &&
                               resolve(module_, "esn_plugin_unload", api_.plugin_unload) &&
+                              resolve(module_, "esn_plugin_reload", api_.plugin_reload) &&
+                              resolve(module_, "esn_plugin_command", api_.plugin_command) &&
                               resolve(module_, "esn_host_dispatch_event", api_.dispatch_event);
         if (!resolved) {
             getLogger().error("Node host is missing expected entry points");
@@ -317,7 +335,7 @@ private:
     void loadJsPlugins(const fs::path &plugin_dir)
     {
         auto &manager = getServer().getPluginManager();
-        auto loader = std::make_unique<JsPluginLoader>(getServer(), api_, host_);
+        auto loader = std::make_unique<JsPluginLoader>(getServer(), api_, host_, bridge_.get());
         loader_ = loader.get();
         manager.registerLoader(std::move(loader));
 
@@ -327,10 +345,11 @@ private:
             return;
         }
 
+        // Loaded, not enabled: Endstone's own enablePlugins() pass enables them, which keeps them in
+        // step with Python and C++ plugins and means their commands are registered first.
         int loaded = 0;
         for (const auto &candidate : candidates) {
-            if (auto *plugin = manager.loadPlugin(candidate)) {
-                manager.enablePlugin(*plugin);
+            if (manager.loadPlugin(candidate)) {
                 ++loaded;
             }
         }
@@ -371,6 +390,11 @@ private:
 
 ENDSTONE_PLUGIN("nodejs", "0.1.0", NodeJsPlugin)
 {
-    description = "Node.js embedding spike for Endstone.";
-    website = "https://endstone.dev";
+    description = "Runs JavaScript and TypeScript plugins inside the server.";
+    website = "https://github.com/THEBOSS9345/endstone-js";
+    // Startup, so this plugin is enabled before the JavaScript plugins it loads. Every event a JS
+    // plugin subscribes to is registered in this plugin's name, and Endstone refuses to register a
+    // listener for a plugin that is not enabled yet - which is what a PostWorld order would mean,
+    // since the JS plugins are added to the plugin list during our onLoad and so are enabled first.
+    load = endstone::PluginLoadOrder::Startup;
 }

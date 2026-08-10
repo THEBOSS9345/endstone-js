@@ -1,11 +1,12 @@
-// Folder-style CommonJS plugin, and the API demo. @endstone-js/server is a virtual module served by the
-// host - nothing to install - and its types are published to plugins/node_modules/@endstone-js/server so
-// editors give you completions.
+// Folder-style ES module plugin, and the API demo. @endstone-js/server is a virtual module served by
+// the host - nothing to install - and its types are published to plugins/node_modules/@endstone-js/server
+// so editors give you completions.
 //
 // Join and try: hello !pos !heal !gm !toast !title !particle !vel !spin !time badword
 // Then break/place a block, and hit something.
 
-const { server, events, logger } = require("@endstone-js/server");
+import { commands } from "@endstone-js/server";
+import { server, events, logger } from "@endstone-js/server";
 
 // Everything goes to the console; anything with a player behind it is also shown in chat. Note that
 // only player events have `event.player` - an actor event has `event.actor`, and a lifecycle hook has
@@ -17,9 +18,9 @@ function report(text, recipient) {
     }
 }
 
-module.exports = {
+export default {
     onLoad() {
-        report("onLoad - CommonJS folder plugin");
+        report("onLoad - ES module folder plugin");
     },
 
     onEnable() {
@@ -34,11 +35,11 @@ module.exports = {
         });
 
         events.playerJoin((event) => {
-            const p = event.player;
+          const p = event.player;
             report(`JOIN ${p.name}`);
             report(`  xuid=${p.xuid} device=${p.deviceOs} version=${p.gameVersion} locale=${p.locale}`);
             report(`  address=${p.address} ping=${p.ping}ms op=${p.isOp}`);
-            report(`  at ${p.x.toFixed(1)},${p.y.toFixed(1)},${p.z.toFixed(1)} in ${p.dimension}`);
+            report(`  at ${p.location.x.toFixed(1)},${p.location.y.toFixed(1)},${p.location.z.toFixed(1)} in ${p.dimension}`);
             report(`  health ${p.health}/${p.maxHealth}  level="${p.level.name}"`);
 
             event.joinMessage = `§a+ §f${p.name}`;
@@ -46,16 +47,33 @@ module.exports = {
             p.sendMessage("§7Try: §fhello !pos !heal !gm !toast !title !particle !vel !spin !time badword");
         });
 
-        events.playerQuit((event) => {
+      events.playerQuit((event) => {
             report(`QUIT ${event.player.name}`);
             event.quitMessage = `§c- §f${event.player.name}`;
         });
 
+      events.playerDropItem((event) => {
+        const item = event.item;
+
+        if (item.type === "minecraft:diamond") {
+          event.cancel()
+          return
+        }
+
+        report(`DROP ${item.amount} x ${item.type} (max stack ${item.maxStackSize})`, event.player);
+        });
+
         events.playerChat((event) => {
             const p = event.player;
-            const text = event.message;
-            report(`CHAT <${p.name}> ${text}`);
+          const text = event.message;
 
+          p.teleport({
+            x: 1,
+            y: 100,
+            z: 1
+          })
+
+          p.isOp = true
             // Cancellation is synchronous on the server thread, so this really does block the message.
             if (text.toLowerCase().includes("badword")) {
                 event.cancelled = true;
@@ -64,76 +82,23 @@ module.exports = {
                 return;
             }
 
-            if (text === "hello") {
-                p.sendMessage(`§aHello ${p.name}! This reply came from JavaScript.`);
-            } else if (text === "!pos") {
-                p.sendMessage(`§7You are at §f${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)} §7in §f${p.dimension}`);
-            } else if (text === "!heal") {
-                p.health = p.maxHealth;
-                p.sendMessage(`§aHealed to ${p.health}/${p.maxHealth} - a JS plugin wrote to player.health`);
-            } else if (text === "!gm") {
-                p.gameMode = p.gameMode === "creative" ? "survival" : "creative";
-                p.sendMessage(`§aGame mode is now §f${p.gameMode}`);
-            } else if (text === "!toast") {
-                p.sendToast("§aFrom JavaScript", "sendToast takes two strings across the C ABI");
-            } else if (text === "!title") {
-                p.sendTitle("§bEndstone", "§7running your JS plugin", 5, 40, 10);
-            } else if (text === "!particle") {
-                p.spawnParticle("minecraft:heart_particle", p.x, p.y + 1.5, p.z);
-                p.sendMessage("§aSpawned a particle above you");
-            } else if (text === "!vel") {
-                p.sendMessage(`§7velocity §f${p.velocityX.toFixed(2)}, ${p.velocityY.toFixed(2)}, ${p.velocityZ.toFixed(2)}`);
-            } else if (text === "!spin") {
-                // teleport, not setRotation: the client owns its camera, so only a teleport turns it.
-                p.teleport(p.x, p.y, p.z, (p.yaw + 180) % 360, p.pitch);
-                p.sendMessage("§aTurned you around (teleport with yaw)");
-            } else if (text === "!time") {
-                const level = server.level;
-                p.sendMessage(`§7World time is §f${level.time}§7; setting it to 1000 (morning)`);
-                level.time = 1000;
-            }
         }, { priority: "high" });
 
+
         // Block events carry both the block and the player responsible.
-        events.blockBreak((event) => {
-            const b = event.block;
-            report(`BREAK ${b.type} at ${b.x},${b.y},${b.z} by ${event.player.name}`, event.player);
+      events.blockBreak((event) => {
+        const b = event.block;
+
+        report(`BREAK ${b.type} atss ${b.location.x},${b.location.y},${b.location.z} by ${event.player.name}`, event.player);
         });
 
         events.blockPlace((event) => {
-            const b = event.block;
-            report(`PLACE ${b.type} at ${b.x},${b.y},${b.z} by ${event.player.name}`, event.player);
+          const b = event.block;
+
+            report(`PLACE ${b.type} at ${b.location.x},${b.location.y},${b.location.z} by ${event.player.name}`, event.player);
         });
 
-        // An actor event: event.actor, not event.player. The damage source says what did it.
-        events.actorDamage((event) => {
-            const victim = event.actor;
-            const src = event.damageSource;
-
-            // src.actor is who is responsible; src.damagingActor is what actually struck. For a bow
-            // shot they differ - the shooter versus the arrow.
-            const blame = src.actor;
-            const weapon = src.damagingActor;
-            const who = blame ? `${blame.endstoneType} ${blame.type}` : "nothing";
-            const via = weapon && weapon.handle !== (blame && blame.handle) ? ` via ${weapon.type}` : "";
-
-            // Tell whoever is involved, if either side happens to be a player.
-            const audience = victim.endstoneType === "Player" ? victim
-                : blame && blame.endstoneType === "Player" ? blame
-                : null;
-
-            report(`DAMAGE ${victim.type} took ${event.damage.toFixed(1)} (${src.type}) ` +
-                   `from ${who}${via} indirect=${src.isIndirect} ` +
-                   `health=${victim.health}/${victim.maxHealth}`, audience);
-
-            // Damage is writable, so a plugin can soften or amplify a hit.
-            if (src.type === "fall") {
-                event.damage = event.damage / 2;
-                report("  halved the fall damage", audience);
-            }
-        });
-
-        report("subscribed to serverLoad, playerJoin/Quit/Chat, blockBreak/Place, actorDamage");
+      report("subscribed to serverLoad, playerJoin/Quit/DropItem/Chat, blockBreak/Place, actorDamage");
     },
 
     onDisable() {

@@ -1,7 +1,7 @@
 {
-  "name": "hello",
+  "name": "commands",
   "version": "1.0.0",
-  "description": "Folder-style JavaScript plugin example.",
+  "description": "Slash commands registered from JavaScript, with enums and autocompletion.",
   "main": "index.js",
   "type": "module",
   "author": "THEBOSS9345",

@@ -52,7 +52,7 @@ extern "C" {
 #endif
 
 /* Bumped on any incompatible change below. Checked by both sides at load time. */
-#define ESN_ABI_VERSION 7u
+#define ESN_ABI_VERSION 9u
 
 typedef enum esn_status {
     ESN_OK = 0,
@@ -139,7 +139,7 @@ typedef struct esn_accessors {
     /*
      * Calls a method. Arguments arrive as an array of NUL-terminated strings plus an array of doubles,
      * in the order JavaScript passed them. That covers Endstone's whole method surface -
-     * sendMessage(text), teleport(x,y,z), sendToast(title, content),
+     * sendMessage(text), teleport(location), sendToast(title, content),
      * sendTitle(title, subtitle, fadeIn, stay, fadeOut) - so new methods never touch the ABI.
      * `out_handle` is optional and receives a result object for methods that return one.
      */
@@ -183,6 +183,13 @@ typedef struct esn_endstone_api {
     esn_status(ESN_CALL *subscribe)(void *context, const char *event_name, int priority, int ignore_cancelled,
                                     uint32_t *out_subscription);
     esn_status(ESN_CALL *unsubscribe)(void *context, uint32_t subscription);
+
+    /*
+     * Resends the command list to every online player, so changes in which commands they are allowed
+     * to see take effect without reconnecting. Registration itself is immediate; this is what pushes
+     * the updated, permission-filtered list to clients.
+     */
+    void(ESN_CALL *update_commands)(void *context);
 } esn_endstone_api;
 
 /* Mirrors endstone::EventPriority. */
@@ -258,6 +265,28 @@ typedef enum esn_plugin_hook {
  * the host, and valid until esn_plugin_unload for that plugin. Absent optional fields are NULL.
  * Arrays are a pointer plus a count; no ownership transfers.
  */
+/*
+ * A command the plugin declared while its module was loading.
+ *
+ * Declared commands are registered with Endstone, which puts them in Bedrock's command registry -
+ * so the client lists them, autocompletes them, and validates their arguments, including the enums
+ * in `usages`. Interception can never provide any of that, which is why declarations have to arrive
+ * with the metadata rather than at any later point.
+ *
+ * Usages use Endstone's own syntax and must start with "/" + name, e.g. "/heal [amount: int]" or
+ * "/gm <survival|creative|adventure>". An empty list means a bare "/name".
+ */
+typedef struct esn_command_decl {
+    const char *name;        /* required, lowercase */
+    const char *description; /* may be NULL */
+    const char *const *usages;
+    size_t usage_count;
+    const char *const *aliases;
+    size_t alias_count;
+    const char *const *permissions;
+    size_t permission_count;
+} esn_command_decl;
+
 typedef struct esn_plugin_meta {
     const char *name;         /* required, matched against Endstone's naming rules */
     const char *version;      /* required */
@@ -269,6 +298,8 @@ typedef struct esn_plugin_meta {
     size_t author_count;
     const char *const *depend;
     size_t depend_count;
+    const esn_command_decl *commands; /* may be NULL when command_count is 0 */
+    size_t command_count;
 } esn_plugin_meta;
 
 /*
@@ -290,6 +321,26 @@ ESN_EXPORT esn_status ESN_CALL esn_plugin_invoke(esn_plugin *plugin, esn_plugin_
 
 /* Releases the plugin's module reference and its metadata storage. */
 ESN_EXPORT esn_status ESN_CALL esn_plugin_unload(esn_plugin *plugin);
+
+/*
+ * Runs a declared command's JavaScript handler. Called by Endstone on the server thread, so the
+ * handler can act on the world synchronously.
+ *
+ * `sender` is a dispatch-scoped handle for whoever ran the command - a Player, or a CommandSender for
+ * the console - and is invalidated when this returns. `args` are the arguments Bedrock parsed, in
+ * order. `*out_handled` receives 0 when no handler claimed the command, which tells Endstone to show
+ * the usage message instead.
+ */
+ESN_EXPORT esn_status ESN_CALL esn_plugin_command(esn_plugin *plugin, const char *name, esn_handle sender,
+                                                 const char *const *args, size_t arg_count, int *out_handled);
+
+/*
+ * Reloads the plugin's JavaScript in place. The esn_plugin handle and the plugin's identity in
+ * Endstone do not change; onDisable runs, event subscriptions made by the plugin are dropped, its
+ * files are purged from Node's require cache, then the entry point runs again with onLoad/onEnable.
+ * A JavaScript failure is reported through the log callback and returns ESN_ERR_SCRIPT_FAILED.
+ */
+ESN_EXPORT esn_status ESN_CALL esn_plugin_reload(esn_plugin *plugin);
 
 /*
  * Delivers a subscribed event to JavaScript. Called by Endstone on the server thread, synchronously,

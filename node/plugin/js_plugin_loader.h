@@ -27,6 +27,8 @@
 
 namespace endstone::node {
 
+class ApiBridge;
+
 /**
  * @brief An Endstone plugin backed by a JavaScript module running in the shared Node environment.
  *
@@ -35,13 +37,21 @@ namespace endstone::node {
  */
 class JsPlugin : public Plugin {
 public:
-    JsPlugin(const HostApi &api, esn_plugin *handle, PluginDescription description);
+    JsPlugin(const HostApi &api, esn_plugin *handle, PluginDescription description, ApiBridge *bridge);
     ~JsPlugin() override;
 
     [[nodiscard]] const PluginDescription &getDescription() const override { return description_; }
     void onLoad() override;
     void onEnable() override;
     void onDisable() override;
+
+    /**
+     * @brief Runs a declared command's JavaScript handler.
+     *
+     * Endstone calls this on the server thread for commands in the description, so the client has
+     * already parsed and validated the arguments against the declared usages.
+     */
+    bool onCommand(CommandSender &sender, const Command &command, const std::vector<std::string> &args) override;
 
     /**
      * @brief Drops the host-side module reference, leaving this plugin inert.
@@ -57,6 +67,7 @@ private:
     const HostApi &api_;
     esn_plugin *handle_;
     PluginDescription description_;
+    ApiBridge *bridge_;  // owned by the native plugin, which outlives every JsPlugin
 };
 
 /**
@@ -65,7 +76,7 @@ private:
  */
 class JsPluginLoader : public PluginLoader {
 public:
-    JsPluginLoader(Server &server, const HostApi &api, esn_host *host);
+    JsPluginLoader(Server &server, const HostApi &api, esn_host *host, ApiBridge *bridge);
 
     [[nodiscard]] Plugin *loadPlugin(std::string file) override;
     [[nodiscard]] std::vector<std::string> getPluginFileFilters() const override;
@@ -85,6 +96,7 @@ public:
 private:
     const HostApi &api_;
     esn_host *host_;
+    ApiBridge *bridge_;
     std::vector<std::unique_ptr<JsPlugin>> plugins_;
 };
 

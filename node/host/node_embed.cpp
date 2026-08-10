@@ -23,7 +23,7 @@
 
 // Version gate. Node's embedder API is explicitly unstable, so a major bump must be an audit of this
 // file rather than a surprise at runtime. When widening the range, re-check every node:: and v8::
-// call below against that release's node.h, then run the C smoke harness on it.
+// call below against that release's node.h.
 #if NODE_MAJOR_VERSION < 24 || NODE_MAJOR_VERSION > 26
 #error "Untested Node.js major version. Audit node/host/node_embed.cpp, then widen this range."
 #endif
