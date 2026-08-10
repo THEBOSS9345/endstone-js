@@ -1,14 +1,21 @@
-// Folder-style plugin: identity comes from package.json, lifecycle hooks from the exported object.
-// No Minecraft API is bound yet, so console output is all a plugin can do at this milestone.
+// Folder-style CommonJS plugin: identity comes from package.json, lifecycle hooks from the exported
+// object. @endstone/server is a virtual module served by the host - there is nothing to install.
+
+const { server, logger } = require("@endstone/server");
 
 module.exports = {
     onLoad() {
-        console.log("[hello] onLoad - folder plugin, loaded from package.json");
+        logger.info("[hello] onLoad - CommonJS folder plugin");
     },
+
     onEnable() {
-        console.log(`[hello] onEnable - require resolves from ${__dirname}`);
+        logger.info(`[hello] ${server.name} ${server.version} (Minecraft ${server.minecraftVersion})`);
+        logger.info(`[hello] protocol=${server.protocolVersion} online=${server.onlinePlayerCount}`);
+        server.broadcastMessage("hello from a JavaScript plugin");
+        logger.warning("[hello] warning level reaches the Endstone logger");
     },
+
     onDisable() {
-        console.log("[hello] onDisable");
+        logger.info("[hello] onDisable");
     },
 };

@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 # The Node side of the ABI firewall. Built with the toolchain libnode itself was built with
 # (libstdc++ on Linux, MSVC ABI on Windows) - NOT Endstone's libc++ toolchain. It links no Endstone
 # target and includes no Endstone header.
-add_library(endstone_node_host SHARED host.cpp)
+add_library(endstone_node_host SHARED host.cpp node_embed.cpp)
 add_library(endstone::node_host ALIAS endstone_node_host)
 
 target_include_directories(endstone_node_host PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../include)

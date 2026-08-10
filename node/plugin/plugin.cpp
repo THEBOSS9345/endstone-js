@@ -21,11 +21,13 @@
 // No Minecraft API is exposed to JavaScript yet. The only thing crossing into JS is console output.
 
 #include <cstddef>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
 
 #include <endstone/plugin/plugin.h>
@@ -62,6 +64,20 @@ std::string currentThreadId()
 
 using endstone::node::HostApi;
 using endstone::node::JsPluginLoader;
+
+/**
+ * Copies `text` out under the ABI's string convention: fill up to `cap` bytes, NUL-terminate when it
+ * fits, and return the length needed excluding the NUL.
+ */
+std::size_t copyOut(std::string_view text, char *buf, std::size_t cap)
+{
+    if (buf && cap > 0) {
+        const auto count = text.size() < cap - 1 ? text.size() : cap - 1;
+        std::memcpy(buf, text.data(), count);
+        buf[count] = '\0';
+    }
+    return text.size();
+}
 
 ModuleHandle loadModule(const fs::path &path)
 {
@@ -246,10 +262,110 @@ private:
         return true;
     }
 
+    // --- the esn_endstone_api table -------------------------------------------------------------
+    // Called from JavaScript, therefore always on the BDS server thread. Each one catches everything:
+    // the return path runs through libnode and V8 frames compiled without exceptions.
+
+    static NodeJsPlugin *self(void *context) { return static_cast<NodeJsPlugin *>(context); }
+
+    static std::size_t ESN_CALL apiServerName(void *context, char *buf, std::size_t cap)
+    {
+        try {
+            return copyOut(self(context)->getServer().getName(), buf, cap);
+        }
+        catch (...) {
+            return 0;
+        }
+    }
+
+    static std::size_t ESN_CALL apiServerVersion(void *context, char *buf, std::size_t cap)
+    {
+        try {
+            return copyOut(self(context)->getServer().getVersion(), buf, cap);
+        }
+        catch (...) {
+            return 0;
+        }
+    }
+
+    static std::size_t ESN_CALL apiServerMinecraftVersion(void *context, char *buf, std::size_t cap)
+    {
+        try {
+            return copyOut(self(context)->getServer().getMinecraftVersion(), buf, cap);
+        }
+        catch (...) {
+            return 0;
+        }
+    }
+
+    static int ESN_CALL apiServerProtocolVersion(void *context)
+    {
+        try {
+            return self(context)->getServer().getProtocolVersion();
+        }
+        catch (...) {
+            return -1;
+        }
+    }
+
+    static int ESN_CALL apiServerOnlinePlayerCount(void *context)
+    {
+        try {
+            // Before the level loads there is no player list to ask.
+            auto &server = self(context)->getServer();
+            if (!server.getLevel()) {
+                return -1;
+            }
+            return static_cast<int>(server.getOnlinePlayers().size());
+        }
+        catch (...) {
+            return -1;
+        }
+    }
+
+    static void ESN_CALL apiBroadcastMessage(void *context, const char *message, std::size_t length)
+    {
+        if (!message) {
+            return;
+        }
+        try {
+            self(context)->getServer().broadcastMessage(endstone::Message{std::string(message, length)});
+        }
+        catch (...) {
+        }
+    }
+
+    static void ESN_CALL apiLog(void *context, int level, const char *message, std::size_t length)
+    {
+        if (!message) {
+            return;
+        }
+        try {
+            auto mapped = static_cast<endstone::Logger::Level>(level);
+            if (level < endstone::Logger::Trace || level > endstone::Logger::Critical) {
+                mapped = endstone::Logger::Info;
+            }
+            self(context)->getLogger().log(mapped, std::string_view(message, length));
+        }
+        catch (...) {
+        }
+    }
+
     bool startNode(const fs::path &script)
     {
         script_path_ = script.string();
         exec_path_ = "endstone";
+
+        api_table_ = {};
+        api_table_.abi_version = ESN_ABI_VERSION;
+        api_table_.context = this;
+        api_table_.server_name = &NodeJsPlugin::apiServerName;
+        api_table_.server_version = &NodeJsPlugin::apiServerVersion;
+        api_table_.server_minecraft_version = &NodeJsPlugin::apiServerMinecraftVersion;
+        api_table_.server_protocol_version = &NodeJsPlugin::apiServerProtocolVersion;
+        api_table_.server_online_player_count = &NodeJsPlugin::apiServerOnlinePlayerCount;
+        api_table_.broadcast_message = &NodeJsPlugin::apiBroadcastMessage;
+        api_table_.log = &NodeJsPlugin::apiLog;
 
         esn_host_config config{};
         config.abi_version = ESN_ABI_VERSION;
@@ -257,6 +373,7 @@ private:
         config.log_user_data = this;
         config.script_path = script_path_.c_str();
         config.exec_path = exec_path_.c_str();
+        config.api = &api_table_;
 
         auto status = api_.create(&config, &host_);
         if (status != ESN_OK) {
@@ -320,6 +437,7 @@ private:
     ModuleHandle module_{nullptr};
     HostApi api_{};
     esn_host *host_{nullptr};
+    esn_endstone_api api_table_{};  // borrowed by the host, so it must outlive it
     std::string script_path_;
     std::string exec_path_;
     std::uint64_t pumps_{0};

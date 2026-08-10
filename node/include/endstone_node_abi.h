@@ -52,7 +52,7 @@ extern "C" {
 #endif
 
 /* Bumped on any incompatible change below. Checked by both sides at load time. */
-#define ESN_ABI_VERSION 2u
+#define ESN_ABI_VERSION 3u
 
 typedef enum esn_status {
     ESN_OK = 0,
@@ -84,12 +84,47 @@ typedef enum esn_log_level {
  */
 typedef void(ESN_CALL *esn_log_fn)(void *user_data, int level, const char *message, size_t length);
 
+/*
+ * Endstone -> host. The API JavaScript reaches through, supplied by the Endstone side and called on
+ * the thread running JavaScript (which is the BDS server thread).
+ *
+ * String getters follow one convention throughout: copy up to `cap` bytes into `buf`, NUL-terminating
+ * when it fits, and return the number of bytes the value needs excluding the NUL. A return value >=
+ * `cap` means the caller should retry with a bigger buffer. `buf` may be NULL when `cap` is 0, which
+ * is how the host asks for a size.
+ *
+ * Every function must be safe to call at any time and must not throw; an implementation with nothing
+ * to return should write nothing and return 0. Any member may be NULL if unsupported, and the host
+ * checks before calling.
+ */
+typedef struct esn_endstone_api {
+    uint32_t abi_version; /* must be ESN_ABI_VERSION */
+    void *context;        /* opaque, passed back as the first argument */
+
+    size_t(ESN_CALL *server_name)(void *context, char *buf, size_t cap);
+    size_t(ESN_CALL *server_version)(void *context, char *buf, size_t cap);
+    size_t(ESN_CALL *server_minecraft_version)(void *context, char *buf, size_t cap);
+    /* Network protocol version, or -1 if unavailable. */
+    int(ESN_CALL *server_protocol_version)(void *context);
+    /* Number of players currently online, or -1 if the level is not loaded yet. */
+    int(ESN_CALL *server_online_player_count)(void *context);
+
+    void(ESN_CALL *broadcast_message)(void *context, const char *message, size_t length);
+    /* Logs through the owning plugin's logger. `level` is an esn_log_level. */
+    void(ESN_CALL *log)(void *context, int level, const char *message, size_t length);
+} esn_endstone_api;
+
 typedef struct esn_host_config {
     uint32_t abi_version;   /* must be ESN_ABI_VERSION */
     esn_log_fn log;         /* required */
     void *log_user_data;    /* opaque, passed back to log */
     const char *script_path; /* UTF-8, absolute, NUL-terminated */
     const char *exec_path;   /* UTF-8 argv[0] for Node, NUL-terminated */
+    /*
+     * Optional. Borrowed, and must outlive the host: the Endstone side owns it. When NULL, the
+     * @endstone/server module still loads but reports itself unavailable rather than crashing.
+     */
+    const esn_endstone_api *api;
 } esn_host_config;
 
 typedef struct esn_host esn_host; /* opaque */

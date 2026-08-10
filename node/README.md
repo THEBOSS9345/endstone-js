@@ -32,6 +32,83 @@ exported surface of the host: esn_abi_version esn_host_create esn_host_destroy
 mangled C++ symbols on it   : (none)
 ```
 
+## The API
+
+`@endstone/server` is a **virtual module** served from memory by the host - nothing to install, and it
+works identically from CommonJS and ESM. It is shaped after **Endstone's own API**, not Bedrock's
+ScriptAPI, so it reads 1:1 with the Endstone documentation: `Server`, `Logger`, and (once bound) the
+`Player` and `PlayerXxxEvent` family, rather than `world.afterEvents`.
+
+```js
+import { server, logger } from "@endstone/server";   // ESM
+const { server, logger } = require("@endstone/server");  // CommonJS
+
+logger.info(`${server.name} ${server.version} (Minecraft ${server.minecraftVersion})`);
+server.broadcastMessage("hello from a JavaScript plugin");
+```
+
+| Member | Notes |
+|---|---|
+| `server.name` / `.version` / `.minecraftVersion` | strings |
+| `server.protocolVersion` | number, `-1` if unavailable |
+| `server.onlinePlayerCount` | number, `-1` before the level loads |
+| `server.isAvailable` | false if the host was started without an API table |
+| `server.broadcastMessage(text)` | goes through the real server broadcast |
+| `logger.trace/debug/info/warning/error/critical` | routed to the Endstone logger at matching level |
+
+Implemented with `module.registerHooks()`, which is synchronous and intercepts `require()` as well as
+`import()`. The virtual module is a real ES module, so named imports work; CommonJS plugins reach it
+through Node's `require(esm)` support.
+
+Everything reaching the API runs on the BDS server thread, so no marshalling is involved. The
+Endstone side supplies an `esn_endstone_api` table of C function pointers; string getters use a
+size-then-fetch convention and every entry point catches all exceptions, since the return path passes
+through V8 frames compiled without exceptions.
+
+**Not yet bound:** events, players, blocks, inventory. Those need the object-handle and accessor
+design decided before they are worth writing at scale.
+
+## Writing plugins
+
+Four shapes, all loaded from `plugins/`:
+
+| Shape | Layout | Notes |
+|---|---|---|
+| CommonJS folder | `plugins/name/package.json` + `main` | `module.exports = { onEnable() {} }` |
+| ES module folder | same, plus `"type": "module"` | `export default { onEnable() {} }` |
+| Single file | `plugins/name.js` | identity from the filename, no manifest |
+| With npm deps | folder + `node_modules` | `require`/`import` resolves per plugin |
+
+`package.json` carries the identity; an `endstone` block carries the server-specific bits:
+
+```json
+{
+  "name": "my-plugin", "version": "1.0.0", "main": "index.js",
+  "dependencies": { "discord.js": "^14.16.3" },
+  "endstone": { "apiVersion": "0.11", "load": "postworld", "autoInstall": false }
+}
+```
+
+The name is normalized to Endstone's `[a-z0-9_]` rule, so an npm scope and dashes are fine
+(`@me/my-plugin` becomes `my_plugin`). Lifecycle hooks are `onLoad`, `onEnable`, `onDisable`; they may
+be `async`, though the server does not wait for them and a rejection is logged.
+
+**Dependencies** are yours to install - run `npm install` in the plugin folder. If a plugin declares
+dependencies with no `node_modules`, the server warns and names them. Setting
+`endstone.autoInstall: true` makes the host run `npm install` itself, which is off by default because
+it blocks the server thread while it runs.
+
+Both module systems go through `require()`, relying on Node's synchronous `require(esm)` support.
+Dynamic `import()` is *not* used to load plugins: the bootstrap has no file identity, so `import()`
+from it reaches only `node:` builtins. Inside a plugin, `import()` works normally. A plugin using
+**top-level await** cannot be loaded and is reported as such - move awaited work into `onEnable()`.
+
+`process.exit()`, `process.abort()` and `process.reallyExit()` are neutralized: a plugin must not be
+able to stop the Minecraft server.
+
+Working examples live in [`examples/`](examples): `hello` (CJS), `esm-hello` (ESM + async hook),
+`standalone.js` (single file), `discord-bot` (a real npm package).
+
 ## Threading
 
 Node is initialized and JavaScript is executed on the **BDS server thread**, the same thread that

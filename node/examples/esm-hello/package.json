@@ -1,0 +1,11 @@
+{
+  "name": "esm-hello",
+  "version": "1.0.0",
+  "description": "ES module plugin example.",
+  "type": "module",
+  "main": "index.js",
+  "author": "The Endstone Project",
+  "endstone": {
+    "apiVersion": "0.11"
+  }
+}
