@@ -1,4 +1,4 @@
-// Copyright (c) 2026, The Endstone Project. (https://endstone.dev) All Rights Reserved.
+// Copyright (c) 2026 THEBOSS9345 (https://github.com/THEBOSS9345/endstone-js)
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -29,8 +29,10 @@
 namespace endstone {
 class Actor;
 class Block;
+class DamageSource;
 class Event;
 class Level;
+class Mob;
 class Player;
 }  // namespace endstone
 
@@ -87,14 +89,17 @@ public:
     esn_status setInt(esn_handle target, std::string_view name, std::int64_t value);
     esn_status setDouble(esn_handle target, std::string_view name, double value);
     esn_status setString(esn_handle target, std::string_view name, std::string_view value);
-    esn_status invoke(esn_handle target, std::string_view name, std::string_view text, const double *numbers,
-                      std::size_t number_count, esn_handle *out_handle);
+    esn_status invoke(esn_handle target, std::string_view name, const char *const *strings,
+                      std::size_t string_count, const double *numbers, std::size_t number_count,
+                      esn_handle *out_handle);
     esn_status typeName(esn_handle target, char *buf, std::size_t cap, std::size_t *needed);
     esn_status subscribe(std::string_view event_name, int priority, bool ignore_cancelled, std::uint32_t *out);
     esn_status unsubscribe(std::uint32_t subscription);
 
 private:
-    enum class Kind : std::uint8_t { Player, Actor, Block, Level, Event };
+    // Mob is distinct from Actor because only living things have health, and Endstone's actor events
+    // are templated on one or the other (ActorEvent<Mob> vs ActorEvent<Actor>).
+    enum class Kind : std::uint8_t { Player, Mob, Actor, Block, Level, DamageSource, Event };
 
     /** Owns anything created on demand whose lifetime is not the caller's, e.g. Block instances. */
     std::vector<std::unique_ptr<Block>> owned_blocks_;
@@ -107,8 +112,18 @@ private:
     };
 
     esn_handle track(void *ptr, Kind kind, bool persistent = false);
+    /**
+     * Tracks an actor whose concrete type is not known statically, picking Kind::Player when the
+     * pointer matches an online player. That check avoids RTTI, which is unusable across the plugin
+     * boundary, so JavaScript still sees a real Player for things like a damage source's attacker.
+     */
+    esn_handle trackActor(Actor *actor);
     /** Resolves a handle to the requested kind, or nullptr when stale or mismatched. */
     void *resolve(esn_handle handle, Kind kind) const;
+    /** Any living or non-living actor, i.e. Kind::Actor or Kind::Mob. Players resolve separately. */
+    Actor *resolveActor(esn_handle handle) const;
+    /** Only a living actor, so only Kind::Mob. */
+    Mob *resolveMob(esn_handle handle) const;
     const Entry *find(esn_handle handle) const;
 
     /** Delivers one event to the host, then invalidates every handle that delivery created. */

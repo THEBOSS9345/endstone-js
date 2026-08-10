@@ -3,9 +3,12 @@
   "version": "1.0.0",
   "description": "Folder-style JavaScript plugin example.",
   "main": "index.js",
-  "author": "The Endstone Project",
-  "homepage": "https://endstone.dev",
+  "author": "THEBOSS9345",
+  "homepage": "https://github.com/THEBOSS9345/endstone-js",
   "endstone": {
     "apiVersion": "0.11"
+  },
+  "devDependencies": {
+    "@endstone/server": "^0.11.0"
   }
 }

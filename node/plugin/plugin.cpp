@@ -1,4 +1,4 @@
-// Copyright (c) 2026, The Endstone Project. (https://endstone.dev) All Rights Reserved.
+// Copyright (c) 2026 THEBOSS9345 (https://github.com/THEBOSS9345/endstone-js)
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -162,7 +162,6 @@ public:
             getLogger().error("failed to schedule the Node event loop pump");
         }
 
-        publishTypes(data_folder, data_folder.parent_path());
         loadJsPlugins(data_folder.parent_path());
     }
 
@@ -309,66 +308,6 @@ private:
             return false;
         }
         return true;
-    }
-
-    /**
-     * Publishes the TypeScript declarations as a stub package at plugins/node_modules/@endstone/server.
-     *
-     * TypeScript and editors resolve `@endstone/server` by walking up from the plugin folder, so this
-     * gives completions and type checking with no tsconfig or install step. At runtime the module still
-     * comes from the host's in-memory copy: the resolver hook short-circuits before the filesystem is
-     * consulted, so the stub is only ever read by tooling.
-     */
-    void publishTypes(const fs::path &data_folder, const fs::path &plugin_dir)
-    {
-        std::error_code ec;
-        const auto source = data_folder / "index.d.ts";
-        if (!exists(source, ec)) {
-            getLogger().debug("no index.d.ts in {} - skipping type publication", data_folder.string());
-            return;
-        }
-
-        const auto package_dir = plugin_dir / "node_modules" / "@endstone" / "server";
-        create_directories(package_dir, ec);
-        if (ec) {
-            getLogger().warning("could not create {}: {}", package_dir.string(), ec.message());
-            return;
-        }
-
-        // Only rewrite when the content actually changed, so we do not churn timestamps every boot.
-        const auto destination = package_dir / "index.d.ts";
-        const auto read = [](const fs::path &path) {
-            std::ifstream in(path, std::ios::binary);
-            return std::string{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
-        };
-        const auto declarations = read(source);
-        if (!exists(destination, ec) || read(destination) != declarations) {
-            std::ofstream out(destination, std::ios::binary | std::ios::trunc);
-            out << declarations;
-        }
-
-        const auto manifest = package_dir / "package.json";
-        if (!exists(manifest, ec)) {
-            std::ofstream out(manifest, std::ios::binary | std::ios::trunc);
-            out << "{\n"
-                   "  \"name\": \"@endstone/server\",\n"
-                   "  \"version\": \"" ENDSTONE_API_VERSION "\",\n"
-                   "  \"description\": \"Type declarations for the Endstone JavaScript API. Provided by the "
-                   "server; the implementation lives in the host, not on disk.\",\n"
-                   "  \"types\": \"index.d.ts\",\n"
-                   "  \"main\": \"index.js\"\n"
-                   "}\n";
-        }
-
-        const auto shim = package_dir / "index.js";
-        if (!exists(shim, ec)) {
-            std::ofstream out(shim, std::ios::binary | std::ios::trunc);
-            out << "// The real module is served from memory by the Endstone Node host, so this file is\n"
-                   "// never loaded in a running server. It exists only so package.json \"main\" resolves.\n"
-                   "throw new Error('@endstone/server is only available inside an Endstone server');\n";
-        }
-
-        getLogger().info("published @endstone/server types to {}", package_dir.string());
     }
 
     // Registers the JavaScript loader and loads what it finds. Discovery has to be driven from here

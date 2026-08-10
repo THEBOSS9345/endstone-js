@@ -1,9 +1,57 @@
+# endstone-js — a fork of Endstone with JavaScript and TypeScript plugins
+
+> [!IMPORTANT]
+> **This is a fork.** Upstream is [EndstoneMC/endstone](https://github.com/EndstoneMC/endstone), and its
+> README follows below unchanged.
+>
+> This fork adds one thing: a **Node.js scripting layer**, so plugins can be written in JavaScript or
+> TypeScript alongside Endstone's existing Python and C++ support. Node.js and V8 run *inside* the
+> Bedrock server process, on the server thread, so a JS handler can cancel an event just like a Python
+> or C++ one.
+>
+> ```js
+> import { server, events, logger } from "@endstone/server";
+>
+> export default {
+>   onEnable() {
+>     logger.info(`running on ${server.minecraftVersion}`);
+>     events.playerChat((event) => {
+>       if (event.message.includes("spoiler")) event.cancelled = true;
+>     }, { priority: "high" });
+>   },
+> };
+> ```
+>
+> ### What the fork adds
+>
+> Everything new lives in [`node/`](node) and [`recipes/libnode/`](recipes/libnode). **No file outside
+> those two directories is changed**, apart from this notice — the layer attaches to a stock Endstone
+> through the public plugin API, so it works against an official `pip install endstone`.
+>
+> - plugins as a folder with `package.json` or as a single `.js` file, ESM or CommonJS
+> - real npm packages, resolved per plugin (discord.js is part of the test suite)
+> - the Endstone API exposed to JS: `Server`, `Level`, `Actor`, `Player`, `Block`, `DamageSource`, and
+>   all 55 events with working cancellation
+> - TypeScript definitions published as [`@endstone/server`](https://github.com/THEBOSS9345/endstone-server-types)
+>
+> See [`node/README.md`](node/README.md) for the architecture and how to build it.
+>
+> ### What is maintained here
+>
+> **Only the JavaScript scripting engine.** Everything else tracks upstream and is not maintained in
+> this fork. Bugs in the server itself, the Python or C++ API, BDS version support, packaging, or
+> anything not under `node/` should go to
+> [upstream's issue tracker](https://github.com/EndstoneMC/endstone/issues) — please don't report them
+> here, as they will only be fixed upstream and merged down.
+
+---
+
 <div align="center">
   <a href="https://github.com/EndstoneMC/endstone/releases">
     <img src="https://static.wikia.nocookie.net/minecraft_gamepedia/images/4/43/End_Stone_JE3_BE2.png" alt="Logo" width="80" height="80">
   </a>
 
-<h3>Endstone</h3>
+<h3>Endstone (upstream)</h3>
 
 <p>
   <b>High-performance Minecraft Bedrock server software</b><br>

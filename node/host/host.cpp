@@ -1,4 +1,4 @@
-// Copyright (c) 2026, The Endstone Project. (https://endstone.dev) All Rights Reserved.
+// Copyright (c) 2026 THEBOSS9345 (https://github.com/THEBOSS9345/endstone-js)
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -503,20 +503,36 @@ napi_value jsInvoke(napi_env env, napi_callback_info info)
     if (!readStringValue(env, argv[1], name)) {
         return nullptr;
     }
-    std::string text;
-    if (argc >= 3) {
-        (void)readStringValue(env, argv[2], text);
-    }
+    // Arguments keep their JavaScript order within each kind: strings in one array, numbers in another.
+    std::vector<std::string> strings;
     std::vector<double> numbers;
-    for (std::size_t i = 3; i < argc; ++i) {
-        double value = 0;
-        if (napi_get_value_double(env, argv[i], &value) == napi_ok) {
-            numbers.push_back(value);
+    for (std::size_t i = 2; i < argc; ++i) {
+        napi_valuetype type = napi_undefined;
+        if (napi_typeof(env, argv[i], &type) != napi_ok) {
+            continue;
         }
+        if (type == napi_string) {
+            std::string value;
+            if (readStringValue(env, argv[i], value)) {
+                strings.push_back(std::move(value));
+            }
+        }
+        else if (type == napi_number) {
+            double value = 0;
+            if (napi_get_value_double(env, argv[i], &value) == napi_ok) {
+                numbers.push_back(value);
+            }
+        }
+    }
+    std::vector<const char *> string_ptrs;
+    string_ptrs.reserve(strings.size());
+    for (const auto &value : strings) {
+        string_ptrs.push_back(value.c_str());
     }
 
     esn_handle result_handle = 0;
-    const auto status = acc->invoke(g_host->api->context, handle, name.c_str(), text.data(), text.size(),
+    const auto status = acc->invoke(g_host->api->context, handle, name.c_str(),
+                                    string_ptrs.empty() ? nullptr : string_ptrs.data(), string_ptrs.size(),
                                     numbers.empty() ? nullptr : numbers.data(), numbers.size(), &result_handle);
     if (status != ESN_OK) {
         return fail(env, status, name);
@@ -739,9 +755,9 @@ const HANDLE = Symbol('endstone.handle');
 // Methods rather than properties. Names are shared across object kinds; the Endstone side dispatches
 // on the handle's actual type, so a name only has to appear once here.
 const METHODS = new Set([
-  'sendMessage', 'sendErrorMessage', 'sendPopup', 'sendTip', 'sendTitle', 'resetTitle',
-  'kick', 'performCommand', 'updateCommands', 'transfer', 'teleport',
-  'giveExp', 'giveExpLevels', 'playSound', 'stopSound', 'stopAllSounds',
+  'sendMessage', 'sendErrorMessage', 'sendPopup', 'sendTip', 'sendTitle', 'resetTitle', 'sendToast',
+  'kick', 'performCommand', 'updateCommands', 'transfer', 'teleport', 'setRotation',
+  'giveExp', 'giveExpLevels', 'playSound', 'stopSound', 'stopAllSounds', 'spawnParticle',
   'remove', 'getRelative', 'cancel',
 ]);
 
@@ -762,11 +778,9 @@ function wrap(handle) {
       if (prop === 'toString') return () => `${binding.typeName(handle)}(${handle})`;
       if (prop === 'endstoneType') return binding.typeName(handle);
       if (METHODS.has(prop)) {
-        // (text, ...numbers): a string first if there is one, then any numeric arguments.
+        // Arguments pass through as-is; the host sorts strings and numbers into their own arrays.
         return (...args) => {
-          const text = typeof args[0] === 'string' ? args[0] : '';
-          const numbers = args.filter((a) => typeof a === 'number');
-          const result = binding.invoke(handle, prop, text, ...numbers);
+          const result = binding.invoke(handle, prop, ...args);
           const nested = asHandle(result);
           return nested === null ? result : wrap(nested);
         };
@@ -803,11 +817,26 @@ function dispatchEvent(subscription, handle) {
   }
 }
 
+// Every Endstone event. Subscription is generic - the name is passed straight through to Endstone's
+// PluginManager - so this list is about discoverability and typo-catching, not capability.
 const EVENT_NAMES = [
+  // Player
   'playerJoin', 'playerQuit', 'playerChat', 'playerCommand', 'playerDeath', 'playerLogin',
-  'playerKick', 'playerInteract', 'playerMove', 'playerJump', 'playerTeleport', 'playerRespawn',
-  'playerGameModeChange', 'playerItemConsume', 'playerPickupItem', 'playerDropItem',
-  'blockBreak', 'blockPlace', 'serverLoad', 'serverListPing', 'thunderChange', 'weatherChange',
+  'playerKick', 'playerInteract', 'playerInteractActor', 'playerMove', 'playerJump',
+  'playerTeleport', 'playerPortal', 'playerRespawn', 'playerGameModeChange', 'playerItemConsume',
+  'playerItemHeld', 'playerPickupItem', 'playerDropItem', 'playerBedEnter', 'playerBedLeave',
+  'playerDimensionChange', 'playerEmote', 'playerSkinChange',
+  // Actor
+  'actorDamage', 'actorDeath', 'actorExplode', 'actorKnockback', 'actorRemove', 'actorSpawn',
+  'actorTeleport',
+  // Block
+  'blockBreak', 'blockPlace', 'blockCook', 'blockExplode', 'blockForm', 'blockFromTo', 'blockGrow',
+  'blockPistonExtend', 'blockPistonRetract', 'leavesDecay',
+  // Server
+  'serverLoad', 'serverCommand', 'serverListPing', 'broadcastMessage', 'scriptMessage',
+  'packetReceive', 'packetSend', 'pluginEnable', 'pluginDisable', 'mapInitialize',
+  // World
+  'chunkLoad', 'chunkUnload', 'thunderChange', 'weatherChange',
 ];
 
 const toEndstoneName = (camel) => camel.charAt(0).toUpperCase() + camel.slice(1) + 'Event';

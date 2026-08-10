@@ -10,7 +10,7 @@ class LibnodeConan(ConanFile):
     name = "libnode"
     description = "Node.js built as a shared library for embedding"
     license = "MIT"
-    url = "https://github.com/EndstoneMC/endstone"
+    url = "https://github.com/THEBOSS9345/endstone-js"
     homepage = "https://nodejs.org"
     topics = ("node", "nodejs", "javascript", "v8", "embedding")
     package_type = "shared-library"

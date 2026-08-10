@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Proves a real npm package with a deep dependency tree loads inside the server.",
   "main": "index.js",
-  "author": "The Endstone Project",
+  "author": "THEBOSS9345",
   "dependencies": {
     "discord.js": "^14.16.3"
   },

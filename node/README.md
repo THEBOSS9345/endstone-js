@@ -1,8 +1,19 @@
-# Node.js embedding spike (Milestone 0)
+# Node.js scripting layer
 
-Proves that `BDS -> Endstone -> embedded Node.js -> JavaScript` works inside a single process.
-Nothing more: **no Minecraft API, no TypeScript, no event system, no packet API, no npm integration.**
-The only thing JavaScript can do here is `console.log`.
+The JavaScript and TypeScript plugin support added by
+[endstone-js](https://github.com/THEBOSS9345/endstone-js), a fork of
+[Endstone](https://github.com/EndstoneMC/endstone). **This directory is the only part of the fork that
+is maintained here**; everything else tracks upstream.
+
+Node.js and V8 run inside the Bedrock server process on the server thread, so JavaScript plugins get the
+same synchronous access to the Endstone API - including event cancellation - that Python and C++ plugins
+have. Nothing outside `node/` and `recipes/libnode/` is modified: the layer attaches to a stock Endstone
+through the public plugin API.
+
+TypeScript definitions are a separate project, published to npm as
+[`@endstone/server`](https://github.com/THEBOSS9345/endstone-server-types). Its minor version tracks the
+Endstone API version, so `0.11.x` targets API `0.11`. Anything added to `plugin/api_bridge.cpp` needs a
+matching declaration added there, or the types will describe an API that does not exist.
 
 ## Architecture
 
@@ -120,11 +131,24 @@ return path passes through V8 frames compiled without exceptions.
 
 ### Types
 
-[`types/index.d.ts`](types/index.d.ts) declares the whole surface. The plugin copies it to
-`plugins/node_modules/@endstone/server/` on startup, which is where TypeScript and editors look when
-resolving from a plugin folder - so completions and type checking work with **no tsconfig and no
-install**. At runtime the module still comes from memory; the resolver hook short-circuits before the
-filesystem is consulted, so the on-disk copy is only ever read by tooling.
+TypeScript definitions live in a **separate project**, published to npm as
+[`@endstone/server`](https://www.npmjs.com/package/@endstone/server). They are not part of this
+repository: the server provides the implementation, the package provides only declarations - the same
+split Mojang uses for `@minecraft/server`.
+
+Install them in your plugin folder when you want completions:
+
+```shell
+cd plugins/my-plugin
+npm install --save-dev @endstone/server
+```
+
+A `devDependency`, because they are needed to *write* a plugin and never to run one - the runtime module
+comes from the host's memory either way. A plugin without them installed behaves identically, and the
+missing-`node_modules` warning ignores `devDependencies`, so it stays quiet.
+
+Anything added to `plugin/api_bridge.cpp` needs the matching declaration added there, or the types will
+confidently describe an API that does not exist.
 
 **Not yet bound:** blocks, inventory, scoreboard, level and actor beyond `Player`. The accessor design
 above is what makes adding them incremental.

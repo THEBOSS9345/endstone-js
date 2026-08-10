@@ -4,8 +4,11 @@
   "description": "ES module plugin example.",
   "type": "module",
   "main": "index.js",
-  "author": "The Endstone Project",
+  "author": "THEBOSS9345",
   "endstone": {
     "apiVersion": "0.11"
+  },
+  "devDependencies": {
+    "@endstone/server": "^0.11.0"
   }
 }

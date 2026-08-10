@@ -143,9 +143,6 @@ New-Item -ItemType Directory -Force -Path $nodeData | Out-Null
 
 Copy-Item $pluginDll $plugins -Force
 Copy-Item $hostDll, $libnodeDll $nodeData -Force
-# The plugin republishes these into plugins/node_modules/@endstone/server on startup so editors and
-# tsc can resolve the API types without any setup.
-Copy-Item (Join-Path $nodeDir "types\index.d.ts") $nodeData -Force
 # Only seed the sample entry point if the user has not written their own.
 $mainJs = Join-Path $nodeData "main.js"
 if (-not (Test-Path $mainJs)) { Copy-Item (Join-Path $nodeDir "js\main.js") $mainJs -Force }
@@ -161,4 +158,7 @@ Done. Start the server with:
 
 Drop JavaScript plugins into $plugins as either a folder with package.json or a single .js file.
 If a plugin declares dependencies, run "npm install" inside its folder first.
+
+For editor completions and type checking, install the types in your plugin folder:
+    npm install --save-dev @endstone/server
 "@

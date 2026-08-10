@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2026, The Endstone Project. (https://endstone.dev) All Rights Reserved.
+ * Copyright (c) 2026 THEBOSS9345 (https://github.com/THEBOSS9345/endstone-js)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -52,7 +52,7 @@ extern "C" {
 #endif
 
 /* Bumped on any incompatible change below. Checked by both sides at load time. */
-#define ESN_ABI_VERSION 6u
+#define ESN_ABI_VERSION 7u
 
 typedef enum esn_status {
     ESN_OK = 0,
@@ -137,14 +137,15 @@ typedef struct esn_accessors {
                                      size_t length);
 
     /*
-     * Calls a method. Arguments are one optional string plus an optional array of doubles, which
-     * between them cover Endstone's method surface (sendMessage(text), teleport(x,y,z),
-     * playSound(x,y,z,name,volume,pitch)). Keeping the shape fixed means new methods never touch
-     * the ABI. `out_handle` is optional and receives a result object for methods that return one.
+     * Calls a method. Arguments arrive as an array of NUL-terminated strings plus an array of doubles,
+     * in the order JavaScript passed them. That covers Endstone's whole method surface -
+     * sendMessage(text), teleport(x,y,z), sendToast(title, content),
+     * sendTitle(title, subtitle, fadeIn, stay, fadeOut) - so new methods never touch the ABI.
+     * `out_handle` is optional and receives a result object for methods that return one.
      */
-    esn_status(ESN_CALL *invoke)(void *context, esn_handle target, const char *name, const char *text,
-                                size_t text_length, const double *numbers, size_t number_count,
-                                esn_handle *out_handle);
+    esn_status(ESN_CALL *invoke)(void *context, esn_handle target, const char *name,
+                                const char *const *strings, size_t string_count, const double *numbers,
+                                size_t number_count, esn_handle *out_handle);
 
     /* Names the concrete Endstone type behind a handle, for diagnostics and JS class selection. */
     esn_status(ESN_CALL *type_name)(void *context, esn_handle target, char *buf, size_t cap, size_t *out_needed);
