@@ -40,6 +40,7 @@ class Location;
 class MapView;
 class Mob;
 class Player;
+class Task;
 class PlayerInventory;
 class Vector;
 }  // namespace endstone
@@ -74,6 +75,14 @@ public:
     /** Where dispatched events go - normally esn_host_dispatch_event. Set before subscribing. */
     using EventSink = std::function<void(std::uint32_t subscription, esn_handle event)>;
     void setEventSink(EventSink sink);
+
+    /** Where scheduled tasks go - normally esn_host_run_task. Set before scheduling. */
+    using TaskSink = std::function<void(std::uint32_t task)>;
+    void setTaskSink(TaskSink sink);
+
+    /** Schedules a JavaScript callback on the server thread. period 0 runs it once. */
+    esn_status scheduleTask(std::uint32_t delay_ticks, std::uint32_t period_ticks, std::uint32_t *out_task);
+    void cancelTask(std::uint32_t task);
 
     /** Drops all subscriptions. Must run before the Node host is destroyed. */
     void shutdown();
@@ -151,6 +160,11 @@ private:
     };
     std::vector<PendingSubscription> pending_;
 
+    TaskSink task_sink_;
+    /** Scheduled tasks by the id JavaScript knows them by, so they can be cancelled. */
+    std::unordered_map<std::uint32_t, std::shared_ptr<Task>> tasks_;
+    std::uint32_t next_task_{1};
+
     /** Where the current command dispatch's handles begin, for releaseDispatch(). */
     esn_handle command_scope_start_{0};
 
@@ -165,6 +179,20 @@ private:
 
     /** The inventory behind a handle, whether it was tracked as a plain or a player inventory. */
     Inventory *resolveInventory(esn_handle target);
+
+    /**
+     * @brief Hands out a copy of an item stack that writes its changes back where it came from.
+     *
+     * Endstone returns item stacks by value, so a stack read from an inventory or an equipment slot is
+     * a copy and mutating it would be silently lost. Every such stack is therefore paired with a
+     * writeback that puts it back in its slot, which runs after any property is set on it.
+     */
+    esn_handle trackOwnedItem(ItemStack item, std::function<void(const ItemStack &)> writeback);
+
+    /** Runs the writeback for an item handle, if it has one. Called after every successful set. */
+    void persistItem(esn_handle target);
+
+    std::unordered_map<esn_handle, std::function<void(const ItemStack &)>> item_writebacks_;
 
     struct Entry {
         void *ptr{nullptr};

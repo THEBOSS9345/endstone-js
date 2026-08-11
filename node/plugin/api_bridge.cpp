@@ -33,6 +33,20 @@
 #include <endstone/util/socket_address.h>
 #include <endstone/event/actor/actor_damage_event.h>
 #include <endstone/event/actor/actor_death_event.h>
+#include <endstone/event/actor/actor_knockback_event.h>
+#include <endstone/event/player/player_bed_leave_event.h>
+#include <endstone/event/player/player_dimension_change_event.h>
+#include <endstone/event/player/player_emote_event.h>
+#include <endstone/event/player/player_game_mode_change_event.h>
+#include <endstone/event/player/player_interact_actor_event.h>
+#include <endstone/event/player/player_item_consume_event.h>
+#include <endstone/event/player/player_item_held_event.h>
+#include <endstone/event/player/player_kick_event.h>
+#include <endstone/event/player/player_login_event.h>
+#include <endstone/event/server/script_message_event.h>
+#include <endstone/event/server/server_list_ping_event.h>
+#include <endstone/event/server/server_load_event.h>
+#include <endstone/inventory/equipment_slot.h>
 #include <endstone/event/actor/player_death_event.h>
 #include <endstone/event/server/map_initialize_event.h>
 #include <endstone/event/server/packet_receive_event.h>
@@ -91,6 +105,8 @@
 #include <endstone/level/level.h>
 #include <endstone/level/location.h>
 #include <endstone/player.h>
+#include <endstone/scheduler/scheduler.h>
+#include <endstone/scheduler/task.h>
 #include <endstone/plugin/plugin_manager.h>
 #include <endstone/server.h>
 #include <endstone/util/vector.h>
@@ -332,6 +348,46 @@ std::optional<GameMode> gameModeFromName(std::string_view name)
     return std::nullopt;
 }
 
+// Same reasoning as gameModeName: magic_enum is core-only, so these are mapped by hand. The names are
+// lowercase so JavaScript compares them without worrying about casing.
+std::string_view blockFaceName(const BlockFace face)
+{
+    switch (face) {
+    case BlockFace::Down: return "down";
+    case BlockFace::Up: return "up";
+    case BlockFace::North: return "north";
+    case BlockFace::South: return "south";
+    case BlockFace::West: return "west";
+    case BlockFace::East: return "east";
+    }
+    return "down";
+}
+
+std::string_view interactActionName(const PlayerInteractEvent::Action action)
+{
+    switch (action) {
+    case PlayerInteractEvent::Action::LeftClickBlock: return "leftClickBlock";
+    case PlayerInteractEvent::Action::RightClickBlock: return "rightClickBlock";
+    case PlayerInteractEvent::Action::LeftClickAir: return "leftClickAir";
+    case PlayerInteractEvent::Action::RightClickAir: return "rightClickAir";
+    }
+    return "rightClickBlock";
+}
+
+std::string_view equipmentSlotName(const EquipmentSlot slot)
+{
+    switch (slot) {
+    case EquipmentSlot::Hand: return "hand";
+    case EquipmentSlot::OffHand: return "offHand";
+    case EquipmentSlot::Feet: return "feet";
+    case EquipmentSlot::Legs: return "legs";
+    case EquipmentSlot::Chest: return "chest";
+    case EquipmentSlot::Head: return "head";
+    default: break;
+    }
+    return "hand";
+}
+
 EventPriority toPriority(int value)
 {
     switch (value) {
@@ -565,6 +621,28 @@ void ApiBridge::releaseScope(const esn_handle scope_start)
     owned_locations_.clear();
     owned_vectors_.clear();
     owned_items_.clear();
+    item_writebacks_.clear();
+}
+
+esn_handle ApiBridge::trackOwnedItem(ItemStack item, std::function<void(const ItemStack &)> writeback)
+{
+    owned_items_.push_back(std::make_unique<ItemStack>(std::move(item)));
+    const auto handle = track(owned_items_.back().get(), Kind::ItemStack);
+    if (writeback) {
+        item_writebacks_.emplace(handle, std::move(writeback));
+    }
+    return handle;
+}
+
+void ApiBridge::persistItem(const esn_handle target)
+{
+    const auto it = item_writebacks_.find(target);
+    if (it == item_writebacks_.end() || !it->second) {
+        return;
+    }
+    if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
+        it->second(*stack);
+    }
 }
 
 Inventory *ApiBridge::resolveInventory(const esn_handle target)
@@ -573,6 +651,52 @@ Inventory *ApiBridge::resolveInventory(const esn_handle target)
         return player_inventory;
     }
     return static_cast<Inventory *>(resolve(target, Kind::Inventory));
+}
+
+void ApiBridge::setTaskSink(TaskSink sink)
+{
+    task_sink_ = std::move(sink);
+}
+
+esn_status ApiBridge::scheduleTask(const std::uint32_t delay_ticks, const std::uint32_t period_ticks,
+                                   std::uint32_t *out_task)
+{
+    if (!out_task || !task_sink_) {
+        return ESN_ERR_BAD_ARGUMENT;
+    }
+    const auto id = next_task_++;
+    auto &scheduler = plugin_.getServer().getScheduler();
+    // A one-shot task drops itself from the table when it fires; a repeating one lives until cancelled.
+    auto task = period_ticks == 0
+                    ? scheduler.runTaskLater(plugin_,
+                                             [this, id]() {
+                                                 const auto sink = task_sink_;
+                                                 tasks_.erase(id);
+                                                 if (sink) {
+                                                     sink(id);
+                                                 }
+                                             },
+                                             delay_ticks)
+                    : scheduler.runTaskTimer(plugin_, [this, id]() { if (task_sink_) { task_sink_(id); } },
+                                             delay_ticks, period_ticks);
+    if (!task) {
+        return ESN_ERR_INTERNAL;
+    }
+    tasks_.emplace(id, std::move(task));
+    *out_task = id;
+    return ESN_OK;
+}
+
+void ApiBridge::cancelTask(const std::uint32_t task)
+{
+    const auto it = tasks_.find(task);
+    if (it == tasks_.end()) {
+        return;
+    }
+    if (it->second) {
+        it->second->cancel();
+    }
+    tasks_.erase(it);
 }
 
 void ApiBridge::updateCommands()
@@ -604,6 +728,15 @@ void ApiBridge::shutdown()
     subscriptions_.clear();
     handles_.clear();
     event_sink_ = nullptr;
+    // Cancel before dropping the sink: a task that fired afterwards would call into a host that is
+    // being torn down.
+    for (auto &[id, task] : tasks_) {
+        if (task) {
+            task->cancel();
+        }
+    }
+    tasks_.clear();
+    task_sink_ = nullptr;
 }
 
 // --- property dispatch ---------------------------------------------------------------------------
@@ -698,6 +831,16 @@ esn_status ApiBridge::getBool(const esn_handle target, const std::string_view na
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
+        const auto ev = event->getEventName();
+        if (ev == "PlayerInteractEvent") {
+            auto *interact = static_cast<PlayerInteractEvent *>(event);
+            if (name == "hasBlock") { *out = interact->hasBlock(); return ESN_OK; }
+            if (name == "hasItem") { *out = interact->hasItem(); return ESN_OK; }
+        }
+        if (name == "isMuted" && ev == "PlayerEmoteEvent") {
+            *out = static_cast<PlayerEmoteEvent *>(event)->isMuted();
+            return ESN_OK;
+        }
         // Event::isCancellable() is private to EventHandler; the ICancellable cast is the public test.
         if (name == "isCancellable") { *out = eventCancellable(event) != nullptr; return ESN_OK; }
         if (name == "isAsynchronous") { *out = event->isAsynchronous(); return ESN_OK; }
@@ -780,6 +923,34 @@ esn_status ApiBridge::getInt(const esn_handle target, const std::string_view nam
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
+        const auto ev = event->getEventName();
+        if (name == "previousSlot" && ev == "PlayerItemHeldEvent") {
+            *out = static_cast<PlayerItemHeldEvent *>(event)->getPreviousSlot();
+            return ESN_OK;
+        }
+        if (name == "newSlot" && ev == "PlayerItemHeldEvent") {
+            *out = static_cast<PlayerItemHeldEvent *>(event)->getNewSlot();
+            return ESN_OK;
+        }
+        if (name == "blockCount") {
+            if (ev == "ActorExplodeEvent") {
+                *out = static_cast<std::int64_t>(static_cast<ActorExplodeEvent *>(event)->getBlockList().size());
+                return ESN_OK;
+            }
+            if (ev == "BlockExplodeEvent") {
+                *out = static_cast<std::int64_t>(static_cast<BlockExplodeEvent *>(event)->getBlockList().size());
+                return ESN_OK;
+            }
+            return ESN_ERR_NO_SUCH_MEMBER;
+        }
+        if (ev == "ServerListPingEvent") {
+            auto *ping = static_cast<ServerListPingEvent *>(event);
+            if (name == "numPlayers") { *out = ping->getNumPlayers(); return ESN_OK; }
+            if (name == "maxPlayers") { *out = ping->getMaxPlayers(); return ESN_OK; }
+            if (name == "localPort") { *out = ping->getLocalPort(); return ESN_OK; }
+            if (name == "localPortV6") { *out = ping->getLocalPortV6(); return ESN_OK; }
+            if (name == "protocolVersion") { *out = ping->getNetworkProtocolVersion(); return ESN_OK; }
+        }
         if (name == "packetId" || name == "subClientId") {
             const auto event_name = event->getEventName();
             if (event_name == "PacketReceiveEvent") {
@@ -938,6 +1109,60 @@ esn_status ApiBridge::getString(const esn_handle target, const std::string_view 
             }
             return ESN_ERR_NO_SUCH_MEMBER;
         }
+        const auto ev = event->getEventName();
+        // --- strings on specific events ---------------------------------------------------------
+        if (name == "action" && ev == "PlayerInteractEvent") {
+            return emitString(interactActionName(static_cast<PlayerInteractEvent *>(event)->getAction()), buf, cap,
+                              needed);
+        }
+        if (name == "blockFace" && ev == "PlayerInteractEvent") {
+            return emitString(blockFaceName(static_cast<PlayerInteractEvent *>(event)->getBlockFace()), buf, cap,
+                              needed);
+        }
+        if (name == "direction" && (ev == "BlockPistonExtendEvent" || ev == "BlockPistonRetractEvent")) {
+            return emitString(blockFaceName(static_cast<BlockPistonEvent *>(event)->getDirection()), buf, cap, needed);
+        }
+        if (name == "hand" && ev == "PlayerItemConsumeEvent") {
+            return emitString(equipmentSlotName(static_cast<PlayerItemConsumeEvent *>(event)->getHand()), buf, cap,
+                              needed);
+        }
+        if (name == "newGameMode" && ev == "PlayerGameModeChangeEvent") {
+            return emitString(gameModeName(static_cast<PlayerGameModeChangeEvent *>(event)->getNewGameMode()), buf,
+                              cap, needed);
+        }
+        if (name == "emoteId" && ev == "PlayerEmoteEvent") {
+            return emitString(static_cast<PlayerEmoteEvent *>(event)->getEmoteId(), buf, cap, needed);
+        }
+        if (name == "kickMessage" && ev == "PlayerLoginEvent") {
+            return emitString(static_cast<PlayerLoginEvent *>(event)->getKickMessage(), buf, cap, needed);
+        }
+        if (name == "reason" && ev == "PlayerKickEvent") {
+            return emitString(static_cast<PlayerKickEvent *>(event)->getReason(), buf, cap, needed);
+        }
+        if (name == "loadType" && ev == "ServerLoadEvent") {
+            const auto type = static_cast<ServerLoadEvent *>(event)->getType();
+            return emitString(type == ServerLoadEvent::LoadType::Reload ? "reload" : "startup", buf, cap, needed);
+        }
+        if (name == "messageId" && ev == "ScriptMessageEvent") {
+            return emitString(static_cast<ScriptMessageEvent *>(event)->getMessageId(), buf, cap, needed);
+        }
+        if (name == "scriptMessage" && ev == "ScriptMessageEvent") {
+            return emitString(static_cast<ScriptMessageEvent *>(event)->getMessage(), buf, cap, needed);
+        }
+        if (name == "message" && ev == "BroadcastMessageEvent") {
+            return emitString(messageToString(static_cast<BroadcastMessageEvent *>(event)->getMessage()), buf, cap,
+                              needed);
+        }
+        // --- the server-list entry, every field writable ----------------------------------------
+        if (ev == "ServerListPingEvent") {
+            auto *ping = static_cast<ServerListPingEvent *>(event);
+            if (name == "motd") { return emitString(ping->getMotd(), buf, cap, needed); }
+            if (name == "levelName") { return emitString(ping->getLevelName(), buf, cap, needed); }
+            if (name == "serverGuid") { return emitString(ping->getServerGuid(), buf, cap, needed); }
+            if (name == "gameMode") { return emitString(gameModeName(ping->getGameMode()), buf, cap, needed); }
+            if (name == "minecraftVersion") { return emitString(ping->getMinecraftVersionNetwork(), buf, cap, needed); }
+            if (name == "address") { return emitString(ping->getAddress().getHostname(), buf, cap, needed); }
+        }
         if (name == "deathMessage" && event->getEventName() == "PlayerDeathEvent") {
             const auto message = static_cast<PlayerDeathEvent *>(event)->getDeathMessage();
             return emitString(message ? messageToString(*message) : std::string{}, buf, cap, needed);
@@ -1033,6 +1258,99 @@ esn_status ApiBridge::getHandle(const esn_handle target, const std::string_view 
             }
             return ESN_ERR_NO_SUCH_MEMBER;
         }
+        const auto ev = event->getEventName();
+        // Blocks carried by events other than the plain BlockEvent ones.
+        if (name == "toBlock" && ev == "BlockFromToEvent") {
+            *out = track(&static_cast<BlockFromToEvent *>(event)->getToBlock(), Kind::Block);
+            return ESN_OK;
+        }
+        if (name == "bed") {
+            if (ev == "PlayerBedEnterEvent") {
+                *out = track(&static_cast<PlayerBedEnterEvent *>(event)->getBed(), Kind::Block);
+                return ESN_OK;
+            }
+            if (ev == "PlayerBedLeaveEvent") {
+                *out = track(&static_cast<PlayerBedLeaveEvent *>(event)->getBed(), Kind::Block);
+                return ESN_OK;
+            }
+            return ESN_ERR_NO_SUCH_MEMBER;
+        }
+        if (name == "blockAgainst" && ev == "BlockPlaceEvent") {
+            *out = track(&static_cast<BlockPlaceEvent *>(event)->getBlockAgainst(), Kind::Block);
+            return ESN_OK;
+        }
+        if (name == "blockReplaced" && ev == "BlockPlaceEvent") {
+            *out = track(&static_cast<BlockPlaceEvent *>(event)->getBlockReplaced(), Kind::Block);
+            return ESN_OK;
+        }
+        // Where an event happened, or where it is going.
+        if (name == "from" || name == "to") {
+            const auto copyLocation = [&](const Location &location) {
+                owned_locations_.push_back(location);
+                *out = track(&owned_locations_.back(), Kind::Location);
+                return ESN_OK;
+            };
+            if (ev == "PlayerMoveEvent" || ev == "PlayerJumpEvent" || ev == "PlayerTeleportEvent" ||
+                ev == "PlayerPortalEvent") {
+                auto *move = static_cast<PlayerMoveEvent *>(event);
+                return copyLocation(name == "from" ? move->getFrom() : move->getTo());
+            }
+            if (ev == "ActorTeleportEvent") {
+                auto *teleport = static_cast<ActorTeleportEvent *>(event);
+                return copyLocation(name == "from" ? teleport->getFrom() : teleport->getTo());
+            }
+            return ESN_ERR_NO_SUCH_MEMBER;
+        }
+        if (name == "location" && ev == "ActorExplodeEvent") {
+            owned_locations_.push_back(static_cast<ActorExplodeEvent *>(event)->getLocation());
+            *out = track(&owned_locations_.back(), Kind::Location);
+            return ESN_OK;
+        }
+        // Items an event hands out. These are live references, so changes reach the world directly.
+        if (name == "item") {
+            if (ev == "PlayerItemConsumeEvent") {
+                auto &item = const_cast<ItemStack &>(static_cast<PlayerItemConsumeEvent *>(event)->getItem());
+                *out = track(&item, Kind::ItemStack);
+                return ESN_OK;
+            }
+            if (ev == "PlayerInteractEvent") {
+                auto *interact = static_cast<PlayerInteractEvent *>(event);
+                if (!interact->hasItem()) {
+                    return ESN_ERR_NO_SUCH_MEMBER;  // absent, so it reads as undefined
+                }
+                auto &item = const_cast<ItemStack &>(*interact->getItem());
+                *out = track(&item, Kind::ItemStack);
+                return ESN_OK;
+            }
+        }
+        if (ev == "BlockCookEvent") {
+            auto *cook = static_cast<BlockCookEvent *>(event);
+            if (name == "source") {
+                *out = track(&const_cast<ItemStack &>(cook->getSource()), Kind::ItemStack);
+                return ESN_OK;
+            }
+            if (name == "result") {
+                // Write-through: setting a property puts the changed stack back as the cooked result.
+                *out = trackOwnedItem(cook->getResult(),
+                                      [cook](const ItemStack &changed) { cook->setResult(changed); });
+                return ESN_OK;
+            }
+        }
+        // The actor on the far side of an interaction, and who caused a knockback.
+        if (name == "actor" && ev == "PlayerInteractActorEvent") {
+            *out = trackActor(&static_cast<PlayerInteractActorEvent *>(event)->getActor());
+            return ESN_OK;
+        }
+        if (name == "source" && ev == "ActorKnockbackEvent") {
+            auto *source = static_cast<ActorKnockbackEvent *>(event)->getSource();
+            *out = source ? trackActor(source) : 0;
+            return ESN_OK;
+        }
+        if (name == "knockback" && ev == "ActorKnockbackEvent") {
+            owned_vectors_.push_back(static_cast<ActorKnockbackEvent *>(event)->getKnockback());
+            *out = track(&owned_vectors_.back(), Kind::Vector);
+            return ESN_OK;
+        }
         if (name == "plugin") {
             const auto event_name = event->getEventName();
             if (event_name == "PluginEnableEvent") {
@@ -1044,6 +1362,25 @@ esn_status ApiBridge::getHandle(const esn_handle target, const std::string_view 
                 return ESN_OK;
             }
             return ESN_ERR_NO_SUCH_MEMBER;
+        }
+        // What the player was holding as the action happened. Events do not carry it, so it is read
+        // from their main hand at dispatch time - which, because handlers run synchronously before the
+        // action is applied, is the item that was in use. Absent rather than null when the hand is
+        // empty, so `if (event.heldItem)` reads naturally.
+        if (name == "heldItem") {
+            auto *player = eventPlayer(event);
+            if (!player) {
+                return ESN_ERR_NO_SUCH_MEMBER;
+            }
+            auto &inventory = player->getInventory();
+            auto item = inventory.getItemInMainHand();
+            if (!item) {
+                return ESN_ERR_NO_SUCH_MEMBER;
+            }
+            *out = trackOwnedItem(std::move(*item), [&inventory](const endstone::ItemStack &changed) {
+                inventory.setItemInMainHand(changed);
+            });
+            return ESN_OK;
         }
         if (name == "map" && event->getEventName() == "MapInitializeEvent") {
             *out = track(&static_cast<MapInitializeEvent *>(event)->getMap(), Kind::MapView);
@@ -1115,21 +1452,32 @@ esn_status ApiBridge::getHandle(const esn_handle target, const std::string_view 
         // The equipment slots, which only a player inventory has.
         auto *player_inventory = static_cast<PlayerInventory *>(resolve(target, Kind::PlayerInventory));
         if (player_inventory) {
-            const auto equipment = [&](std::optional<endstone::ItemStack> item) -> esn_status {
+            using Setter = void (PlayerInventory::*)(std::optional<endstone::ItemStack>);
+            const auto equipment = [&](std::optional<endstone::ItemStack> item, Setter setter) -> esn_status {
                 if (!item) {
                     *out = 0;  // an empty slot reads as null
                     return ESN_OK;
                 }
-                owned_items_.push_back(std::make_unique<endstone::ItemStack>(std::move(*item)));
-                *out = track(owned_items_.back().get(), Kind::ItemStack);
+                *out = trackOwnedItem(std::move(*item),
+                                      [player_inventory, setter](const endstone::ItemStack &changed) {
+                                          (player_inventory->*setter)(changed);
+                                      });
                 return ESN_OK;
             };
-            if (name == "helmet") { return equipment(player_inventory->getHelmet()); }
-            if (name == "chestplate") { return equipment(player_inventory->getChestplate()); }
-            if (name == "leggings") { return equipment(player_inventory->getLeggings()); }
-            if (name == "boots") { return equipment(player_inventory->getBoots()); }
-            if (name == "itemInMainHand") { return equipment(player_inventory->getItemInMainHand()); }
-            if (name == "itemInOffHand") { return equipment(player_inventory->getItemInOffHand()); }
+            if (name == "helmet") { return equipment(player_inventory->getHelmet(), &PlayerInventory::setHelmet); }
+            if (name == "chestplate") {
+                return equipment(player_inventory->getChestplate(), &PlayerInventory::setChestplate);
+            }
+            if (name == "leggings") {
+                return equipment(player_inventory->getLeggings(), &PlayerInventory::setLeggings);
+            }
+            if (name == "boots") { return equipment(player_inventory->getBoots(), &PlayerInventory::setBoots); }
+            if (name == "itemInMainHand") {
+                return equipment(player_inventory->getItemInMainHand(), &PlayerInventory::setItemInMainHand);
+            }
+            if (name == "itemInOffHand") {
+                return equipment(player_inventory->getItemInOffHand(), &PlayerInventory::setItemInOffHand);
+            }
         }
         (void)inventory;
         return ESN_ERR_NO_SUCH_MEMBER;
@@ -1179,11 +1527,21 @@ esn_status ApiBridge::setBool(const esn_handle target, const std::string_view na
 
 esn_status ApiBridge::setInt(const esn_handle target, const std::string_view name, const std::int64_t value)
 {
+    if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
+        if (event->getEventName() == "ServerListPingEvent") {
+            auto *ping = static_cast<ServerListPingEvent *>(event);
+            if (name == "numPlayers") { ping->setNumPlayers(static_cast<int>(value)); return ESN_OK; }
+            if (name == "maxPlayers") { ping->setMaxPlayers(static_cast<int>(value)); return ESN_OK; }
+            if (name == "localPort") { ping->setLocalPort(static_cast<int>(value)); return ESN_OK; }
+            if (name == "localPortV6") { ping->setLocalPortV6(static_cast<int>(value)); return ESN_OK; }
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
     if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
         // Writes reach the world only for a stack the server handed out live, such as the one on
         // PlayerDropItemEvent. A stack read out of an inventory is a copy - change the inventory.
-        if (name == "amount") { stack->setAmount(static_cast<int>(value)); return ESN_OK; }
-        if (name == "data") { stack->setData(static_cast<int>(value)); return ESN_OK; }
+        if (name == "amount") { stack->setAmount(static_cast<int>(value)); persistItem(target); return ESN_OK; }
+        if (name == "data") { stack->setData(static_cast<int>(value)); persistItem(target); return ESN_OK; }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *player_inventory = static_cast<PlayerInventory *>(resolve(target, Kind::PlayerInventory))) {
@@ -1231,7 +1589,7 @@ esn_status ApiBridge::setDouble(const esn_handle target, const std::string_view 
 esn_status ApiBridge::setString(const esn_handle target, const std::string_view name, const std::string_view value)
 {
     if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
-        if (name == "type") { stack->setType(std::string{value}); return ESN_OK; }
+        if (name == "type") { stack->setType(std::string{value}); persistItem(target); return ESN_OK; }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
@@ -1271,6 +1629,37 @@ esn_status ApiBridge::setString(const esn_handle target, const std::string_view 
                 return ESN_OK;
             }
             return ESN_ERR_NO_SUCH_MEMBER;
+        }
+        const auto ev = event->getEventName();
+        if (name == "kickMessage" && ev == "PlayerLoginEvent") {
+            static_cast<PlayerLoginEvent *>(event)->setKickMessage(std::string{value});
+            return ESN_OK;
+        }
+        if (name == "reason" && ev == "PlayerKickEvent") {
+            static_cast<PlayerKickEvent *>(event)->setReason(std::string{value});
+            return ESN_OK;
+        }
+        if (name == "message" && ev == "BroadcastMessageEvent") {
+            static_cast<BroadcastMessageEvent *>(event)->setMessage(Message{std::string{value}});
+            return ESN_OK;
+        }
+        if (ev == "ServerListPingEvent") {
+            auto *ping = static_cast<ServerListPingEvent *>(event);
+            if (name == "motd") { ping->setMotd(std::string{value}); return ESN_OK; }
+            if (name == "levelName") { ping->setLevelName(std::string{value}); return ESN_OK; }
+            if (name == "serverGuid") { ping->setServerGuid(std::string{value}); return ESN_OK; }
+            if (name == "minecraftVersion") {
+                ping->setMinecraftVersionNetwork(std::string{value});
+                return ESN_OK;
+            }
+            if (name == "gameMode") {
+                const auto mode = gameModeFromName(value);
+                if (!mode) {
+                    return ESN_ERR_BAD_ARGUMENT;
+                }
+                ping->setGameMode(*mode);
+                return ESN_OK;
+            }
         }
         if (name == "deathMessage" && event->getEventName() == "PlayerDeathEvent") {
             // An empty string suppresses the announcement, matching join and quit messages.
@@ -1388,6 +1777,40 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
         }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
+    if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
+        const auto ev = event->getEventName();
+        // Backend for `event.knockback = { x, y, z }`, routed as a method because the ABI's setters
+        // only carry scalars.
+        if (name == "setKnockback" && ev == "ActorKnockbackEvent") {
+            static_cast<ActorKnockbackEvent *>(event)->setKnockback(
+                Vector{number(0), number(1), number(2)});
+            return ESN_OK;
+        }
+        // The blocks an explosion is about to destroy, by index. Removing one from the list is not
+        // exposed; cancel the event instead.
+        if (name == "getExplodedBlock" && out_handle) {
+            const auto index = static_cast<std::size_t>(number(0));
+            if (ev == "ActorExplodeEvent") {
+                auto &blocks = static_cast<ActorExplodeEvent *>(event)->getBlockList();
+                if (index >= blocks.size() || !blocks[index]) {
+                    *out_handle = 0;
+                    return ESN_OK;
+                }
+                *out_handle = track(blocks[index].get(), Kind::Block);
+                return ESN_OK;
+            }
+            if (ev == "BlockExplodeEvent") {
+                auto &blocks = static_cast<BlockExplodeEvent *>(event)->getBlockList();
+                if (index >= blocks.size() || !blocks[index]) {
+                    *out_handle = 0;
+                    return ESN_OK;
+                }
+                *out_handle = track(blocks[index].get(), Kind::Block);
+                return ESN_OK;
+            }
+            return ESN_ERR_NO_SUCH_MEMBER;
+        }
+    }
     if (auto *sender = static_cast<CommandSender *>(resolve(target, Kind::CommandSender))) {
         if (name == "sendMessage") { sender->sendMessage(Message{std::string{text}}); return ESN_OK; }
         if (name == "sendErrorMessage") { sender->sendErrorMessage(Message{std::string{text}}); return ESN_OK; }
@@ -1405,13 +1828,15 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
         };
 
         if (name == "getItem" && out_handle) {
-            auto item = inventory->getItem(static_cast<int>(number(0)));
+            const auto slot = static_cast<int>(number(0));
+            auto item = inventory->getItem(slot);
             if (!item) {
                 *out_handle = 0;
                 return ESN_OK;
             }
-            owned_items_.push_back(std::make_unique<endstone::ItemStack>(std::move(*item)));
-            *out_handle = track(owned_items_.back().get(), Kind::ItemStack);
+            *out_handle = trackOwnedItem(std::move(*item), [inventory, slot](const endstone::ItemStack &changed) {
+                inventory->setItem(slot, changed);
+            });
             return ESN_OK;
         }
         // setItem(slot, item): numbers are slot, then the item's amount and data.
@@ -1708,6 +2133,23 @@ void ESN_CALL tUpdateCommands(void *c)
     catch (...) {
     }
 }
+esn_status ESN_CALL tScheduleTask(void *c, std::uint32_t delay, std::uint32_t period, std::uint32_t *out)
+{
+    try {
+        return bridge(c).scheduleTask(delay, period, out);
+    }
+    catch (...) {
+        return ESN_ERR_INTERNAL;
+    }
+}
+void ESN_CALL tCancelTask(void *c, std::uint32_t task)
+{
+    try {
+        bridge(c).cancelTask(task);
+    }
+    catch (...) {
+    }
+}
 void ESN_CALL tLog(void *c, int level, const char *m, std::size_t len)
 {
     try {
@@ -1745,6 +2187,8 @@ void ApiBridge::fill(esn_endstone_api &api)
     api.subscribe = tSubscribe;
     api.unsubscribe = tUnsubscribe;
     api.update_commands = tUpdateCommands;
+    api.schedule_task = tScheduleTask;
+    api.cancel_task = tCancelTask;
 }
 
 }  // namespace endstone::node

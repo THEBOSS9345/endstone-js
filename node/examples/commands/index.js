@@ -8,7 +8,7 @@
 // In game, try:  /whereami   /warp shop   /heal 10   /gm creative   /jscommands
 // Every one of them should autocomplete as you type.
 
-import { commands, events, server, logger } from "@endstone-js/server";
+import { commands, events, scheduler, server, logger } from "@endstone-js/server";
 
 const WARPS = {
     spawn: { x: 0, y: 80, z: 0 },
@@ -165,10 +165,41 @@ export default {
             event.deathMessage = `§c${event.player.name} §7was undone by §f${cause}`;
         });
 
-        events.pluginEnable((event) => {
-            logger.info(`[commands] plugin enabled: ${event.plugin.fullName}`);
+        // serverLoad, not onEnable, is where the world is reliably available.
+        events.serverLoad(() => {
+            const level = server.level;
+            logger.info(`[commands] world ready: ${level ? level.name : "none"}`);
         });
 
-        logger.info(`commands example ready on ${server.minecraftVersion}`);
+        // Every player event knows what was in the player's hand, or undefined if it was empty. The
+        // stack is write-through, so shrinking it here really consumes an item.
+        events.blockBreak((event) => {
+            const held = event.heldItem;
+            if (!held) {
+                event.player.sendMessage("§7broke it with your bare hands");
+                return;
+            }
+            event.player.sendMessage(`§7broke ${event.block.type} with §f${held.type} §7x${held.amount}`);
+            if (held.type === "minecraft:torch" && held.amount > 1) {
+                // Reading it back proves the write reached the world, not just the copy.
+                held.amount -= 1;
+                const now = event.player.inventory.itemInMainHand;
+                logger.info(`[commands] torch stack ${held.amount + 1} -> ${now ? now.amount : 0}`);
+            }
+        });
+
+        // Tick scheduling: on the server thread, so touching the API here is safe. 20 ticks ~ 1 second.
+        let ticks = 0;
+        const heartbeat = scheduler.runTimer(() => {
+            ticks += 1;
+            if (ticks % 60 === 0) {
+                logger.info(`[commands] ${ticks * 5}s of ticks, ${server.onlinePlayerCount} online`);
+            }
+        }, 100);
+
+        // Deferring out of an event handler, so slow work never sits on the tick that fired it.
+        scheduler.runLater(() => logger.info("[commands] scheduler.runLater fired"), 40);
+
+        logger.info(`commands example ready on ${server.minecraftVersion} (heartbeat task ${heartbeat.id})`);
     },
 };

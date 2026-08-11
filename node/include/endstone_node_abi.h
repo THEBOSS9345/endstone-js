@@ -52,7 +52,7 @@ extern "C" {
 #endif
 
 /* Bumped on any incompatible change below. Checked by both sides at load time. */
-#define ESN_ABI_VERSION 9u
+#define ESN_ABI_VERSION 10u
 
 typedef enum esn_status {
     ESN_OK = 0,
@@ -190,6 +190,16 @@ typedef struct esn_endstone_api {
      * the updated, permission-filtered list to clients.
      */
     void(ESN_CALL *update_commands)(void *context);
+
+    /*
+     * Schedules a repeating or one-shot task on the server thread, measured in BDS ticks (20 a second).
+     * `period_ticks` of 0 means run once. The task id comes back in `out_task` and is passed to
+     * esn_host_run_task every time it fires.
+     */
+    esn_status(ESN_CALL *schedule_task)(void *context, uint32_t delay_ticks, uint32_t period_ticks,
+                                       uint32_t *out_task);
+    /* Stops a scheduled task. Safe to call for a task that has already finished. */
+    void(ESN_CALL *cancel_task)(void *context, uint32_t task);
 } esn_endstone_api;
 
 /* Mirrors endstone::EventPriority. */
@@ -341,6 +351,12 @@ ESN_EXPORT esn_status ESN_CALL esn_plugin_command(esn_plugin *plugin, const char
  * A JavaScript failure is reported through the log callback and returns ESN_ERR_SCRIPT_FAILED.
  */
 ESN_EXPORT esn_status ESN_CALL esn_plugin_reload(esn_plugin *plugin);
+
+/*
+ * Runs a scheduled task's JavaScript callback. Called by Endstone on the server thread each time the
+ * task fires, with the id returned by schedule_task.
+ */
+ESN_EXPORT esn_status ESN_CALL esn_host_run_task(esn_host *host, uint32_t task);
 
 /*
  * Delivers a subscribed event to JavaScript. Called by Endstone on the server thread, synchronously,

@@ -730,6 +730,40 @@ napi_value jsUpdateCommands(napi_env env, napi_callback_info info)
     return napi_get_undefined(env, &undefined_value) == napi_ok ? undefined_value : nullptr;
 }
 
+napi_value jsScheduleTask(napi_env env, napi_callback_info info)
+{
+    std::size_t argc = 2;
+    napi_value argv[2] = {nullptr, nullptr};
+    const auto *api = g_host ? g_host->api : nullptr;
+    std::uint32_t delay = 0;
+    std::uint32_t period = 0;
+    if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc < 2 || !api ||
+        !api->schedule_task || napi_get_value_uint32(env, argv[0], &delay) != napi_ok ||
+        napi_get_value_uint32(env, argv[1], &period) != napi_ok) {
+        return nullptr;
+    }
+    std::uint32_t task = 0;
+    if (api->schedule_task(api->context, delay, period, &task) != ESN_OK) {
+        return nullptr;
+    }
+    napi_value result = nullptr;
+    return napi_create_uint32(env, task, &result) == napi_ok ? result : nullptr;
+}
+
+napi_value jsCancelTask(napi_env env, napi_callback_info info)
+{
+    std::size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    const auto *api = g_host ? g_host->api : nullptr;
+    std::uint32_t task = 0;
+    if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) == napi_ok && argc >= 1 && api &&
+        api->cancel_task && napi_get_value_uint32(env, argv[0], &task) == napi_ok) {
+        api->cancel_task(api->context, task);
+    }
+    napi_value undefined_value = nullptr;
+    return napi_get_undefined(env, &undefined_value) == napi_ok ? undefined_value : nullptr;
+}
+
 napi_value registerBinding(napi_env env, napi_value exports)
 {
     defineFunction(env, exports, "log", jsLog);
@@ -750,6 +784,8 @@ napi_value registerBinding(napi_env env, napi_value exports)
     defineFunction(env, exports, "subscribe", jsSubscribe);
     defineFunction(env, exports, "unsubscribe", jsUnsubscribe);
     defineFunction(env, exports, "updateCommands", jsUpdateCommands);
+    defineFunction(env, exports, "scheduleTask", jsScheduleTask);
+    defineFunction(env, exports, "cancelTask", jsCancelTask);
     if (g_host) {
         defineString(env, exports, "scriptPath", g_host->script_path.c_str());
     }
@@ -848,7 +884,7 @@ const METHODS = new Set([
   'sendMessage', 'sendErrorMessage', 'sendPopup', 'sendTip', 'sendTitle', 'resetTitle', 'sendToast',
   'kick', 'performCommand', 'updateCommands', 'transfer', 'teleport', 'setRotation',
   'giveExp', 'giveExpLevels', 'playSound', 'stopSound', 'stopAllSounds', 'spawnParticle',
-  'remove', 'getRelative', 'cancel',
+  'remove', 'getRelative', 'cancel', 'getExplodedBlock', 'setKnockback',
   // Inventory
   'getItem', 'setItem', 'addItem', 'removeItem', 'clear', 'setHeldItemSlot',
   'setHelmet', 'setChestplate', 'setLeggings', 'setBoots', 'setItemInMainHand', 'setItemInOffHand',
@@ -1011,6 +1047,11 @@ function wrap(handle) {
         // The `rotation` field is two numbers behind one object; route it through the same
         // dispatch as a method so the host reads yaw, pitch.
         binding.invoke(handle, 'setRotation', ...flattenRotation(value));
+      } else if (prop === 'knockback') {
+        // Same trick for a vector-valued field: the ABI's setters only carry scalars.
+        const vector = numbersOf(value, POSITION_KEYS);
+        if (!vector) throw new TypeError('knockback must have numeric x, y and z');
+        binding.invoke(handle, 'setKnockback', ...vector);
       } else {
         binding.set(handle, prop, value);
       }
@@ -1276,8 +1317,72 @@ function runDeclaredCommand(pluginId, name, senderHandle, args) {
   return true;
 }
 
+// --- scheduler -----------------------------------------------------------------------------------
+// Endstone's own scheduler, measured in server ticks and run on the server thread. Distinct from
+// setTimeout/setInterval, which are Node's and are driven by the event loop: a task scheduled here
+// runs in step with the world, so it can touch the API safely and its timing is tied to the tick rate
+// rather than to wall-clock milliseconds.
+const scheduledTasks = new Map();
+
+function runTask(task) {
+  const entry = scheduledTasks.get(task);
+  if (!entry) return;
+  if (entry.once) scheduledTasks.delete(task);
+  try {
+    entry.handler();
+  } catch (err) {
+    binding.log(4, `scheduled task threw: ${(err && err.stack) || err}`);
+  }
+}
+
+const asTicks = (value, fallback) => {
+  const ticks = Number(value);
+  return Number.isFinite(ticks) && ticks >= 0 ? Math.floor(ticks) : fallback;
+};
+
+function schedule(handler, delay, period, plugin) {
+  if (typeof handler !== 'function') {
+    throw new TypeError('scheduler: handler must be a function');
+  }
+  const task = binding.scheduleTask(delay, period);
+  if (typeof task !== 'number') {
+    throw new Error('scheduler: the server refused to schedule the task');
+  }
+  scheduledTasks.set(task, { handler, once: period === 0, plugin });
+  return {
+    id: task,
+    cancel() {
+      if (!scheduledTasks.has(task)) return;
+      scheduledTasks.delete(task);
+      binding.cancelTask(task);
+    },
+  };
+}
+
+/** Drops a plugin's scheduled tasks, so a reload does not leave the old ones running. */
+function dropTasks(pluginId) {
+  for (const [task, entry] of scheduledTasks) {
+    if (entry.plugin === pluginId) {
+      scheduledTasks.delete(task);
+      binding.cancelTask(task);
+    }
+  }
+}
+
+const scheduler = {
+  runTimer(handler, period = 20, delay = 0) {
+    return schedule(handler, asTicks(delay, 0), Math.max(1, asTicks(period, 20)), activePluginId);
+  },
+  runLater(handler, delay = 1) {
+    return schedule(handler, asTicks(delay, 1), 0, activePluginId);
+  },
+  runNextTick(handler) {
+    return schedule(handler, 0, 0, activePluginId);
+  },
+};
+
 const endstoneModule = {
-  server, events, commands, logger: server.logger, LogLevel: LEVELS, EventPriority: PRIORITIES,
+  server, events, commands, scheduler, logger: server.logger, LogLevel: LEVELS, EventPriority: PRIORITIES,
 };
 
 // Handed to the virtual module's source through a well-known symbol rather than a bare global.
@@ -1529,6 +1634,7 @@ function unloadPlugin(id) {
   // Commands are dropped here but subscriptions are not: unload runs during shutdown, and
   // binding.unsubscribe would call back into a plugin manager that may already be tearing down.
   dropCommands(id);
+  dropTasks(id);
   plugins.delete(id);
 }
 
@@ -1651,6 +1757,7 @@ function reloadPlugins(filter) {
     try {
       runHook(record, record.id, 'onDisable');
       dropSubscriptions(record.id);
+      dropTasks(record.id);
       const wasDeclared = dropCommands(record.id);
 
       // Pick up edits to package.json, including a changed main entry point.
@@ -1716,7 +1823,7 @@ function reloadPlugins(filter) {
 
 binding.setRuntime({
   beginLoad, pollLoad, invoke: invokePlugin, unload: unloadPlugin, dispatchEvent,
-  reload: reloadPlugins, command: runDeclaredCommand,
+  reload: reloadPlugins, command: runDeclaredCommand, task: runTask,
 });
 
 // --- the built-in reload command ----------------------------------------------------------------
@@ -2209,6 +2316,26 @@ esn_status ESN_CALL esn_plugin_reload(esn_plugin *handle)
             return ESN_ERR_INTERNAL;
         }
         return ok ? ESN_OK : ESN_ERR_SCRIPT_FAILED;
+    }
+    catch (...) {
+        return ESN_ERR_INTERNAL;
+    }
+}
+
+esn_status ESN_CALL esn_host_run_task(esn_host *handle, uint32_t task)
+{
+    auto *host = reinterpret_cast<HostImpl *>(handle);
+    if (!host || !host->node) {
+        return ESN_ERR_NOT_INITIALIZED;
+    }
+    try {
+        const embed::Scope scope(host->node);
+        napi_env env = host->napi;
+        napi_value arg = nullptr;
+        if (!env || napi_create_uint32(env, task, &arg) != napi_ok) {
+            return ESN_ERR_INTERNAL;
+        }
+        return callRuntime(host, "task", 1, &arg, nullptr) ? ESN_OK : ESN_ERR_SCRIPT_FAILED;
     }
     catch (...) {
         return ESN_ERR_INTERNAL;

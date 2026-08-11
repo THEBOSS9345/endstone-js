@@ -272,7 +272,8 @@ private:
                               resolve(module_, "esn_plugin_unload", api_.plugin_unload) &&
                               resolve(module_, "esn_plugin_reload", api_.plugin_reload) &&
                               resolve(module_, "esn_plugin_command", api_.plugin_command) &&
-                              resolve(module_, "esn_host_dispatch_event", api_.dispatch_event);
+                              resolve(module_, "esn_host_dispatch_event", api_.dispatch_event) &&
+                              resolve(module_, "esn_host_run_task", api_.run_task);
         if (!resolved) {
             getLogger().error("Node host is missing expected entry points");
             return false;
@@ -318,6 +319,7 @@ private:
             bridge_->setEventSink([api, host](const std::uint32_t subscription, const esn_handle event) {
                 (void)api->dispatch_event(host, subscription, event);
             });
+            bridge_->setTaskSink([api, host](const std::uint32_t task) { (void)api->run_task(host, task); });
         }
 
         status = api_.start(host_);

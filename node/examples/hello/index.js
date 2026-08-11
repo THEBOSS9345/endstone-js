@@ -88,7 +88,6 @@ export default {
         // Block events carry both the block and the player responsible.
       events.blockBreak((event) => {
         const b = event.block;
-
         report(`BREAK ${b.type} atss ${b.location.x},${b.location.y},${b.location.z} by ${event.player.name}`, event.player);
         });
 
