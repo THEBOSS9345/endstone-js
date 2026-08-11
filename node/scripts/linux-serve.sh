@@ -25,6 +25,10 @@ mkdir -p "$SERVER/plugins/nodejs"
 cp /build/plugin/plugin/endstone_nodejs.so   "$SERVER/plugins/"
 cp /build/host/host/libendstone_node_host.so "$SERVER/plugins/nodejs/"
 cp /libnode/linux/libnode.so.147             "$SERVER/plugins/nodejs/"
+# The decoder reads this at runtime to know each packet's field layout.
+if [ -f /src/node/protocol/protocol.json ]; then
+    cp /src/node/protocol/protocol.json      "$SERVER/plugins/nodejs/"
+fi
 # Symlinked, not copied: a copy goes stale the moment you edit the repo, so /jsreload would
 # faithfully reload the old code and report success. Through the link the served file IS the repo
 # file, so an edit plus /jsreload takes effect immediately. Reload shadow copies are written to

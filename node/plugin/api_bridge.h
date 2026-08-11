@@ -35,11 +35,13 @@ class DamageSource;
 class Event;
 class Inventory;
 class ItemStack;
+class Dimension;
 class Level;
 class Location;
 class MapView;
 class Mob;
 class Player;
+class Scoreboard;
 class Task;
 class PlayerInventory;
 class Vector;
@@ -94,6 +96,7 @@ public:
     int serverProtocolVersion();
     int serverOnlinePlayerCount();
     esn_status serverLevel(esn_handle *out);
+    esn_status serverSelf(esn_handle *out);
     void broadcastMessage(std::string_view message);
     void log(int level, std::string_view message);
 
@@ -110,6 +113,17 @@ public:
                       std::size_t string_count, const double *numbers, std::size_t number_count,
                       esn_handle *out_handle);
     esn_status typeName(esn_handle target, char *buf, std::size_t cap, std::size_t *needed);
+
+    /** Where form outcomes go - normally esn_host_form_result. Set before sending a form. */
+    using FormSink = std::function<void(std::uint32_t form_id, bool closed, std::string data)>;
+    void setFormSink(FormSink sink);
+
+    /** Shows a form. `spec` is the 0x1e/0x1f record format described in the ABI header. */
+    esn_status sendForm(esn_handle player, std::uint32_t form_id, std::string_view spec);
+    esn_status closeForm(esn_handle player);
+
+    /** Sends a raw packet body to one player. `payload` may contain NUL bytes. */
+    esn_status sendPacket(esn_handle player, int packet_id, std::string_view payload);
 
     /** Resends the permission-filtered command list to every online player. */
     void updateCommands();
@@ -142,8 +156,14 @@ private:
         Player, Mob, Actor, Block, Level, DamageSource, ItemStack, Location, Vector, CommandSender,
         // PlayerInventory is distinct from Inventory only so the equipment slots can be reached; every
         // generic inventory operation accepts either.
-        Inventory, PlayerInventory, Plugin, MapView, Event
+        Inventory, PlayerInventory, Plugin, MapView, Server, Dimension, Scoreboard, Event
     };
+
+    /** Scoreboard methods, keyed by objective name rather than by handle - see the implementation. */
+    esn_status scoreboardInvoke(Scoreboard &board, std::string_view name,
+                                const std::function<std::string(std::size_t)> &str,
+                                const std::function<double(std::size_t, double)> &number,
+                                std::size_t number_count, esn_handle *out_handle);
 
     /** Invalidates every non-persistent handle minted at or after `scope_start`. */
     void releaseScope(esn_handle scope_start);
@@ -160,6 +180,7 @@ private:
     };
     std::vector<PendingSubscription> pending_;
 
+    FormSink form_sink_;
     TaskSink task_sink_;
     /** Scheduled tasks by the id JavaScript knows them by, so they can be cancelled. */
     std::unordered_map<std::uint32_t, std::shared_ptr<Task>> tasks_;

@@ -147,6 +147,14 @@ Copy-Item $hostDll, $libnodeDll $nodeData -Force
 Write-Host "  plugins\endstone_nodejs.dll"
 Write-Host "  plugins\nodejs\endstone_node_host.dll"
 Write-Host "  plugins\nodejs\libnode.dll"
+
+# The packet decoder reads this at runtime for each packet's field layout. Regenerate it with
+# node\scripts\generate_protocol.py after a BDS version bump.
+$protocol = Join-Path $PSScriptRoot "..\protocol\protocol.json"
+if (Test-Path $protocol) {
+    Copy-Item $protocol $nodeData -Force
+    Write-Host "  plugins\nodejs\protocol.json"
+}
 Write-Host @"
 
 Done. Start the server with:

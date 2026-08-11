@@ -332,6 +332,17 @@ napi_value jsServerOnlinePlayerCount(napi_env env, napi_callback_info)
     return intResult(env, api && api->server_online_player_count ? api->server_online_player_count(api->context) : -1);
 }
 
+napi_value jsServerSelf(napi_env env, napi_callback_info)
+{
+    const auto *api = g_host ? g_host->api : nullptr;
+    esn_handle handle = 0;
+    if (api && api->server_self) {
+        (void)api->server_self(api->context, &handle);
+    }
+    napi_value result = nullptr;
+    return napi_create_double(env, static_cast<double>(handle), &result) == napi_ok ? result : nullptr;
+}
+
 napi_value jsServerLevel(napi_env env, napi_callback_info)
 {
     napi_value null_value = nullptr;
@@ -719,6 +730,72 @@ void defineString(napi_env env, napi_value exports, const char *name, const char
     }
 }
 
+napi_value jsSendForm(napi_env env, napi_callback_info info)
+{
+    std::size_t argc = 3;
+    napi_value argv[3] = {nullptr, nullptr, nullptr};
+    const auto *api = g_host ? g_host->api : nullptr;
+    double handle = 0;
+    std::uint32_t form_id = 0;
+    std::string spec;
+    if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc < 3 || !api ||
+        !api->send_form || napi_get_value_double(env, argv[0], &handle) != napi_ok ||
+        napi_get_value_uint32(env, argv[1], &form_id) != napi_ok || !readStringValue(env, argv[2], spec)) {
+        return nullptr;
+    }
+    const auto status = api->send_form(api->context, static_cast<esn_handle>(handle), form_id, spec.data(),
+                                      spec.size());
+    if (status != ESN_OK) {
+        return fail(env, status, "sendForm");
+    }
+    napi_value undefined_value = nullptr;
+    return napi_get_undefined(env, &undefined_value) == napi_ok ? undefined_value : nullptr;
+}
+
+napi_value jsCloseForm(napi_env env, napi_callback_info info)
+{
+    std::size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    const auto *api = g_host ? g_host->api : nullptr;
+    double handle = 0;
+    if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) == napi_ok && argc >= 1 && api &&
+        api->close_form && napi_get_value_double(env, argv[0], &handle) == napi_ok) {
+        api->close_form(api->context, static_cast<esn_handle>(handle));
+    }
+    napi_value undefined_value = nullptr;
+    return napi_get_undefined(env, &undefined_value) == napi_ok ? undefined_value : nullptr;
+}
+
+napi_value jsSendPacket(napi_env env, napi_callback_info info)
+{
+    std::size_t argc = 3;
+    napi_value argv[3] = {nullptr, nullptr, nullptr};
+    const auto *api = g_host ? g_host->api : nullptr;
+    double handle = 0;
+    std::int32_t packet_id = 0;
+    if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc < 3 || !api ||
+        !api->send_packet || napi_get_value_double(env, argv[0], &handle) != napi_ok ||
+        napi_get_value_int32(env, argv[1], &packet_id) != napi_ok) {
+        return nullptr;
+    }
+    // The payload is bytes, so it arrives as a latin1 string: one code unit per byte, NULs included.
+    std::size_t length = 0;
+    if (napi_get_value_string_latin1(env, argv[2], nullptr, 0, &length) != napi_ok) {
+        return nullptr;
+    }
+    std::vector<char> payload(length + 1, '\0');
+    if (napi_get_value_string_latin1(env, argv[2], payload.data(), payload.size(), &length) != napi_ok) {
+        return nullptr;
+    }
+    const auto status = api->send_packet(api->context, static_cast<esn_handle>(handle), packet_id, payload.data(),
+                                        length);
+    if (status != ESN_OK) {
+        return fail(env, status, "sendPacket");
+    }
+    napi_value undefined_value = nullptr;
+    return napi_get_undefined(env, &undefined_value) == napi_ok ? undefined_value : nullptr;
+}
+
 napi_value jsUpdateCommands(napi_env env, napi_callback_info info)
 {
     (void)info;
@@ -776,6 +853,7 @@ napi_value registerBinding(napi_env env, napi_value exports)
     defineFunction(env, exports, "serverProtocolVersion", jsServerProtocolVersion);
     defineFunction(env, exports, "serverOnlinePlayerCount", jsServerOnlinePlayerCount);
     defineFunction(env, exports, "serverLevel", jsServerLevel);
+    defineFunction(env, exports, "serverSelf", jsServerSelf);
     defineFunction(env, exports, "broadcastMessage", jsBroadcastMessage);
     defineFunction(env, exports, "get", jsGet);
     defineFunction(env, exports, "set", jsSet);
@@ -784,6 +862,9 @@ napi_value registerBinding(napi_env env, napi_value exports)
     defineFunction(env, exports, "subscribe", jsSubscribe);
     defineFunction(env, exports, "unsubscribe", jsUnsubscribe);
     defineFunction(env, exports, "updateCommands", jsUpdateCommands);
+    defineFunction(env, exports, "sendPacket", jsSendPacket);
+    defineFunction(env, exports, "sendForm", jsSendForm);
+    defineFunction(env, exports, "closeForm", jsCloseForm);
     defineFunction(env, exports, "scheduleTask", jsScheduleTask);
     defineFunction(env, exports, "cancelTask", jsCancelTask);
     if (g_host) {
@@ -860,7 +941,7 @@ function makeLogger(prefix) {
   };
 }
 
-const server = {
+const serverBase = {
   get name() { return binding.serverName(); },
   get version() { return binding.serverVersion(); },
   get minecraftVersion() { return binding.serverMinecraftVersion(); },
@@ -885,6 +966,13 @@ const METHODS = new Set([
   'kick', 'performCommand', 'updateCommands', 'transfer', 'teleport', 'setRotation',
   'giveExp', 'giveExpLevels', 'playSound', 'stopSound', 'stopAllSounds', 'spawnParticle',
   'remove', 'getRelative', 'cancel', 'getExplodedBlock', 'setKnockback',
+  // Dimensions, and the level's way in to them
+  'getDimension', 'getBlockAt', 'getHighestBlockAt', 'spawnActor', 'getActor',
+  'dispatchCommand',
+  'addScoreboardTag', 'removeScoreboardTag',
+  // Scoreboard, keyed by objective name
+  'addObjective', 'removeObjective', 'setDisplayName', 'setDisplay', 'clearSlot',
+  'setScore', 'addScore', 'resetScores',
   // Inventory
   'getItem', 'setItem', 'addItem', 'removeItem', 'clear', 'setHeldItemSlot',
   'setHelmet', 'setChestplate', 'setLeggings', 'setBoots', 'setItemInMainHand', 'setItemInOffHand',
@@ -936,6 +1024,35 @@ const INVENTORY_HELPERS = {
     return this.countOf(type) >= amount;
   },
 };
+
+// Spelled this way rather than as an escape: the bootstrap lives inside a C++ raw string literal, so a
+// backslash escape here is one edit away from becoming a real line break in the source.
+const NEWLINE = String.fromCharCode(10);
+
+// Packet payloads are bytes, and they cross the ABI as latin1 - one code unit per byte, NULs included.
+// Accepts a Uint8Array, an ArrayBuffer, or a string that is already in that form.
+function toByteString(payload) {
+  if (payload === null || payload === undefined) return '';
+  if (typeof payload === 'string') return payload;
+  const bytes = payload instanceof Uint8Array ? payload
+    : payload instanceof ArrayBuffer ? new Uint8Array(payload)
+    : ArrayBuffer.isView(payload) ? new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength)
+    : null;
+  if (!bytes) throw new TypeError('payload must be a Uint8Array, ArrayBuffer or byte string');
+  let out = '';
+  // Chunked so a large packet does not blow the argument limit of String.fromCharCode.
+  for (let i = 0; i < bytes.length; i += 8192) {
+    out += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+  }
+  return out;
+}
+
+/** The inverse: a latin1 byte string back to bytes, for decoding a payload read off an event. */
+function toBytes(text) {
+  const bytes = new Uint8Array(text.length);
+  for (let i = 0; i < text.length; ++i) bytes[i] = text.charCodeAt(i) & 0xff;
+  return bytes;
+}
 
 /** The host tags nested objects so they can be told apart from plain numbers. */
 const asHandle = (value) =>
@@ -995,6 +1112,80 @@ function wrap(handle) {
       if (prop === 'constructor') return Object;
       if (prop === 'toString') return () => `${binding.typeName(handle)}(${handle})`;
       if (prop === 'endstoneType') return binding.typeName(handle);
+      // The bridge cannot return an array, so the tag list arrives newline-joined.
+      // Custom item data. The bridge addresses an NBT key through the property name, so these are all
+      // ordinary get/set calls with a "tag:" prefix - no special ABI, and write-through means a change
+      // to a stack from an inventory or a hand is saved back where it came from.
+      // dropItem(location, item): assembled explicitly because it mixes a vector with an item, which
+      // neither the vector nor the item flattening handles on its own.
+      if (prop === 'dropItem') {
+        return (location, item) => {
+          const position = numbersOf(location, POSITION_KEYS);
+          if (!position) throw new TypeError('dropItem(location, item): location needs numeric x, y and z');
+          const [type, amount, data] = flattenItem(item);
+          if (!type) throw new TypeError('dropItem(location, item): item needs a type');
+          const result = binding.invoke(handle, 'dropItem', ...position, amount, data, type);
+          const nested = asHandle(result);
+          return nested === null ? result : wrap(nested);
+        };
+      }
+      if (prop === 'sendForm') {
+        return (spec) => {
+          if (!spec || typeof spec !== 'object') throw new TypeError('sendForm(spec): spec must be an object');
+          const formId = nextFormId++;
+          openForms.set(formId, {
+            kind: String(spec.type ?? 'action').toLowerCase(),
+            onSubmit: spec.onSubmit, onClose: spec.onClose, plugin: activePluginId,
+          });
+          binding.sendForm(handle, formId, serialiseForm(spec));
+          return formId;
+        };
+      }
+      if (prop === 'closeForm') {
+        return () => binding.closeForm(handle);
+      }
+      // Raw packet send. Separate from the generic method path because the payload is binary and the
+      // argument strings are NUL-terminated, which would truncate it.
+      if (prop === 'sendPacket') {
+        return (packetId, payload) => binding.sendPacket(handle, Number(packetId), toByteString(payload));
+      }
+      if (prop === 'getTag') {
+        return (key) => binding.get(handle, 'tag:' + String(key));
+      }
+      if (prop === 'setTag') {
+        return (key, value) => {
+          if (value === undefined || value === null) {
+            binding.invoke(handle, 'removeTag', String(key));
+            return;
+          }
+          binding.set(handle, 'tag:' + String(key), value);
+        };
+      }
+      if (prop === 'removeTag') {
+        return (key) => binding.invoke(handle, 'removeTag', String(key));
+      }
+      if (prop === 'hasTag') {
+        return (key) => binding.get(handle, 'tag:' + String(key)) !== undefined;
+      }
+      if (prop === 'tagKeys') {
+        return () => {
+          const joined = binding.get(handle, 'tagKeyList');
+          return typeof joined === 'string' && joined !== '' ? joined.split(NEWLINE) : [];
+        };
+      }
+      if (prop === 'scoreboardTags') {
+        const joined = binding.get(handle, 'scoreboardTagList');
+        return typeof joined === 'string' && joined !== '' ? joined.split(NEWLINE) : [];
+      }
+      // The bridge emits "x,z" per line; turn it into the objects the types promise.
+      if (prop === 'loadedChunks') {
+        const joined = binding.get(handle, 'loadedChunkList');
+        if (typeof joined !== 'string' || joined === '') return [];
+        return joined.split(NEWLINE).map((line) => {
+          const [x, z] = line.split(',');
+          return { x: Number(x), z: Number(z) };
+        });
+      }
       // teleport is the one method whose second argument is an options object rather than a value,
       // so it is assembled here instead of going through flatten(). Rotation and dimension are both
       // left out when absent, and the host then keeps the actor's current ones.
@@ -1061,6 +1252,30 @@ function wrap(handle) {
   });
   return proxy;
 }
+
+// Anything not defined above is read off the Server itself through the generic accessors, so a new
+// server property costs a case in the bridge and nothing here. The handle is persistent - the server
+// outlives every callback - so it is fetched once.
+const serverHandle = binding.apiAvailable() ? binding.serverSelf() : 0;
+const server = new Proxy(serverBase, {
+  get(target, prop) {
+    if (prop in target) return target[prop];
+    if (!serverHandle || typeof prop !== 'string') return undefined;
+    // Methods as well as properties: reading a method name has to hand back something callable, or
+    // server.dispatchCommand(...) would be `undefined is not a function`.
+    if (METHODS.has(prop)) {
+      return (...args) => {
+        const result = binding.invoke(serverHandle, prop, ...flatten(args));
+        const nested = asHandle(result);
+        return nested === null ? result : wrap(nested);
+      };
+    }
+    const value = binding.get(serverHandle, prop);
+    const nested = asHandle(value);
+    return nested === null ? value : wrap(nested);
+  },
+  has(target, prop) { return prop in target || typeof prop === 'string'; },
+});
 
 // --- events ---------------------------------------------------------------------------------
 // Named after Endstone's event classes minus the "Event" suffix, camelCased, so the mapping back to
@@ -1381,8 +1596,452 @@ const scheduler = {
   },
 };
 
+// --- forms ---------------------------------------------------------------------------------------
+// A form is described by a plain object and serialised into the record format the bridge parses. The
+// two separators are control bytes that never appear in form text, so nothing needs escaping.
+const RECORD_SEP = String.fromCharCode(0x1e);
+const FIELD_SEP = String.fromCharCode(0x1f);
+const openForms = new Map();
+let nextFormId = 1;
+
+const formField = (value) => String(value ?? '').replace(/[]/g, ' ');
+
+function serialiseForm(spec) {
+  const kind = String(spec.type ?? 'action').toLowerCase();
+  const records = [];
+  if (kind === 'message') {
+    records.push(['message', formField(spec.title), formField(spec.content),
+                  formField(spec.button1 ?? 'Yes'), formField(spec.button2 ?? 'No')]);
+  } else if (kind === 'modal') {
+    records.push(['modal', formField(spec.title), '', formField(spec.submitButton ?? '')]);
+    for (const control of spec.controls ?? []) {
+      const type = String(control.type ?? '').toLowerCase();
+      if (type === 'toggle') {
+        records.push(['toggle', formField(control.label), control.defaultValue ? '1' : '0']);
+      } else if (type === 'slider') {
+        records.push(['slider', formField(control.label), String(control.min ?? 0), String(control.max ?? 10),
+                      String(control.step ?? 1),
+                      control.defaultValue === undefined ? '' : String(control.defaultValue)]);
+      } else if (type === 'dropdown' || type === 'stepslider') {
+        records.push([type, formField(control.label),
+                      control.defaultIndex === undefined ? '' : String(control.defaultIndex),
+                      ...(control.options ?? []).map(formField)]);
+      } else if (type === 'textinput') {
+        records.push(['textinput', formField(control.label), formField(control.placeholder ?? ''),
+                      control.defaultValue === undefined ? '' : formField(control.defaultValue)]);
+      } else if (type === 'header' || type === 'label') {
+        records.push([type, formField(control.text ?? control.label)]);
+      } else if (type === 'divider') {
+        records.push(['divider']);
+      }
+    }
+  } else {
+    records.push(['action', formField(spec.title), formField(spec.content)]);
+    for (const button of spec.buttons ?? []) {
+      if (typeof button === 'string') { records.push(['button', formField(button), '']); continue; }
+      const type = String(button.type ?? 'button').toLowerCase();
+      if (type === 'divider') records.push(['divider']);
+      else if (type === 'header' || type === 'label') records.push([type, formField(button.text)]);
+      else records.push(['button', formField(button.text), formField(button.icon ?? '')]);
+    }
+  }
+  return records.map((fields) => fields.join(FIELD_SEP)).join(RECORD_SEP);
+}
+
+/** Called from C++ when a player submits or dismisses a form. */
+function formResult(formId, closed, data) {
+  const entry = openForms.get(formId);
+  if (!entry) return;
+  openForms.delete(formId);
+  try {
+    if (closed) {
+      if (entry.onClose) entry.onClose();
+      return;
+    }
+    if (!entry.onSubmit) return;
+    if (entry.kind === 'modal') {
+      // A modal form answers with a JSON array, one entry per control that takes a value.
+      let parsed = data;
+      try { parsed = JSON.parse(data); } catch { /* hand back the raw string if it is not JSON */ }
+      entry.onSubmit(parsed);
+    } else {
+      entry.onSubmit(Number(data));
+    }
+  } catch (err) {
+    binding.log(4, `form handler threw: ${(err && err.stack) || err}`);
+  }
+}
+
+/** Drops a plugin's pending form callbacks, so a reload does not fire stale handlers. */
+function dropForms(pluginId) {
+  for (const [id, entry] of openForms) {
+    if (entry.plugin === pluginId) openForms.delete(id);
+  }
+}
+
+// --- packet decoding -----------------------------------------------------------------------------
+// Payloads are decoded against the schema Endstone's protocol-dumper extracted from BDS itself
+// (node/protocol/protocol.json, generated by node/scripts/generate_protocol.py). Only the ~19 wire
+// primitives are implemented here; every composite - Vec3, ActorRuntimeID, ItemStack descriptors -
+// is defined in the schema in terms of those, so it composes rather than being hand-written.
+//
+// Signed varints are zigzag-encoded: that is Bedrock's convention, and the schema's separate
+// `zigzag32` spelling is decoded identically. Getting this wrong would flip the sign of negative
+// coordinates rather than fail loudly, so it is called out here.
+
+class BinaryReader {
+  constructor(bytes) {
+    this.bytes = bytes;
+    this.view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    this.offset = 0;
+  }
+
+  get remaining() { return this.bytes.length - this.offset; }
+
+  need(count) {
+    if (this.offset + count > this.bytes.length) {
+      throw new RangeError(`payload ended early: wanted ${count} byte(s) at ${this.offset} of ${this.bytes.length}`);
+    }
+  }
+
+  bool() { return this.uint8() !== 0; }
+  uint8() { this.need(1); return this.bytes[this.offset++]; }
+  int8() { this.need(1); return this.view.getInt8(this.offset++); }
+  uint16() { this.need(2); const v = this.view.getUint16(this.offset, true); this.offset += 2; return v; }
+  int16() { this.need(2); const v = this.view.getInt16(this.offset, true); this.offset += 2; return v; }
+  uint32() { this.need(4); const v = this.view.getUint32(this.offset, true); this.offset += 4; return v; }
+  int32() { this.need(4); const v = this.view.getInt32(this.offset, true); this.offset += 4; return v; }
+  int32be() { this.need(4); const v = this.view.getInt32(this.offset, false); this.offset += 4; return v; }
+  uint64() { this.need(8); const v = this.view.getBigUint64(this.offset, true); this.offset += 8; return v; }
+  int64() { this.need(8); const v = this.view.getBigInt64(this.offset, true); this.offset += 8; return v; }
+  float() { this.need(4); const v = this.view.getFloat32(this.offset, true); this.offset += 4; return v; }
+  double() { this.need(8); const v = this.view.getFloat64(this.offset, true); this.offset += 8; return v; }
+
+  /** Unsigned LEB128, capped at 5 bytes for a 32-bit value. */
+  uvarint32() {
+    let result = 0;
+    for (let shift = 0; shift < 35; shift += 7) {
+      const byte = this.uint8();
+      result |= (byte & 0x7f) << shift;
+      if ((byte & 0x80) === 0) return result >>> 0;
+    }
+    throw new RangeError('uvarint32 is longer than 5 bytes');
+  }
+
+  uvarint64() {
+    let result = 0n;
+    for (let shift = 0n; shift < 70n; shift += 7n) {
+      const byte = BigInt(this.uint8());
+      result |= (byte & 0x7fn) << shift;
+      if ((byte & 0x80n) === 0n) return result;
+    }
+    throw new RangeError('uvarint64 is longer than 10 bytes');
+  }
+
+  // Zigzag maps signed values onto unsigned so small negatives stay small on the wire.
+  varint32() { const raw = this.uvarint32(); return (raw >>> 1) ^ -(raw & 1); }
+  varint64() { const raw = this.uvarint64(); return (raw >> 1n) ^ -(raw & 1n); }
+
+  string() {
+    const length = this.uvarint32();
+    this.need(length);
+    const slice = this.bytes.subarray(this.offset, this.offset + length);
+    this.offset += length;
+    return UTF8_DECODER.decode(slice);
+  }
+}
+
+const UTF8_DECODER = new TextDecoder('utf-8');
+
+const PRIMITIVE_READERS = {
+  bool: (r) => r.bool(),
+  int8: (r) => r.int8(), uint8: (r) => r.uint8(),
+  int16: (r) => r.int16(), uint16: (r) => r.uint16(),
+  int32: (r) => r.int32(), uint32: (r) => r.uint32(), int32_be: (r) => r.int32be(),
+  int64: (r) => r.int64(), uint64: (r) => r.uint64(),
+  float: (r) => r.float(), float32: (r) => r.float(),
+  double: (r) => r.double(), float64: (r) => r.double(),
+  varint32: (r) => r.varint32(), uvarint32: (r) => r.uvarint32(),
+  varint64: (r) => r.varint64(), uvarint64: (r) => r.uvarint64(),
+  zigzag32: (r) => r.varint32(), zigzag64: (r) => r.varint64(),
+  string: (r) => r.string(),
+};
+
+// Raised when the schema describes something this decoder cannot follow. Carries the reason so the
+// caller learns why decoding stopped rather than being handed values read from the wrong offset.
+class Undecodable extends Error {
+  constructor(reason, where) {
+    super(`${reason}${where ? ` at '${where}'` : ''}`);
+    this.reason = reason;
+    this.where = where;
+  }
+}
+
+let protocolSchema = null;
+
+function loadProtocolSchema() {
+  if (protocolSchema) return protocolSchema;
+  const beside = binding.scriptPath ? nodePath.join(nodePath.dirname(binding.scriptPath), 'protocol.json') : null;
+  if (!beside || !nodeFs.existsSync(beside)) {
+    throw new Error(
+      'packet decoding needs protocol.json next to the Node host. Generate it with ' +
+      '"python node/scripts/generate_protocol.py" and stage it into the plugin data folder.');
+  }
+  protocolSchema = JSON.parse(nodeFs.readFileSync(beside, 'utf8'));
+  return protocolSchema;
+}
+
+function readField(reader, field, schema, depth) {
+  const type = field.t;
+  if (depth > 24) throw new Undecodable('schema nests too deeply', field.n);
+  if (typeof type !== 'string') {
+    // {switch,cases} unions, {key,value} maps and nested repeats need a discriminant rule the schema
+    // does not carry, so following them would be guesswork.
+    throw new Undecodable(
+      type && type.key ? 'map fields are not described well enough to decode'
+        : type && type.switch ? 'tagged unions are not described well enough to decode'
+        : 'this field shape is not supported', field.n);
+  }
+  if (PRIMITIVE_READERS[type]) return PRIMITIVE_READERS[type](reader);
+  if (type === 'CompoundTag' || type === 'NBT') throw new Undecodable('NBT fields are not decoded yet', field.n);
+
+  const composite = schema.types[type.replace(/::/g, '__')];
+  if (!composite) throw new Undecodable(`unknown wire type '${type}'`, field.n);
+  return readFields(reader, composite, schema, depth + 1);
+}
+
+function readFields(reader, fields, schema, depth) {
+  const out = {};
+  for (const field of fields) {
+    // The schema records that a field may be absent but not how presence is signalled - for most of
+    // them it depends on a flag field it does not model - so an optional field is where decoding
+    // honestly has to stop.
+    if (field.o) throw new Undecodable('this packet has an optional field, whose presence the schema does not describe', field.n);
+
+    let value;
+    if (field.r) {
+      const count = PRIMITIVE_READERS[field.r] ? PRIMITIVE_READERS[field.r](reader) : reader.uvarint32();
+      const items = [];
+      for (let i = 0; i < Number(count); ++i) items.push(readField(reader, field, schema, depth));
+      value = items;
+    } else {
+      value = readField(reader, field, schema, depth);
+    }
+    // A field with a fixed value is wire padding: read past it, do not report it.
+    if (field.n !== undefined && field.c === undefined) out[field.n] = value;
+  }
+  return out;
+}
+
+// Encoding is the mirror of decoding and inherits the same schema limits: a packet whose layout the
+// schema cannot fully describe cannot be built from an object either, and encode() says so rather than
+// emitting a payload the client would reject.
+class BinaryWriter {
+  constructor() {
+    this.bytes = [];
+  }
+
+  get length() { return this.bytes.length; }
+  toBytes() { return new Uint8Array(this.bytes); }
+
+  raw(values) { for (const v of values) this.bytes.push(v & 0xff); return this; }
+  bool(value) { this.bytes.push(value ? 1 : 0); return this; }
+  uint8(value) { this.bytes.push(Number(value) & 0xff); return this; }
+  int8(value) { return this.uint8(value); }
+
+  fixed(value, size, signed, littleEndian = true) {
+    const buffer = new ArrayBuffer(size);
+    const view = new DataView(buffer);
+    if (size === 2) signed ? view.setInt16(0, Number(value), littleEndian) : view.setUint16(0, Number(value), littleEndian);
+    else if (size === 4) signed ? view.setInt32(0, Number(value), littleEndian) : view.setUint32(0, Number(value), littleEndian);
+    else signed ? view.setBigInt64(0, BigInt(value), littleEndian) : view.setBigUint64(0, BigInt(value), littleEndian);
+    return this.raw(new Uint8Array(buffer));
+  }
+
+  int16(v) { return this.fixed(v, 2, true); }
+  uint16(v) { return this.fixed(v, 2, false); }
+  int32(v) { return this.fixed(v, 4, true); }
+  uint32(v) { return this.fixed(v, 4, false); }
+  int32be(v) { return this.fixed(v, 4, true, false); }
+  int64(v) { return this.fixed(v, 8, true); }
+  uint64(v) { return this.fixed(v, 8, false); }
+
+  float(value) {
+    const buffer = new ArrayBuffer(4);
+    new DataView(buffer).setFloat32(0, Number(value), true);
+    return this.raw(new Uint8Array(buffer));
+  }
+
+  double(value) {
+    const buffer = new ArrayBuffer(8);
+    new DataView(buffer).setFloat64(0, Number(value), true);
+    return this.raw(new Uint8Array(buffer));
+  }
+
+  uvarint32(value) {
+    let v = Number(value) >>> 0;
+    do {
+      const byte = v & 0x7f;
+      v >>>= 7;
+      this.bytes.push(v ? byte | 0x80 : byte);
+    } while (v);
+    return this;
+  }
+
+  uvarint64(value) {
+    let v = BigInt(value) & 0xffffffffffffffffn;
+    do {
+      const byte = Number(v & 0x7fn);
+      v >>= 7n;
+      this.bytes.push(v ? byte | 0x80 : byte);
+    } while (v);
+    return this;
+  }
+
+  varint32(value) { const v = Number(value) | 0; return this.uvarint32(((v << 1) ^ (v >> 31)) >>> 0); }
+  varint64(value) { const v = BigInt(value); return this.uvarint64((v << 1n) ^ (v >> 63n)); }
+
+  string(value) {
+    const encoded = UTF8_ENCODER.encode(String(value ?? ''));
+    this.uvarint32(encoded.length);
+    return this.raw(encoded);
+  }
+}
+
+const UTF8_ENCODER = new TextEncoder();
+
+const PRIMITIVE_WRITERS = {
+  bool: (w, v) => w.bool(v),
+  int8: (w, v) => w.int8(v), uint8: (w, v) => w.uint8(v),
+  int16: (w, v) => w.int16(v), uint16: (w, v) => w.uint16(v),
+  int32: (w, v) => w.int32(v), uint32: (w, v) => w.uint32(v), int32_be: (w, v) => w.int32be(v),
+  int64: (w, v) => w.int64(v), uint64: (w, v) => w.uint64(v),
+  float: (w, v) => w.float(v), float32: (w, v) => w.float(v),
+  double: (w, v) => w.double(v), float64: (w, v) => w.double(v),
+  varint32: (w, v) => w.varint32(v), uvarint32: (w, v) => w.uvarint32(v),
+  varint64: (w, v) => w.varint64(v), uvarint64: (w, v) => w.uvarint64(v),
+  zigzag32: (w, v) => w.varint32(v), zigzag64: (w, v) => w.varint64(v),
+  string: (w, v) => w.string(v),
+};
+
+function writeField(writer, field, value, schema, depth) {
+  const type = field.t;
+  if (depth > 24) throw new Undecodable('schema nests too deeply', field.n);
+  if (typeof type !== 'string') {
+    throw new Undecodable(
+      type && type.key ? 'map fields cannot be encoded from the schema'
+        : type && type.switch ? 'tagged unions cannot be encoded from the schema'
+        : 'this field shape cannot be encoded', field.n);
+  }
+  if (PRIMITIVE_WRITERS[type]) {
+    if (value === undefined || value === null) throw new Undecodable('missing value', field.n);
+    PRIMITIVE_WRITERS[type](writer, value);
+    return;
+  }
+  if (type === 'CompoundTag' || type === 'NBT') throw new Undecodable('NBT fields cannot be encoded yet', field.n);
+
+  const composite = schema.types[type.replace(/::/g, '__')];
+  if (!composite) throw new Undecodable(`unknown wire type '${type}'`, field.n);
+  if (value === undefined || value === null) throw new Undecodable('missing value', field.n);
+  writeFields(writer, composite, value, schema, depth + 1);
+}
+
+function writeFields(writer, fields, source, schema, depth) {
+  for (const field of fields) {
+    if (field.o) {
+      throw new Undecodable(
+        'this packet has an optional field, whose presence the schema does not describe', field.n);
+    }
+    // A constant is fixed on the wire, so it is written from the schema rather than from the caller.
+    if (field.c !== undefined) {
+      writeField(writer, field, field.c, schema, depth);
+      continue;
+    }
+    const value = field.n === undefined ? undefined : source[field.n];
+    if (field.r) {
+      if (!Array.isArray(value)) throw new Undecodable('expected an array', field.n);
+      const count = PRIMITIVE_WRITERS[field.r] ? field.r : 'uvarint32';
+      PRIMITIVE_WRITERS[count](writer, value.length);
+      for (const item of value) writeField(writer, field, item, schema, depth);
+      continue;
+    }
+    writeField(writer, field, value, schema, depth);
+  }
+}
+
+const packets = {
+  /**
+   * Decodes a payload against the schema for its packet id.
+   *
+   * Always returns a result rather than throwing: `complete` says whether every field was read, and
+   * when it is false `stoppedAt`/`reason` say where and why. A partial result is still trustworthy up
+   * to that point - the fields present were read at the right offsets.
+   */
+  decode(packetId, payload) {
+    const schema = loadProtocolSchema();
+    const entry = schema.packets[String(Number(packetId))];
+    if (!entry) {
+      return { id: Number(packetId), name: null, fields: {}, complete: false, reason: 'unknown packet id' };
+    }
+    const bytes = payload instanceof Uint8Array ? payload : toBytes(String(payload));
+    const reader = new BinaryReader(bytes);
+    const result = { id: Number(packetId), name: entry.n, fields: {}, complete: false };
+    try {
+      result.fields = readFields(reader, entry.f, schema, 0);
+      result.complete = true;
+      result.trailingBytes = reader.remaining;
+    } catch (err) {
+      result.reason = err instanceof Undecodable ? err.reason : String(err && err.message || err);
+      if (err instanceof Undecodable && err.where) result.stoppedAt = err.where;
+      result.bytesRead = reader.offset;
+    }
+    return result;
+  },
+
+  /**
+   * Builds a payload from a packet object, the mirror of decode().
+   *
+   * Returns `{ ok, payload, reason, stoppedAt }`. A packet whose layout the schema cannot fully
+   * describe cannot be built this way - `ok` is false and nothing is emitted, rather than a
+   * half-formed payload the client would reject.
+   */
+  encode(packetId, fields) {
+    const schema = loadProtocolSchema();
+    const entry = schema.packets[String(Number(packetId))];
+    if (!entry) return { ok: false, reason: 'unknown packet id' };
+    const writer = new BinaryWriter();
+    try {
+      writeFields(writer, entry.f, fields ?? {}, schema, 0);
+      return { ok: true, payload: writer.toBytes(), name: entry.n };
+    } catch (err) {
+      const out = { ok: false, name: entry.n,
+                    reason: err instanceof Undecodable ? err.reason : String((err && err.message) || err) };
+      if (err instanceof Undecodable && err.where) out.stoppedAt = err.where;
+      return out;
+    }
+  },
+
+  /** A writer for building a payload by hand, for packets encode() cannot describe. */
+  writer() { return new BinaryWriter(); },
+
+  /** The schema's packet name for an id, or null. */
+  nameOf(packetId) {
+    const entry = loadProtocolSchema().packets[String(Number(packetId))];
+    return entry ? entry.n : null;
+  },
+
+  /** Which BDS release the loaded schema describes. */
+  get schemaVersion() { return loadProtocolSchema().ref; },
+
+  /** A payload as bytes, for hand-decoding or hashing. */
+  toBytes(payload) { return payload instanceof Uint8Array ? payload : toBytes(String(payload)); },
+
+  /** A reader over a payload, for packets the schema cannot describe end to end. */
+  reader(payload) { return new BinaryReader(packets.toBytes(payload)); },
+};
+
 const endstoneModule = {
-  server, events, commands, scheduler, logger: server.logger, LogLevel: LEVELS, EventPriority: PRIORITIES,
+  server, events, commands, scheduler, packets, logger: server.logger, LogLevel: LEVELS, EventPriority: PRIORITIES,
 };
 
 // Handed to the virtual module's source through a well-known symbol rather than a bare global.
@@ -1635,6 +2294,7 @@ function unloadPlugin(id) {
   // binding.unsubscribe would call back into a plugin manager that may already be tearing down.
   dropCommands(id);
   dropTasks(id);
+  dropForms(id);
   plugins.delete(id);
 }
 
@@ -1758,6 +2418,7 @@ function reloadPlugins(filter) {
       runHook(record, record.id, 'onDisable');
       dropSubscriptions(record.id);
       dropTasks(record.id);
+      dropForms(record.id);
       const wasDeclared = dropCommands(record.id);
 
       // Pick up edits to package.json, including a changed main entry point.
@@ -1823,7 +2484,7 @@ function reloadPlugins(filter) {
 
 binding.setRuntime({
   beginLoad, pollLoad, invoke: invokePlugin, unload: unloadPlugin, dispatchEvent,
-  reload: reloadPlugins, command: runDeclaredCommand, task: runTask,
+  reload: reloadPlugins, command: runDeclaredCommand, task: runTask, formResult,
 });
 
 // --- the built-in reload command ----------------------------------------------------------------
@@ -2316,6 +2977,29 @@ esn_status ESN_CALL esn_plugin_reload(esn_plugin *handle)
             return ESN_ERR_INTERNAL;
         }
         return ok ? ESN_OK : ESN_ERR_SCRIPT_FAILED;
+    }
+    catch (...) {
+        return ESN_ERR_INTERNAL;
+    }
+}
+
+esn_status ESN_CALL esn_host_form_result(esn_host *handle, uint32_t form_id, int closed, const char *data,
+                                        size_t length)
+{
+    auto *host = reinterpret_cast<HostImpl *>(handle);
+    if (!host || !host->node) {
+        return ESN_ERR_NOT_INITIALIZED;
+    }
+    try {
+        const embed::Scope scope(host->node);
+        napi_env env = host->napi;
+        napi_value argv[3] = {nullptr, nullptr, nullptr};
+        if (!env || napi_create_uint32(env, form_id, &argv[0]) != napi_ok ||
+            napi_get_boolean(env, closed != 0, &argv[1]) != napi_ok ||
+            napi_create_string_utf8(env, data ? data : "", length, &argv[2]) != napi_ok) {
+            return ESN_ERR_INTERNAL;
+        }
+        return callRuntime(host, "formResult", 3, argv, nullptr) ? ESN_OK : ESN_ERR_SCRIPT_FAILED;
     }
     catch (...) {
         return ESN_ERR_INTERNAL;

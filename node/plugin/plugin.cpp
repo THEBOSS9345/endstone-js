@@ -273,7 +273,8 @@ private:
                               resolve(module_, "esn_plugin_reload", api_.plugin_reload) &&
                               resolve(module_, "esn_plugin_command", api_.plugin_command) &&
                               resolve(module_, "esn_host_dispatch_event", api_.dispatch_event) &&
-                              resolve(module_, "esn_host_run_task", api_.run_task);
+                              resolve(module_, "esn_host_run_task", api_.run_task) &&
+                              resolve(module_, "esn_host_form_result", api_.form_result);
         if (!resolved) {
             getLogger().error("Node host is missing expected entry points");
             return false;
@@ -320,6 +321,9 @@ private:
                 (void)api->dispatch_event(host, subscription, event);
             });
             bridge_->setTaskSink([api, host](const std::uint32_t task) { (void)api->run_task(host, task); });
+            bridge_->setFormSink([api, host](const std::uint32_t form_id, const bool closed, std::string data) {
+                (void)api->form_result(host, form_id, closed ? 1 : 0, data.c_str(), data.size());
+            });
         }
 
         status = api_.start(host_);

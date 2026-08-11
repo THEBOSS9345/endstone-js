@@ -1,0 +1,15 @@
+{
+  "name": "testkit",
+  "version": "1.0.0",
+  "description": "Exercises the whole JavaScript API surface from slash commands.",
+  "main": "index.js",
+  "type": "module",
+  "author": "THEBOSS9345",
+  "homepage": "https://github.com/THEBOSS9345/endstone-js",
+  "endstone": {
+    "apiVersion": "0.11"
+  },
+  "devDependencies": {
+    "@endstone-js/server": "file:../../../../endstone-server-types"
+  }
+}

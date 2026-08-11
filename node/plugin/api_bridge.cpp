@@ -28,6 +28,7 @@
 #include <endstone/game_mode.h>
 #include <endstone/inventory/inventory.h>
 #include <endstone/inventory/item_stack.h>
+#include <endstone/nbt/tag.h>
 #include <endstone/inventory/player_inventory.h>
 #include <endstone/map/map_view.h>
 #include <endstone/util/socket_address.h>
@@ -101,7 +102,16 @@
 #include <endstone/event/server/server_list_ping_event.h>
 #include <endstone/event/weather/thunder_change_event.h>
 #include <endstone/event/weather/weather_change_event.h>
+#include <endstone/form/action_form.h>
+#include <endstone/form/message_form.h>
+#include <endstone/form/modal_form.h>
 #include <endstone/level/dimension.h>
+#include <endstone/level/chunk.h>
+#include <endstone/skin.h>
+#include <endstone/scoreboard/criteria.h>
+#include <endstone/scoreboard/objective.h>
+#include <endstone/scoreboard/score.h>
+#include <endstone/scoreboard/scoreboard.h>
 #include <endstone/level/level.h>
 #include <endstone/level/location.h>
 #include <endstone/player.h>
@@ -388,6 +398,34 @@ std::string_view equipmentSlotName(const EquipmentSlot slot)
     return "hand";
 }
 
+// Custom item data rides the name-keyed accessors: a property called "tag:endstone:timer" addresses
+// the key "endstone:timer" in the item's own NBT. That keeps arbitrary per-item data out of the ABI,
+// which carries only scalars, and means adding it needed no new entry points.
+constexpr std::string_view kTagPrefix = "tag:";
+
+std::optional<std::string> tagKeyOf(const std::string_view name)
+{
+    if (name.size() > kTagPrefix.size() && name.substr(0, kTagPrefix.size()) == kTagPrefix) {
+        return std::string{name.substr(kTagPrefix.size())};
+    }
+    return std::nullopt;
+}
+
+/** The tag stored under `key`, or nullptr when the item has no such key. */
+const nbt::Tag *findTag(const CompoundTag &nbt, const std::string &key)
+{
+    return nbt.contains(key) ? &nbt.at(key) : nullptr;
+}
+
+/** Applies `edit` to a copy of the item's NBT and writes it back. */
+template <typename Edit>
+void editNbt(ItemStack &stack, Edit &&edit)
+{
+    auto nbt = stack.getNbt();
+    edit(nbt);
+    stack.setNbt(nbt);
+}
+
 EventPriority toPriority(int value)
 {
     switch (value) {
@@ -448,6 +486,16 @@ int ApiBridge::serverOnlinePlayerCount()
     // Before the level loads there is no player list to ask.
     auto &server = plugin_.getServer();
     return server.getLevel() ? static_cast<int>(server.getOnlinePlayers().size()) : -1;
+}
+
+esn_status ApiBridge::serverSelf(esn_handle *out)
+{
+    if (!out) {
+        return ESN_ERR_BAD_ARGUMENT;
+    }
+    // Persistent: the server outlives every callback, so this handle never goes stale.
+    *out = track(&plugin_.getServer(), Kind::Server, true);
+    return ESN_OK;
 }
 
 esn_status ApiBridge::serverLevel(esn_handle *out)
@@ -699,6 +747,336 @@ void ApiBridge::cancelTask(const std::uint32_t task)
     tasks_.erase(it);
 }
 
+// --- forms ---------------------------------------------------------------------------------------
+// The spec arrives as records separated by 0x1e, fields within a record by 0x1f. That format exists
+// because the plugin side links only Endstone's header-only API - nlohmann is a core dependency and is
+// not available here - and those two control bytes never occur in form text.
+//
+// Record 0 is the header: kind, title, content, primary button, secondary button.
+// Records 1..n are controls, each starting with its kind.
+
+namespace {
+
+std::vector<std::string> splitOn(const std::string_view text, const char separator)
+{
+    std::vector<std::string> parts;
+    std::size_t start = 0;
+    while (true) {
+        const auto at = text.find(separator, start);
+        if (at == std::string_view::npos) {
+            parts.emplace_back(text.substr(start));
+            return parts;
+        }
+        parts.emplace_back(text.substr(start, at - start));
+        start = at + 1;
+    }
+}
+
+/** Field `index` of a record, or an empty string. Missing fields are normal: they mean "default". */
+std::string fieldAt(const std::vector<std::string> &fields, const std::size_t index)
+{
+    return index < fields.size() ? fields[index] : std::string{};
+}
+
+float floatAt(const std::vector<std::string> &fields, const std::size_t index, const float fallback)
+{
+    const auto text = fieldAt(fields, index);
+    if (text.empty()) {
+        return fallback;
+    }
+    try {
+        return std::stof(text);
+    }
+    catch (...) {
+        return fallback;
+    }
+}
+
+std::optional<int> optionalIntAt(const std::vector<std::string> &fields, const std::size_t index)
+{
+    const auto text = fieldAt(fields, index);
+    if (text.empty()) {
+        return std::nullopt;
+    }
+    try {
+        return std::stoi(text);
+    }
+    catch (...) {
+        return std::nullopt;
+    }
+}
+
+/** Options are the tail of a control record, after its fixed fields. */
+std::vector<std::string> tailFrom(const std::vector<std::string> &fields, const std::size_t start)
+{
+    std::vector<std::string> out;
+    for (std::size_t i = start; i < fields.size(); ++i) {
+        out.push_back(fields[i]);
+    }
+    return out;
+}
+
+}  // namespace
+
+// --- scoreboard ----------------------------------------------------------------------------------
+// Deliberately keyed by objective name rather than handing out Objective handles. Endstone returns
+// objectives as unique_ptr wrappers, so a handle would either have to be dispatch-scoped - useless for
+// a sidebar you update from a timer - or leak. Looking each one up by name on every call costs nothing
+// and cannot go stale.
+
+namespace {
+
+std::optional<DisplaySlot> displaySlotFromName(const std::string_view name)
+{
+    if (name == "sidebar") return DisplaySlot::SideBar;
+    if (name == "belowName" || name == "belowname") return DisplaySlot::BelowName;
+    if (name == "playerList" || name == "playerlist") return DisplaySlot::PlayerList;
+    return std::nullopt;
+}
+
+std::string_view displaySlotName(const DisplaySlot slot)
+{
+    switch (slot) {
+    case DisplaySlot::SideBar: return "sidebar";
+    case DisplaySlot::BelowName: return "belowName";
+    case DisplaySlot::PlayerList: return "playerList";
+    }
+    return "sidebar";
+}
+
+}  // namespace
+
+esn_status ApiBridge::scoreboardInvoke(Scoreboard &board, const std::string_view name,
+                                      const std::function<std::string(std::size_t)> &str,
+                                      const std::function<double(std::size_t, double)> &number,
+                                      const std::size_t number_count, esn_handle *out_handle)
+{
+    (void)out_handle;
+    // addObjective(name, displayName): the only criteria Endstone offers is Dummy.
+    if (name == "addObjective") {
+        const auto objective_name = str(0);
+        if (objective_name.empty()) {
+            return ESN_ERR_BAD_ARGUMENT;
+        }
+        if (board.getObjective(objective_name)) {
+            return ESN_OK;  // idempotent, so a reload does not have to guard
+        }
+        const auto display = str(1);
+        (void)board.addObjective(objective_name, Criteria::Type::Dummy,
+                                 display.empty() ? objective_name : display);
+        return ESN_OK;
+    }
+    if (name == "removeObjective") {
+        if (const auto objective = board.getObjective(str(0))) {
+            objective->unregister();
+        }
+        return ESN_OK;
+    }
+    if (name == "setDisplayName") {
+        if (const auto objective = board.getObjective(str(0))) {
+            objective->setDisplayName(str(1));
+        }
+        return ESN_OK;
+    }
+    // setDisplay(objective, slot, sortOrder)
+    if (name == "setDisplay") {
+        const auto objective = board.getObjective(str(0));
+        if (!objective) {
+            return ESN_ERR_BAD_ARGUMENT;
+        }
+        const auto slot = displaySlotFromName(str(1));
+        if (!slot) {
+            return ESN_ERR_BAD_ARGUMENT;
+        }
+        const auto order = str(2) == "ascending" ? ObjectiveSortOrder::Ascending : ObjectiveSortOrder::Descending;
+        objective->setDisplay(*slot, order);
+        return ESN_OK;
+    }
+    if (name == "clearSlot") {
+        const auto slot = displaySlotFromName(str(0));
+        if (!slot) {
+            return ESN_ERR_BAD_ARGUMENT;
+        }
+        board.clearSlot(*slot);
+        return ESN_OK;
+    }
+    // setScore(objective, entry, value). The entry is a name, which works for offline players too.
+    if (name == "setScore") {
+        const auto objective = board.getObjective(str(0));
+        if (!objective) {
+            return ESN_ERR_BAD_ARGUMENT;
+        }
+        if (const auto score = objective->getScore(ScoreEntry{str(1)})) {
+            score->setValue(static_cast<int>(number(0, 0)));
+        }
+        return ESN_OK;
+    }
+    if (name == "addScore") {
+        const auto objective = board.getObjective(str(0));
+        if (!objective) {
+            return ESN_ERR_BAD_ARGUMENT;
+        }
+        if (const auto score = objective->getScore(ScoreEntry{str(1)})) {
+            const auto current = score->isScoreSet() ? score->getValue() : 0;
+            score->setValue(current + static_cast<int>(number(0, 0)));
+        }
+        return ESN_OK;
+    }
+    if (name == "resetScores") {
+        board.resetScores(ScoreEntry{str(0)});
+        return ESN_OK;
+    }
+    (void)number_count;
+    return ESN_ERR_NO_SUCH_MEMBER;
+}
+
+esn_status ApiBridge::sendForm(const esn_handle player_handle, const std::uint32_t form_id,
+                              const std::string_view spec)
+{
+    auto *player = static_cast<Player *>(resolve(player_handle, Kind::Player));
+    if (!player) {
+        return find(player_handle) ? ESN_ERR_WRONG_TYPE : ESN_ERR_STALE_HANDLE;
+    }
+    if (!form_sink_) {
+        return ESN_ERR_NOT_INITIALIZED;
+    }
+
+    const auto records = splitOn(spec, '\x1e');
+    if (records.empty()) {
+        return ESN_ERR_BAD_ARGUMENT;
+    }
+    const auto header = splitOn(records[0], '\x1f');
+    const auto kind = fieldAt(header, 0);
+    const auto title = fieldAt(header, 1);
+    const auto content = fieldAt(header, 2);
+
+    // Both callbacks forward to JavaScript by form id; the sink is what reaches the host.
+    const auto sink = form_sink_;
+    auto on_close = [sink, form_id](Player *) { sink(form_id, true, std::string{}); };
+
+    if (kind == "message") {
+        MessageForm form;
+        form.setTitle(Message{title}).setContent(Message{content});
+        form.setButton1(Message{fieldAt(header, 3)});
+        form.setButton2(Message{fieldAt(header, 4)});
+        form.setOnSubmit([sink, form_id](Player *, const int selection) {
+            sink(form_id, false, std::to_string(selection));
+        });
+        form.setOnClose(on_close);
+        player->sendForm(form);
+        return ESN_OK;
+    }
+
+    if (kind == "action") {
+        ActionForm form;
+        form.setTitle(Message{title}).setContent(Message{content});
+        for (std::size_t i = 1; i < records.size(); ++i) {
+            const auto control = splitOn(records[i], '\x1f');
+            const auto type = fieldAt(control, 0);
+            if (type == "button") {
+                const auto icon = fieldAt(control, 2);
+                form.addButton(Message{fieldAt(control, 1)},
+                               icon.empty() ? std::nullopt : std::optional<std::string>{icon});
+            }
+            else if (type == "header") {
+                form.addHeader(Message{fieldAt(control, 1)});
+            }
+            else if (type == "label") {
+                form.addLabel(Message{fieldAt(control, 1)});
+            }
+            else if (type == "divider") {
+                form.addDivider();
+            }
+        }
+        form.setOnSubmit([sink, form_id](Player *, const int selection) {
+            sink(form_id, false, std::to_string(selection));
+        });
+        form.setOnClose(on_close);
+        player->sendForm(form);
+        return ESN_OK;
+    }
+
+    if (kind == "modal") {
+        ModalForm form;
+        form.setTitle(Message{title});
+        if (const auto submit = fieldAt(header, 3); !submit.empty()) {
+            form.setSubmitButton(Message{submit});
+        }
+        for (std::size_t i = 1; i < records.size(); ++i) {
+            const auto control = splitOn(records[i], '\x1f');
+            const auto type = fieldAt(control, 0);
+            const auto label = Message{fieldAt(control, 1)};
+            if (type == "toggle") {
+                form.addControl(Toggle{label, fieldAt(control, 2) == "1"});
+            }
+            else if (type == "slider") {
+                const auto min = floatAt(control, 2, 0.0F);
+                const auto max = floatAt(control, 3, 1.0F);
+                const auto step = floatAt(control, 4, 1.0F);
+                const auto value = fieldAt(control, 5);
+                form.addControl(Slider{label, min, max, step,
+                                       value.empty() ? std::nullopt
+                                                     : std::optional<float>{floatAt(control, 5, min)}});
+            }
+            else if (type == "dropdown") {
+                form.addControl(Dropdown{label, tailFrom(control, 3), optionalIntAt(control, 2)});
+            }
+            else if (type == "stepslider") {
+                form.addControl(StepSlider{label, tailFrom(control, 3), optionalIntAt(control, 2)});
+            }
+            else if (type == "textinput") {
+                const auto initial = fieldAt(control, 3);
+                form.addControl(TextInput{label, Message{fieldAt(control, 2)},
+                                          initial.empty() ? std::nullopt
+                                                          : std::optional<std::string>{initial}});
+            }
+            else if (type == "header") {
+                form.addControl(Header{label});
+            }
+            else if (type == "label") {
+                form.addControl(Label{label});
+            }
+            else if (type == "divider") {
+                form.addControl(Divider{});
+            }
+        }
+        form.setOnSubmit([sink, form_id](Player *, std::string response) {
+            sink(form_id, false, std::move(response));
+        });
+        form.setOnClose(on_close);
+        player->sendForm(form);
+        return ESN_OK;
+    }
+
+    return ESN_ERR_BAD_ARGUMENT;
+}
+
+esn_status ApiBridge::closeForm(const esn_handle player_handle)
+{
+    auto *player = static_cast<Player *>(resolve(player_handle, Kind::Player));
+    if (!player) {
+        return find(player_handle) ? ESN_ERR_WRONG_TYPE : ESN_ERR_STALE_HANDLE;
+    }
+    player->closeForm();
+    return ESN_OK;
+}
+
+void ApiBridge::setFormSink(FormSink sink)
+{
+    form_sink_ = std::move(sink);
+}
+
+esn_status ApiBridge::sendPacket(const esn_handle player_handle, const int packet_id,
+                                const std::string_view payload)
+{
+    auto *player = static_cast<Player *>(resolve(player_handle, Kind::Player));
+    if (!player) {
+        return find(player_handle) ? ESN_ERR_WRONG_TYPE : ESN_ERR_STALE_HANDLE;
+    }
+    player->sendPacket(packet_id, payload);
+    return ESN_OK;
+}
+
 void ApiBridge::updateCommands()
 {
     for (auto *player : plugin_.getServer().getOnlinePlayers()) {
@@ -764,6 +1142,9 @@ esn_status actorGetBool(Actor &actor, const std::string_view name, int *out)
 
 esn_status actorGetInt(Actor &actor, const std::string_view name, std::int64_t *out)
 {
+    // Runtime ids exceed what a double represents exactly, so this is the one id exposed as a number
+    // only because Bedrock keeps them small in practice; prefer uniqueId for anything persistent.
+    if (name == "runtimeId") { *out = static_cast<std::int64_t>(actor.getRuntimeId()); return ESN_OK; }
     (void)actor;
     (void)name;
     (void)out;
@@ -789,6 +1170,11 @@ esn_status actorSetInt(Actor &actor, const std::string_view name, const std::int
 
 esn_status ApiBridge::getBool(const esn_handle target, const std::string_view name, int *out)
 {
+    if (auto *server = static_cast<Server *>(resolve(target, Kind::Server))) {
+        if (name == "onlineMode") { *out = server->getOnlineMode(); return ESN_OK; }
+        if (name == "isPrimaryThread") { *out = server->isPrimaryThread(); return ESN_OK; }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
     if (!out) {
         return ESN_ERR_BAD_ARGUMENT;
     }
@@ -890,16 +1276,60 @@ esn_status ApiBridge::getInt(const esn_handle target, const std::string_view nam
         if (name == "blockZ") { *out = vector->getBlockZ(); return ESN_OK; }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
+    if (auto *server = static_cast<Server *>(resolve(target, Kind::Server))) {
+        if (name == "port") { *out = server->getPort(); return ESN_OK; }
+        if (name == "portV6") { *out = server->getPortV6(); return ESN_OK; }
+        if (name == "protocolVersion") { *out = server->getProtocolVersion(); return ESN_OK; }
+        if (name == "onlinePlayerCount") {
+            *out = static_cast<std::int64_t>(server->getOnlinePlayers().size());
+            return ESN_OK;
+        }
+        if (name == "maxPlayers") { *out = server->getMaxPlayers(); return ESN_OK; }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *dimension = static_cast<Dimension *>(resolve(target, Kind::Dimension))) {
+        if (name == "actorCount") {
+            *out = static_cast<std::int64_t>(dimension->getActors().size());
+            return ESN_OK;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
     if (auto *level = static_cast<Level *>(resolve(target, Kind::Level))) {
         if (name == "time") { *out = level->getTime(); return ESN_OK; }
         if (name == "actorCount") { *out = static_cast<std::int64_t>(level->getActors().size()); return ESN_OK; }
         if (name == "dimensionCount") { *out = static_cast<std::int64_t>(level->getDimensions().size()); return ESN_OK; }
+        if (name == "seed") { *out = level->getSeed(); return ESN_OK; }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
         if (name == "amount") { *out = stack->getAmount(); return ESN_OK; }
         if (name == "data") { *out = stack->getData(); return ESN_OK; }
         if (name == "maxStackSize") { *out = stack->getMaxStackSize(); return ESN_OK; }
+        if (const auto key = tagKeyOf(name)) {
+            const auto nbt = stack->getNbt();
+            const auto *tag = findTag(nbt, *key);
+            if (!tag) {
+                return ESN_ERR_NO_SUCH_MEMBER;
+            }
+            // NBT has no boolean, so a byte covers both flags and small integers; it reads back as a
+            // number, which means a JavaScript `true` returns as 1.
+            switch (tag->type()) {
+            case nbt::Type::Byte:
+                *out = tag->get<ByteTag>().value();
+                return ESN_OK;
+            case nbt::Type::Short:
+                *out = tag->get<ShortTag>().value();
+                return ESN_OK;
+            case nbt::Type::Int:
+                *out = tag->get<IntTag>().value();
+                return ESN_OK;
+            case nbt::Type::Long:
+                *out = tag->get<LongTag>().value();
+                return ESN_OK;
+            default:
+                return ESN_ERR_WRONG_TYPE;
+            }
+        }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *inventory = resolveInventory(target)) {
@@ -980,6 +1410,29 @@ esn_status ApiBridge::getInt(const esn_handle target, const std::string_view nam
 
 esn_status ApiBridge::getDouble(const esn_handle target, const std::string_view name, double *out)
 {
+    if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
+        if (const auto key = tagKeyOf(name)) {
+            const auto nbt = stack->getNbt();
+            const auto *tag = findTag(nbt, *key);
+            if (!tag) {
+                return ESN_ERR_NO_SUCH_MEMBER;
+            }
+            if (tag->type() == nbt::Type::Float) { *out = tag->get<FloatTag>().value(); return ESN_OK; }
+            if (tag->type() == nbt::Type::Double) { *out = tag->get<DoubleTag>().value(); return ESN_OK; }
+            return ESN_ERR_WRONG_TYPE;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *server = static_cast<Server *>(resolve(target, Kind::Server))) {
+        // Performance counters. "current" is the last few seconds; "average" is since start-up.
+        if (name == "currentTicksPerSecond") { *out = server->getCurrentTicksPerSecond(); return ESN_OK; }
+        if (name == "averageTicksPerSecond") { *out = server->getAverageTicksPerSecond(); return ESN_OK; }
+        if (name == "currentMillisecondsPerTick") { *out = server->getCurrentMillisecondsPerTick(); return ESN_OK; }
+        if (name == "averageMillisecondsPerTick") { *out = server->getAverageMillisecondsPerTick(); return ESN_OK; }
+        if (name == "currentTickUsage") { *out = server->getCurrentTickUsage(); return ESN_OK; }
+        if (name == "averageTickUsage") { *out = server->getAverageTickUsage(); return ESN_OK; }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
     if (!out) {
         return ESN_ERR_BAD_ARGUMENT;
     }
@@ -1016,6 +1469,30 @@ esn_status ApiBridge::getDouble(const esn_handle target, const std::string_view 
 esn_status ApiBridge::getString(const esn_handle target, const std::string_view name, char *buf, const std::size_t cap,
                                 std::size_t *needed)
 {
+    if (auto *server = static_cast<Server *>(resolve(target, Kind::Server))) {
+        if (name == "name") { return emitString(server->getName(), buf, cap, needed); }
+        if (name == "version") { return emitString(server->getVersion(), buf, cap, needed); }
+        if (name == "minecraftVersion") { return emitString(server->getMinecraftVersion(), buf, cap, needed); }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *dimension = static_cast<Dimension *>(resolve(target, Kind::Dimension))) {
+        if (name == "name") { return emitString(dimension->getName(), buf, cap, needed); }
+        // "x,z" per line: a list cannot cross as an array, and the runtime turns this into objects.
+        if (name == "loadedChunkList") {
+            std::string joined;
+            for (const auto &chunk : dimension->getLoadedChunks()) {
+                if (!chunk) {
+                    continue;
+                }
+                if (!joined.empty()) {
+                    joined += '\n';
+                }
+                joined += std::to_string(chunk->getX()) + "," + std::to_string(chunk->getZ());
+            }
+            return emitString(joined, buf, cap, needed);
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
     if (auto *player = static_cast<Player *>(resolve(target, Kind::Player))) {
         if (name == "name") { return emitString(player->getName(), buf, cap, needed); }
         if (name == "uniqueId") { return emitString(player->getUniqueId().str(), buf, cap, needed); }
@@ -1030,6 +1507,12 @@ esn_status ApiBridge::getString(const esn_handle target, const std::string_view 
         if (name == "scoreTag") { return emitString(player->getScoreTag(), buf, cap, needed); }
         if (name == "dimension") { return emitString(player->getDimension().getName(), buf, cap, needed); }
         if (name == "gameMode") { return emitString(gameModeName(player->getGameMode()), buf, cap, needed); }
+        // The skin's identity, not its pixels: an Image cannot cross the ABI usefully.
+        if (name == "skinId") { return emitString(player->getSkin().getId(), buf, cap, needed); }
+        if (name == "capeId") {
+            const auto &cape = player->getSkin().getCapeId();
+            return emitString(cape.value_or(std::string{}), buf, cap, needed);
+        }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *actor = resolveActor(target)) {
@@ -1037,6 +1520,18 @@ esn_status ApiBridge::getString(const esn_handle target, const std::string_view 
         if (name == "nameTag") { return emitString(actor->getNameTag(), buf, cap, needed); }
         if (name == "scoreTag") { return emitString(actor->getScoreTag(), buf, cap, needed); }
         if (name == "dimension") { return emitString(actor->getDimension().getName(), buf, cap, needed); }
+        // A list cannot cross the ABI as an array, so the tags arrive newline-joined and the runtime
+        // splits them into `scoreboardTags`.
+        if (name == "scoreboardTagList") {
+            std::string joined;
+            for (const auto &tag : actor->getScoreboardTags()) {
+                if (!joined.empty()) {
+                    joined += '\n';
+                }
+                joined += tag;
+            }
+            return emitString(joined, buf, cap, needed);
+        }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *block = static_cast<Block *>(resolve(target, Kind::Block))) {
@@ -1059,6 +1554,40 @@ esn_status ApiBridge::getString(const esn_handle target, const std::string_view 
     if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
         if (name == "type") { return emitString(std::string{stack->getType().getId()}, buf, cap, needed); }
         if (name == "translationKey") { return emitString(stack->getTranslationKey(), buf, cap, needed); }
+        // The keys the item carries, newline-joined; the runtime splits them into an array.
+        if (name == "tagKeyList") {
+            std::string joined;
+            for (const auto &[key, value] : stack->getNbt()) {
+                if (!joined.empty()) {
+                    joined += '\n';
+                }
+                joined += key;
+            }
+            return emitString(joined, buf, cap, needed);
+        }
+        if (const auto key = tagKeyOf(name)) {
+            const auto nbt = stack->getNbt();
+            const auto *tag = findTag(nbt, *key);
+            if (!tag) {
+                return ESN_ERR_NO_SUCH_MEMBER;
+            }
+            if (tag->type() == nbt::Type::String) {
+                return emitString(tag->get<StringTag>().value(), buf, cap, needed);
+            }
+            // Compounds, lists and arrays have no scalar form, so they come back as SNBT text - enough
+            // to inspect data an addon or another plugin wrote, without a tag-tree walker here.
+            switch (tag->type()) {
+            case nbt::Type::Compound:
+            case nbt::Type::List:
+            case nbt::Type::ByteArray:
+            case nbt::Type::IntArray:
+                return emitString(std::format("{}", *tag), buf, cap, needed);
+            default:
+                break;
+            }
+            // Numeric: let the int or double probe answer instead.
+            return ESN_ERR_WRONG_TYPE;
+        }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *plugin = static_cast<Plugin *>(resolve(target, Kind::Plugin))) {
@@ -1394,8 +1923,24 @@ esn_status ApiBridge::getHandle(const esn_handle target, const std::string_view 
         if (name == "damagingActor") { *out = trackActor(source->getDamagingActor()); return ESN_OK; }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
+    if (auto *server = static_cast<Server *>(resolve(target, Kind::Server))) {
+        // The main scoreboard lives as long as the server, so the handle is persistent.
+        if (name == "scoreboard") {
+            auto *board = server->getScoreboard();
+            *out = board ? track(board, Kind::Scoreboard, true) : 0;
+            return ESN_OK;
+        }
+        if (name == "level") {
+            auto *level = server->getLevel();
+            *out = level ? track(level, Kind::Level, true) : 0;
+            return ESN_OK;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
     if (auto *player = static_cast<Player *>(resolve(target, Kind::Player))) {
         if (name == "level") { *out = track(&player->getLevel(), Kind::Level); return ESN_OK; }
+        // A player's own scoreboard, which may differ from the server's main one.
+        if (name == "scoreboard") { *out = track(&player->getScoreboard(), Kind::Scoreboard, true); return ESN_OK; }
         if (name == "inventory") {
             *out = track(&player->getInventory(), Kind::PlayerInventory);
             return ESN_OK;
@@ -1446,6 +1991,10 @@ esn_status ApiBridge::getHandle(const esn_handle target, const std::string_view 
             *out = track(&owned_locations_.back(), Kind::Location);
             return ESN_OK;
         }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *dimension = static_cast<Dimension *>(resolve(target, Kind::Dimension))) {
+        if (name == "level") { *out = track(&dimension->getLevel(), Kind::Level, true); return ESN_OK; }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *inventory = resolveInventory(target)) {
@@ -1500,6 +2049,17 @@ esn_status ApiBridge::getHandle(const esn_handle target, const std::string_view 
 
 esn_status ApiBridge::setBool(const esn_handle target, const std::string_view name, const bool value)
 {
+    if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
+        if (const auto key = tagKeyOf(name)) {
+            // NBT has no boolean type; a byte is the convention, and reads back as 0 or 1.
+            editNbt(*stack, [&](CompoundTag &nbt) {
+                nbt[*key] = ByteTag{static_cast<std::uint8_t>(value ? 1 : 0)};
+            });
+            persistItem(target);
+            return ESN_OK;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
     if (auto *player = static_cast<Player *>(resolve(target, Kind::Player))) {
         if (name == "isOp") { player->setOp(value); return ESN_OK; }
         if (name == "isSneaking") { player->setSneaking(value); return ESN_OK; }
@@ -1542,6 +2102,12 @@ esn_status ApiBridge::setInt(const esn_handle target, const std::string_view nam
         // PlayerDropItemEvent. A stack read out of an inventory is a copy - change the inventory.
         if (name == "amount") { stack->setAmount(static_cast<int>(value)); persistItem(target); return ESN_OK; }
         if (name == "data") { stack->setData(static_cast<int>(value)); persistItem(target); return ESN_OK; }
+        if (const auto key = tagKeyOf(name)) {
+            // Stored as a long so a JavaScript integer never silently narrows.
+            editNbt(*stack, [&](CompoundTag &nbt) { nbt[*key] = LongTag{value}; });
+            persistItem(target);
+            return ESN_OK;
+        }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *player_inventory = static_cast<PlayerInventory *>(resolve(target, Kind::PlayerInventory))) {
@@ -1570,6 +2136,14 @@ esn_status ApiBridge::setInt(const esn_handle target, const std::string_view nam
 
 esn_status ApiBridge::setDouble(const esn_handle target, const std::string_view name, const double value)
 {
+    if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
+        if (const auto key = tagKeyOf(name)) {
+            editNbt(*stack, [&](CompoundTag &nbt) { nbt[*key] = DoubleTag{value}; });
+            persistItem(target);
+            return ESN_OK;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
     if (auto *player = static_cast<Player *>(resolve(target, Kind::Player))) {
         if (name == "flySpeed") { player->setFlySpeed(static_cast<float>(value)); return ESN_OK; }
         if (name == "walkSpeed") { player->setWalkSpeed(static_cast<float>(value)); return ESN_OK; }
@@ -1590,6 +2164,11 @@ esn_status ApiBridge::setString(const esn_handle target, const std::string_view 
 {
     if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
         if (name == "type") { stack->setType(std::string{value}); persistItem(target); return ESN_OK; }
+        if (const auto key = tagKeyOf(name)) {
+            editNbt(*stack, [&](CompoundTag &nbt) { nbt[*key] = StringTag{std::string{value}}; });
+            persistItem(target);
+            return ESN_OK;
+        }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
@@ -1811,6 +2390,76 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
             return ESN_ERR_NO_SUCH_MEMBER;
         }
     }
+    if (auto *server = static_cast<Server *>(resolve(target, Kind::Server))) {
+        // Runs a command as the console, which is how a plugin drives vanilla commands.
+        if (name == "dispatchCommand") {
+            (void)server->dispatchCommand(server->getCommandSender(), str(0));
+            return ESN_OK;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *board = static_cast<Scoreboard *>(resolve(target, Kind::Scoreboard))) {
+        return scoreboardInvoke(*board, name, str, number, number_count, out_handle);
+    }
+    if (auto *dimension = static_cast<Dimension *>(resolve(target, Kind::Dimension))) {
+        const auto keepBlock = [&](std::unique_ptr<Block> block) -> esn_status {
+            if (!block || !out_handle) {
+                if (out_handle) { *out_handle = 0; }
+                return ESN_OK;
+            }
+            auto *raw = block.get();
+            owned_blocks_.push_back(std::move(block));
+            *out_handle = track(raw, Kind::Block);
+            return ESN_OK;
+        };
+        // getBlockAt(location) - the vector is flattened to x, y, z by the runtime.
+        if (name == "getBlockAt") {
+            return keepBlock(dimension->getBlockAt(static_cast<int>(number(0)), static_cast<int>(number(1)),
+                                                   static_cast<int>(number(2))));
+        }
+        // The topmost non-air block at a column, and just its height.
+        if (name == "getHighestBlockAt") {
+            return keepBlock(dimension->getHighestBlockAt(static_cast<int>(number(0)), static_cast<int>(number(1))));
+        }
+        if (name == "spawnActor" && out_handle) {
+            Location where{*dimension, static_cast<float>(number(0)), static_cast<float>(number(1)),
+                           static_cast<float>(number(2))};
+            auto *spawned = dimension->spawnActor(where, std::string{text});
+            *out_handle = spawned ? trackActor(spawned) : 0;
+            return ESN_OK;
+        }
+        // dropItem(item, location): a loose item stack in the world.
+        if (name == "dropItem") {
+            const auto type = str(0);
+            if (type.empty()) {
+                return ESN_ERR_BAD_ARGUMENT;
+            }
+            endstone::ItemStack item{type, static_cast<int>(number(3, 1)), static_cast<int>(number(4, 0))};
+            Location where{*dimension, static_cast<float>(number(0)), static_cast<float>(number(1)),
+                           static_cast<float>(number(2))};
+            auto &dropped = dimension->dropItem(where, item);
+            if (out_handle) {
+                *out_handle = trackActor(&dropped);
+            }
+            return ESN_OK;
+        }
+        if (name == "getActor" && out_handle) {
+            const auto actors = dimension->getActors();
+            const auto index = static_cast<std::size_t>(number(0));
+            *out_handle = index < actors.size() && actors[index] ? trackActor(actors[index]) : 0;
+            return ESN_OK;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *level = static_cast<Level *>(resolve(target, Kind::Level))) {
+        // Dimensions live as long as the level, so the handle is persistent like the level's own.
+        if (name == "getDimension" && out_handle) {
+            auto *dimension = level->getDimension(std::string{text});
+            *out_handle = dimension ? track(dimension, Kind::Dimension, true) : 0;
+            return ESN_OK;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
     if (auto *sender = static_cast<CommandSender *>(resolve(target, Kind::CommandSender))) {
         if (name == "sendMessage") { sender->sendMessage(Message{std::string{text}}); return ESN_OK; }
         if (name == "sendErrorMessage") { sender->sendErrorMessage(Message{std::string{text}}); return ESN_OK; }
@@ -1887,6 +2536,8 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
     if (auto *actor = resolveActor(target)) {
         if (name == "sendMessage") { actor->sendMessage(Message{std::string{text}}); return ESN_OK; }
         if (name == "remove") { actor->remove(); return ESN_OK; }
+        if (name == "addScoreboardTag") { (void)actor->addScoreboardTag(std::string{text}); return ESN_OK; }
+        if (name == "removeScoreboardTag") { (void)actor->removeScoreboardTag(std::string{text}); return ESN_OK; }
         if (name == "setRotation") {
             actor->setRotation(static_cast<float>(number(0)), static_cast<float>(number(1)));
             return ESN_OK;
@@ -1980,6 +2631,15 @@ esn_status ApiBridge::typeName(const esn_handle target, char *buf, const std::si
     }
     if (resolve(target, Kind::MapView)) {
         return emitString("MapView", buf, cap, needed);
+    }
+    if (resolve(target, Kind::Server)) {
+        return emitString("Server", buf, cap, needed);
+    }
+    if (resolve(target, Kind::Dimension)) {
+        return emitString("Dimension", buf, cap, needed);
+    }
+    if (resolve(target, Kind::Scoreboard)) {
+        return emitString("Scoreboard", buf, cap, needed);
     }
     if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
         return emitString(event->getEventName(), buf, cap, needed);
@@ -2108,6 +2768,15 @@ int ESN_CALL tServerOnlinePlayerCount(void *c)
         return -1;
     }
 }
+esn_status ESN_CALL tServerSelf(void *c, esn_handle *out)
+{
+    try {
+        return bridge(c).serverSelf(out);
+    }
+    catch (...) {
+        return ESN_ERR_INTERNAL;
+    }
+}
 esn_status ESN_CALL tServerLevel(void *c, esn_handle *out)
 {
     try {
@@ -2123,6 +2792,32 @@ void ESN_CALL tBroadcastMessage(void *c, const char *m, std::size_t len)
         bridge(c).broadcastMessage(std::string_view(m ? m : "", m ? len : 0));
     }
     catch (...) {
+    }
+}
+esn_status ESN_CALL tSendForm(void *c, esn_handle player, std::uint32_t form_id, const char *spec, std::size_t len)
+{
+    try {
+        return bridge(c).sendForm(player, form_id, std::string_view(spec ? spec : "", spec ? len : 0));
+    }
+    catch (...) {
+        return ESN_ERR_INTERNAL;
+    }
+}
+void ESN_CALL tCloseForm(void *c, esn_handle player)
+{
+    try {
+        (void)bridge(c).closeForm(player);
+    }
+    catch (...) {
+    }
+}
+esn_status ESN_CALL tSendPacket(void *c, esn_handle player, int packet_id, const char *payload, std::size_t len)
+{
+    try {
+        return bridge(c).sendPacket(player, packet_id, std::string_view(payload ? payload : "", payload ? len : 0));
+    }
+    catch (...) {
+        return ESN_ERR_INTERNAL;
     }
 }
 void ESN_CALL tUpdateCommands(void *c)
@@ -2171,6 +2866,7 @@ void ApiBridge::fill(esn_endstone_api &api)
     api.server_protocol_version = tServerProtocolVersion;
     api.server_online_player_count = tServerOnlinePlayerCount;
     api.server_level = tServerLevel;
+    api.server_self = tServerSelf;
     api.broadcast_message = tBroadcastMessage;
     api.log = tLog;
     api.accessors.get_bool = tGetBool;
@@ -2186,6 +2882,9 @@ void ApiBridge::fill(esn_endstone_api &api)
     api.accessors.type_name = tTypeName;
     api.subscribe = tSubscribe;
     api.unsubscribe = tUnsubscribe;
+    api.send_form = tSendForm;
+    api.close_form = tCloseForm;
+    api.send_packet = tSendPacket;
     api.update_commands = tUpdateCommands;
     api.schedule_task = tScheduleTask;
     api.cancel_task = tCancelTask;

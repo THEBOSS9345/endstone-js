@@ -36,7 +36,8 @@ export default {
 
         events.playerJoin((event) => {
           const p = event.player;
-            report(`JOIN ${p.name}`);
+
+          report(`JOIN ${p.name}`);
             report(`  xuid=${p.xuid} device=${p.deviceOs} version=${p.gameVersion} locale=${p.locale}`);
             report(`  address=${p.address} ping=${p.ping}ms op=${p.isOp}`);
             report(`  at ${p.location.x.toFixed(1)},${p.location.y.toFixed(1)},${p.location.z.toFixed(1)} in ${p.dimension}`);

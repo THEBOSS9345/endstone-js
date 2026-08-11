@@ -52,7 +52,7 @@ extern "C" {
 #endif
 
 /* Bumped on any incompatible change below. Checked by both sides at load time. */
-#define ESN_ABI_VERSION 10u
+#define ESN_ABI_VERSION 13u
 
 typedef enum esn_status {
     ESN_OK = 0,
@@ -163,6 +163,11 @@ typedef struct esn_endstone_api {
     /* Number of players currently online, or -1 if the level is not loaded yet. */
     int(ESN_CALL *server_online_player_count)(void *context);
     /*
+     * A persistent handle to the Server itself, so its properties go through the generic accessors
+     * rather than needing one ABI function each. Valid for the lifetime of the host.
+     */
+    esn_status(ESN_CALL *server_self)(void *context, esn_handle *out);
+    /*
      * The loaded level, or ESN_ERR_NOT_INITIALIZED before one exists. Unlike handles obtained during
      * dispatch this one is persistent: the level outlives any single callback, so it is safe to keep.
      */
@@ -183,6 +188,28 @@ typedef struct esn_endstone_api {
     esn_status(ESN_CALL *subscribe)(void *context, const char *event_name, int priority, int ignore_cancelled,
                                     uint32_t *out_subscription);
     esn_status(ESN_CALL *unsubscribe)(void *context, uint32_t subscription);
+
+    /*
+     * Sends a raw Bedrock packet to one player. Separate from `invoke` because a payload is binary and
+     * may contain NUL bytes, which the NUL-terminated argument strings would truncate.
+     *
+     * `packet_id` is a MinecraftPacketIds value; `payload` is the packet body, excluding the header.
+     * A malformed payload disconnects the client, so this is a sharp tool.
+     */
+    esn_status(ESN_CALL *send_packet)(void *context, esn_handle player, int packet_id, const char *payload,
+                                     size_t length);
+
+    /*
+     * Shows a form to a player. `spec` describes it as records separated by 0x1e, fields within a
+     * record by 0x1f - a format chosen because the plugin side has no JSON parser available to it and
+     * those two bytes never appear in form text.
+     *
+     * `form_id` comes back to esn_host_form_result when the player submits or closes it.
+     */
+    esn_status(ESN_CALL *send_form)(void *context, esn_handle player, uint32_t form_id, const char *spec,
+                                   size_t length);
+    /* Closes whatever form the player currently has open. */
+    void(ESN_CALL *close_form)(void *context, esn_handle player);
 
     /*
      * Resends the command list to every online player, so changes in which commands they are allowed
@@ -351,6 +378,14 @@ ESN_EXPORT esn_status ESN_CALL esn_plugin_command(esn_plugin *plugin, const char
  * A JavaScript failure is reported through the log callback and returns ESN_ERR_SCRIPT_FAILED.
  */
 ESN_EXPORT esn_status ESN_CALL esn_plugin_reload(esn_plugin *plugin);
+
+/*
+ * Delivers a form's outcome to JavaScript. `closed` is non-zero when the player dismissed the form
+ * without submitting, in which case `data` is empty. Otherwise `data` is the selected button index for
+ * a message or action form, or the JSON response array for a modal form.
+ */
+ESN_EXPORT esn_status ESN_CALL esn_host_form_result(esn_host *host, uint32_t form_id, int closed,
+                                                   const char *data, size_t length);
 
 /*
  * Runs a scheduled task's JavaScript callback. Called by Endstone on the server thread each time the
