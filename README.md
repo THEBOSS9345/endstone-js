@@ -1,5 +1,25 @@
 # endstone-js — a fork of Endstone with JavaScript and TypeScript plugins
 
+> [!WARNING]
+> **The JavaScript layer is early and unstable.** It is under active, heavy development: the API changes
+> without notice, the ABI between the plugin and the host has been bumped many times already, and
+> features land before they are hardened. Treat it as a preview, not something to run a real server on.
+>
+> Specifically, today:
+>
+> - **Nothing here is API-stable.** Names, shapes and behaviour change between commits, and there is no
+>   deprecation period.
+> - **Coverage is partial.** Large parts of the Endstone API are not bound yet - bossbars, ban lists,
+>   effects, attributes, enchantments and more. See [`node/RULES.md`](node/RULES.md) and the types
+>   package for what exists.
+> - **Only 143 of 229 packets decode end to end**, by design - the protocol schema does not describe how
+>   optional fields signal presence, so decoding stops rather than guessing.
+> - **Expect breakage on a BDS or Endstone update.** Generated protocol definitions must be regenerated,
+>   and the layer is verified against one BDS version at a time.
+> - **Testing is thin.** It compiles and typechecks on every change; in-game coverage is manual.
+>
+> Bug reports and ideas are welcome, but do not depend on it yet.
+
 > [!IMPORTANT]
 > **This is a fork.** Upstream is [EndstoneMC/endstone](https://github.com/EndstoneMC/endstone), and its
 > README follows below unchanged.

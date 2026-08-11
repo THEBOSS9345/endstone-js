@@ -1,5 +1,10 @@
 # Node.js scripting layer
 
+> [!WARNING]
+> **Early and unstable.** This layer is under heavy development. The API and the plugin/host ABI change
+> without notice, coverage of the Endstone API is partial, and it is verified against one BDS version at a
+> time. Treat it as a preview - see the root [README](../README.md) for the detail.
+
 The JavaScript and TypeScript plugin support added by
 [endstone-js](https://github.com/THEBOSS9345/endstone-js), a fork of
 [Endstone](https://github.com/EndstoneMC/endstone). **This directory is the only part of the fork that
