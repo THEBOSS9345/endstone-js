@@ -21,6 +21,7 @@
 #include <string_view>
 #include <deque>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <endstone/plugin/plugin.h>
@@ -30,6 +31,9 @@
 namespace endstone {
 class Actor;
 class Block;
+class BlockData;
+class BlockState;
+class BossBar;
 class CommandSender;
 class DamageSource;
 class Event;
@@ -111,7 +115,7 @@ public:
     esn_status setString(esn_handle target, std::string_view name, std::string_view value);
     esn_status invoke(esn_handle target, std::string_view name, const char *const *strings,
                       std::size_t string_count, const double *numbers, std::size_t number_count,
-                      esn_handle *out_handle);
+                      const esn_handle *handles, std::size_t handle_count, esn_handle *out_handle);
     esn_status typeName(esn_handle target, char *buf, std::size_t cap, std::size_t *needed);
 
     /** Where form outcomes go - normally esn_host_form_result. Set before sending a form. */
@@ -156,8 +160,31 @@ private:
         Player, Mob, Actor, Block, Level, DamageSource, ItemStack, Location, Vector, CommandSender,
         // PlayerInventory is distinct from Inventory only so the equipment slots can be reached; every
         // generic inventory operation accepts either.
-        Inventory, PlayerInventory, Plugin, MapView, Server, Dimension, Scoreboard, Event
+        Inventory, PlayerInventory, Plugin, MapView, Server, Dimension, Scoreboard, Event, BossBar,
+        // A block's palette entry (type plus its states), and a detached snapshot of one position.
+        BlockData, BlockState
     };
+
+    /**
+     * @brief Boss bar methods. Unlike a scoreboard objective, a bar is addressed by handle.
+     *
+     * createBossBar hands back a unique_ptr, so the bridge owns it and the handle is persistent - a bar
+     * is meant to outlive the callback that made it and be updated from a timer. `remove` is therefore
+     * the only way it goes away, and it both clears the viewers and drops the handle.
+     */
+    esn_status bossBarInvoke(esn_handle target, BossBar &bar, std::string_view name,
+                             const std::function<std::string(std::size_t)> &str,
+                             const std::function<esn_handle(std::size_t)> &handle_at);
+
+    /** Owns every bar handed to JavaScript; entries are erased by BossBar `remove`. */
+    std::vector<std::unique_ptr<BossBar>> owned_boss_bars_;
+
+    /**
+     * Scoreboards made by server.createScoreboard(), which hands back a shared_ptr the caller must keep.
+     * A scoreboard outlives the callback that made it - the point of a per-player one is to update it
+     * later - so these are held for the plugin's lifetime rather than released with the dispatch scope.
+     */
+    std::vector<std::shared_ptr<Scoreboard>> owned_scoreboards_;
 
     /** Scoreboard methods, keyed by objective name rather than by handle - see the implementation. */
     esn_status scoreboardInvoke(Scoreboard &board, std::string_view name,
@@ -180,6 +207,9 @@ private:
     };
     std::vector<PendingSubscription> pending_;
 
+    /** Event names already reported as undeliverable because they fire off the server thread. */
+    std::unordered_set<std::string> warned_async_;
+
     FormSink form_sink_;
     TaskSink task_sink_;
     /** Scheduled tasks by the id JavaScript knows them by, so they can be cancelled. */
@@ -191,6 +221,9 @@ private:
 
     /** Owns anything created on demand whose lifetime is not the caller's, e.g. Block instances. */
     std::vector<std::unique_ptr<Block>> owned_blocks_;
+    // Both are handed out as unique_ptr and released with the dispatch scope, like owned_blocks_.
+    std::vector<std::unique_ptr<endstone::BlockData>> owned_block_data_;
+    std::vector<std::unique_ptr<endstone::BlockState>> owned_block_states_;
     // deques so push_back never invalidates an already-tracked pointer within one dispatch.
     std::deque<Location> owned_locations_;
     std::deque<Vector> owned_vectors_;
@@ -222,6 +255,19 @@ private:
         bool persistent{false};
     };
 
+    /**
+     * @brief Records a pointer under a kind and returns its handle.
+     *
+     * **The pointer's static type must be the class the kind names**, not a base or a derived class of
+     * it. `resolve` hands back a void* and every caller `static_cast`s it, and a cast through void does
+     * no pointer adjustment - so storing a `CommandSender *` under `Kind::Player`, or an `Actor *` under
+     * `Kind::Mob`, yields a pointer that is only usable while that base happens to sit at offset zero.
+     * `Player` uses multiple inheritance (`Mob` plus `OfflinePlayer`), so this is not hypothetical: it
+     * is layout, not language, that makes a wrong static type appear to work.
+     *
+     * Nothing here enforces it - `void *` accepts anything. Narrow to the right type at the call site,
+     * as `trackSender` (via `asPlayer()`) and `eventActor` (via the trait's `Mob *` getter) both do.
+     */
     esn_handle track(void *ptr, Kind kind, bool persistent = false);
     /**
      * Tracks an actor whose concrete type is not known statically, picking Kind::Player when the

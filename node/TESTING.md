@@ -15,12 +15,12 @@ node\scripts\test-endstone-node.ps1
 `linux-serve.sh` symlinks every example, so `testkit` loads automatically. Expect at start-up:
 
 ```
-[Nodejs] Node host ABI version 13
+[Nodejs] Node host ABI version 14
 [Nodejs] loaded 3/3 JavaScript plugin(s)
-[Nodejs] testkit ready: 11 commands, schema r26_u4
+[Nodejs] testkit ready: 26 commands, schema r26_u4
 ```
 
-If the ABI line says anything other than 13, the plugin and host halves are out of step — rebuild.
+If the ABI line says anything other than 14, the plugin and host halves are out of step — rebuild.
 
 ---
 
@@ -32,6 +32,7 @@ If the ABI line says anything other than 13, the plugin and host halves are out 
 | `/jsspawn ` then tab | Completes the `type` argument as a string |
 | `/jsform ` then tab | Offers `action`, `message`, `modal` — a **custom enum** in the client |
 | `/jsboard` as a non-op | Refused with a permission message, and the refusal appears in the log |
+| `/jsbar ` then tab | Completes `off` |
 | `/jsreload` | Reloads all plugins; the testkit re-registers |
 
 **Known limitation:** a *new* command name needs a server restart, not just `/jsreload`.
@@ -79,7 +80,76 @@ as Endstone reports them. The example deliberately mixes them so you can see the
 `/jsboard` — a sidebar titled `Testkit` with `Online`, `TPS` and `Refreshes`. `Refreshes` should tick up
 every 2 seconds, which also proves the tick scheduler is running. `/jsboard off` removes it.
 
-## 6. Packets
+## 6. Boss bars
+
+`/jsbar` — a bar across the top of the screen titled `Testkit`, counting down from 10 seconds. The
+countdown is what proves a bar survives the callback that made it: it is updated from a timer, long
+after the command returned.
+
+The command also writes every property and reads it straight back, so it prints `§cSETTER FAILED` with
+the offending values if any write is dropped. That includes `progress = 5`, which must clamp to `1`
+rather than drawing a bar wider than its frame.
+
+| Do | Expect |
+| --- | --- |
+| `/jsbar` | Bar appears, green, ten notches, counting down |
+| `/jsbar` again | `viewers=1 [<your name>]` — adding the same player twice does not duplicate them |
+| `/jsbar` with a second player, then `/jsbar` as them | `viewers=2` with both names |
+| `/jsbar off` | Bar disappears for **everyone**, not just you |
+| Reload with `/jsreload` while a bar is up | Bar disappears — `onDisable` removes it |
+
+`/jssimilar` — hold something and run it. `vs itself: true` is the check; anything else prints
+`§cisSimilar FAILED`. Holding a stack of the same item that differs only in count should still be
+similar, since `isSimilar` ignores the amount.
+
+## 7. Player lookup, bans, item metadata
+
+`/jsfind` and `/jsfind <player>` — looks you up by name, then looks the result up again by the UUID it
+just read. `§cUUID LOOKUP FAILED` means only the name path works. Also prints server uptime.
+
+`/jsban <name>` — bans for **60 seconds only**, so a mistake lapses on its own, then reads the entry back
+and prints who/why/when. `/jsban <name> off` lifts it early. Ban yourself if you like; you will need a
+second account or a 60-second wait to get back in. Note a ban does **not** kick anyone already connected.
+
+`/jsmeta` — hold a tool. Sets a custom name, two lore lines, unbreakable, repair cost and two
+enchantments, then re-reads all of it *off the inventory* rather than off the copy it wrote. Any
+`§c... NOT WRITTEN BACK` line means metadata write-through is broken. Sharpness 7 is above the vanilla
+maximum on purpose — plugin enchanting is not anvil-limited.
+
+`/jsclean` — strips all of that off again.
+
+`/jscontents` — reads the whole inventory, writes it straight back with `setContents`, and compares the
+filled-slot count. `§cSETCONTENTS LOST ITEMS` is the failure.
+
+## 8. Maps, private scoreboards, translation
+
+`/jsmap` — creates a map centred on you at scale 2, reads every property back, then sends it. It will be
+**blank**: drawing needs a `MapRenderer`, which is a C++ interface JavaScript cannot implement. What is
+testable is that it arrives, and that `§cMAP SETTER FAILED` does not appear.
+
+`/jsprivate` — puts you on a scoreboard only you can see, titled `Just For You`. **The test needs two
+players:** run `/jsboard` first so the shared sidebar is up, then `/jsprivate` — yours should change while
+the other player's stays on `Testkit`. `/jsprivate off` puts you back.
+
+`/jslang` and `/jslang <key>` — resolves a translation key. `item.diamond_sword.name` should come back as
+`Diamond Sword`. Minecraft returns the key unchanged when there is no entry, so that is the only failure
+signal there is.
+
+## 9. Block states, snapshots, skin, introspection
+
+`/jsblock` — reads the block under you: type, `runtimeId`, and its states. Then it **snapshots the block,
+turns it to glass, and restores it from the snapshot**, all in one callback. `§cSNAPSHOT RESTORE FAILED`
+is the failure. Also prints `oak_stairs` default states and stone's runtime id, both read without a block
+in the world.
+
+`/jsintro` — lists the main scoreboard's objectives (run `/jsboard` first so there is one), your scores,
+and then tests that `item.clone()` is genuinely detached: `§cCLONE WROTE BACK` means a clone reached the
+inventory slot, which it must never do.
+
+`/jsskin` — your skin and cape ids and texture sizes. `64x64` vs `64x32` distinguishes the skin layout;
+no cape reports as `no cape` rather than `0x0`.
+
+## 10. Packets
 
 `/jspacket` — encodes `AnvilDamagePacket`, decodes it back, and compares. Should print the byte count
 and `complete=true`; any mismatch prints `§cROUND-TRIP MISMATCH`. It also decodes a `TextPacket` to show
@@ -91,7 +161,7 @@ optional field, union, map or NBT field, because the schema does not describe ho
 
 `/jstap` again to stop.
 
-## 7. Events
+## 11. Events
 
 These fire without a command:
 
@@ -101,7 +171,11 @@ These fire without a command:
 | Right-click a block | `interact rightClickBlock hasBlock=true block=… face=… item=…` |
 | Scroll the hotbar | `held slot N -> M` |
 | Die | `death: <name> by <cause>`, and the death message is rewritten |
-| Look at the server in your server list | MOTD reads `testkit - N online` |
+
+**Not testable:** `serverListPing` no longer reaches JavaScript. Endstone fires it asynchronously from
+RakNet's network thread, and delivering it would enter V8 off-thread and race the handle table - which is
+exactly what the `handles must not be kept past the callback` errors on `motd` were. The runtime now drops
+it and warns once at start-up.
 
 ---
 
@@ -109,8 +183,15 @@ These fire without a command:
 
 Not implemented, so nothing to test:
 
-- **Ban lists, bossbars, `itemFactory`, `sendMap`, `Inventory.setContents`, `ItemStack.isSimilar`.**
-  `isSimilar` needs handle arguments in `invoke`, which is an ABI change I have not made.
+- **`itemFactory`** — its whole surface takes a detached `ItemMeta*`, which would need a new handle
+  kind to expose something already reachable as properties on an item.
+- **Custom dimensions** (`DimensionCreator`) — develop only.
+- **Drawing on a map.** `MapRenderer` is a C++ interface; a JS plugin cannot supply one, so
+  `server.createMap()` maps stay blank.
+- **Effects and attributes** — deliberately left out: Endstone is adding them on its `develop` branch with
+  different types, so binding them against `main` would mean writing them twice.
+- **Asynchronous events**, i.e. `serverListPing`. They fire off the server thread and cannot reach
+  JavaScript at all; see section 8.
 - **NBT decoding.** `packets.decode` stops at an NBT field; item tags are scalar-valued (nest with
   `JSON.stringify` into one key).
 - **`pluginEnable`, `pluginDisable`, `blockGrow`, `blockForm`** — declared by Endstone but never fired,

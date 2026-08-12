@@ -9,9 +9,9 @@
 >
 > - **Nothing here is API-stable.** Names, shapes and behaviour change between commits, and there is no
 >   deprecation period.
-> - **Coverage is partial.** Large parts of the Endstone API are not bound yet - bossbars, ban lists,
->   effects, attributes, enchantments and more. See [`node/RULES.md`](node/RULES.md) and the types
->   package for what exists.
+> - **Coverage is partial.** Large parts of the Endstone API are not bound yet - ban lists, effects,
+>   attributes, enchantments, looking a player up by name, and more. See [`node/RULES.md`](node/RULES.md)
+>   and the types package for what exists.
 > - **Only 143 of 229 packets decode end to end**, by design - the protocol schema does not describe how
 >   optional fields signal presence, so decoding stops rather than guessing.
 > - **Expect breakage on a BDS or Endstone update.** Generated protocol definitions must be regenerated,

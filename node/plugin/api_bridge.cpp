@@ -16,11 +16,20 @@
 
 #include <cstring>
 #include <optional>
+#include <variant>
 #include <utility>
 
 #include <endstone/actor/actor.h>
 #include <endstone/actor/mob.h>
 #include <endstone/block/block.h>
+#include <endstone/block/block_data.h>
+#include <endstone/block/block_state.h>
+#include <endstone/ban/ip_ban_list.h>
+#include <endstone/ban/player_ban_list.h>
+#include <endstone/enchantments/enchantment.h>
+#include <endstone/inventory/meta/item_meta.h>
+#include <endstone/lang/language.h>
+#include <endstone/boss/boss_bar.h>
 #include <endstone/command/command_sender.h>
 #include <endstone/command/console_command_sender.h>
 #include <endstone/damage/damage_source.h>
@@ -304,17 +313,25 @@ Player *eventPlayer(Event *event)
 }
 
 /** Returns the actor plus whether it is known to be living, so the caller tracks the right kind. */
-Actor *eventActor(Event *event, bool *is_mob)
+/**
+ * @brief The actor an event is about, keeping the Mob type when the event has one.
+ *
+ * `out_mob` receives the pointer as a Mob rather than the caller narrowing an Actor* later. The handle
+ * table stores void*, and recovering a Mob* from a void* that was written as an Actor* is a downcast
+ * through void - sound only while Mob's single base sits at offset zero. Passing the already-correct
+ * static type costs nothing and does not depend on that layout holding.
+ */
+Actor *eventActor(Event *event, Mob **out_mob)
 {
+    *out_mob = nullptr;
     const auto *trait = traitFor(event);
     if (!trait) {
         return nullptr;
     }
     if (trait->mob) {
-        *is_mob = true;
-        return trait->mob(event);
+        *out_mob = trait->mob(event);
+        return *out_mob;
     }
-    *is_mob = false;
     return trait->actor ? trait->actor(event) : nullptr;
 }
 
@@ -424,6 +441,24 @@ void editNbt(ItemStack &stack, Edit &&edit)
     auto nbt = stack.getNbt();
     edit(nbt);
     stack.setNbt(nbt);
+}
+
+/**
+ * @brief Reads then writes back an item's metadata - display name, lore, damage, enchantments.
+ *
+ * getItemMeta() hands out a copy, so a change only reaches the item once setItemMeta puts it back. Same
+ * shape as editNbt, and like it the caller must follow with persistItem() so the stack itself is saved
+ * back to the slot it came from.
+ */
+template <typename Edit>
+void editMeta(ItemStack &stack, Edit &&edit)
+{
+    auto meta = stack.getItemMeta();
+    if (!meta) {
+        return;
+    }
+    edit(*meta);
+    (void)stack.setItemMeta(meta.get());
 }
 
 EventPriority toPriority(int value)
@@ -649,12 +684,35 @@ void ApiBridge::dispatch(const std::uint32_t subscription, Event &event)
     if (!event_sink_) {
         return;
     }
+    // An asynchronous event is fired from whatever thread raised it - ServerListPingEvent comes off
+    // RakNet's, not the server's. Delivering it would enter V8 from a thread that does not own the
+    // isolate and would race this handle table, which is unsynchronised: two concurrent dispatches can
+    // capture the same scope_start and then release each other's handles, which surfaces as a stale
+    // handle inside a live callback. Dropped loudly rather than delivered unsafely.
+    if (event.isAsynchronous() && !plugin_.getServer().isPrimaryThread()) {
+        if (warned_async_.insert(std::string{event.getEventName()}).second) {
+            plugin_.getLogger().warning(
+                "{} is fired off the server thread, so JavaScript handlers for it are not run. "
+                "Asynchronous events cannot reach JavaScript - see node/README.md.",
+                event.getEventName());
+        }
+        return;
+    }
+
     // Everything minted from here on belongs to this dispatch only.
     const auto scope_start = next_handle_;
     const auto handle = track(&event, Kind::Event);
 
-    event_sink_(subscription, handle);
-
+    // The release must happen even if the sink throws. It cannot today - every host entry point
+    // catches - but a handle surviving this scope would point at an Event that is about to be
+    // destroyed, so the invariant is enforced here rather than relied upon from the other side.
+    try {
+        event_sink_(subscription, handle);
+    }
+    catch (...) {
+        releaseScope(scope_start);
+        throw;
+    }
     releaseScope(scope_start);
 }
 
@@ -666,6 +724,8 @@ void ApiBridge::releaseScope(const esn_handle scope_start)
     }
     // Anything the bridge had to own for the duration goes with them.
     owned_blocks_.clear();
+    owned_block_data_.clear();
+    owned_block_states_.clear();
     owned_locations_.clear();
     owned_vectors_.clear();
     owned_items_.clear();
@@ -718,10 +778,15 @@ esn_status ApiBridge::scheduleTask(const std::uint32_t delay_ticks, const std::u
     auto task = period_ticks == 0
                     ? scheduler.runTaskLater(plugin_,
                                              [this, id]() {
+                                                 // Both copied to the stack first: erasing drops this
+                                                 // task's shared_ptr, and if that were the last one the
+                                                 // closure being executed - and `id` inside it - would
+                                                 // go with it.
                                                  const auto sink = task_sink_;
-                                                 tasks_.erase(id);
+                                                 const auto task_id = id;
+                                                 tasks_.erase(task_id);
                                                  if (sink) {
-                                                     sink(id);
+                                                     sink(task_id);
                                                  }
                                              },
                                              delay_ticks)
@@ -930,6 +995,207 @@ esn_status ApiBridge::scoreboardInvoke(Scoreboard &board, const std::string_view
     return ESN_ERR_NO_SUCH_MEMBER;
 }
 
+// --- ban lists -----------------------------------------------------------------------------------
+// Keyed by target name, like the scoreboard and for the same reason: entries are owning objects whose
+// lifetime is not the caller's. A whole entry crosses as one 0x1f-delimited record - the format the
+// forms already use - because the accessors carry one scalar each and an entry has seven fields.
+
+namespace {
+
+constexpr char kUnitSeparator = '\x1f';
+
+/** Dates are system_clock; JavaScript wants epoch milliseconds. */
+std::string epochMillis(const BanEntry::Date &date)
+{
+    return std::to_string(
+        std::chrono::duration_cast<std::chrono::milliseconds>(date.time_since_epoch()).count());
+}
+
+/** An absent expiration means a permanent ban, and crosses as an empty field. */
+std::string epochMillis(const std::optional<BanEntry::Date> &date)
+{
+    return date ? epochMillis(*date) : std::string{};
+}
+
+/**
+ * @brief A block's states as one "key\x1ftype\x1fvalue" record per line.
+ *
+ * `BlockStates` is a `variant<bool, string, int>`, so the type travels with each value - otherwise the
+ * runtime could not tell the string "true" from the boolean true, and a state like `upside_down_bit`
+ * would come back as the wrong JavaScript type.
+ */
+std::string blockStatesRecord(const BlockData &data)
+{
+    std::string out;
+    for (const auto &[key, value] : data.getBlockStates()) {
+        if (!out.empty()) {
+            out += '\n';
+        }
+        out += key;
+        out += kUnitSeparator;
+        std::visit(
+            [&](const auto &held) {
+                using Held = std::decay_t<decltype(held)>;
+                if constexpr (std::is_same_v<Held, bool>) {
+                    out += "b";
+                    out += kUnitSeparator;
+                    out += held ? "1" : "0";
+                }
+                else if constexpr (std::is_same_v<Held, int>) {
+                    out += "i";
+                    out += kUnitSeparator;
+                    out += std::to_string(held);
+                }
+                else {
+                    out += "s";
+                    out += kUnitSeparator;
+                    out += held;
+                }
+            },
+            value);
+    }
+    return out;
+}
+
+/** name, uuid, xuid, reason, source, created, expiration - empty field for anything absent. */
+template <typename Entry>
+std::string banRecord(const Entry &entry)
+{
+    std::string out;
+    const auto field = [&](const std::string &value) {
+        if (!out.empty()) {
+            out += kUnitSeparator;
+        }
+        out += value;
+    };
+    if constexpr (requires { entry.getName(); }) {
+        field(entry.getName());
+        field(entry.getUniqueId() ? entry.getUniqueId()->str() : "");
+        field(entry.getXuid().value_or(""));
+    }
+    else {
+        field(entry.getAddress());
+        field("");
+        field("");
+    }
+    field(entry.getReason());
+    field(entry.getSource());
+    field(epochMillis(entry.getCreated()));
+    field(epochMillis(entry.getExpiration()));
+    return out;
+}
+
+}  // namespace
+
+// --- boss bars -----------------------------------------------------------------------------------
+
+namespace {
+
+std::optional<BarColor> barColorFromName(const std::string_view name)
+{
+    if (name == "pink") return BarColor::Pink;
+    if (name == "blue") return BarColor::Blue;
+    if (name == "red") return BarColor::Red;
+    if (name == "green") return BarColor::Green;
+    if (name == "yellow") return BarColor::Yellow;
+    if (name == "purple") return BarColor::Purple;
+    if (name == "rebeccaPurple" || name == "rebeccapurple") return BarColor::RebeccaPurple;
+    if (name == "white") return BarColor::White;
+    return std::nullopt;
+}
+
+std::string_view barColorName(const BarColor color)
+{
+    switch (color) {
+    case BarColor::Pink: return "pink";
+    case BarColor::Blue: return "blue";
+    case BarColor::Red: return "red";
+    case BarColor::Green: return "green";
+    case BarColor::Yellow: return "yellow";
+    case BarColor::Purple: return "purple";
+    case BarColor::RebeccaPurple: return "rebeccaPurple";
+    case BarColor::White: return "white";
+    }
+    return "white";
+}
+
+std::optional<BarStyle> barStyleFromName(const std::string_view name)
+{
+    if (name == "solid") return BarStyle::Solid;
+    if (name == "segmented6") return BarStyle::Segmented6;
+    if (name == "segmented10") return BarStyle::Segmented10;
+    if (name == "segmented12") return BarStyle::Segmented12;
+    if (name == "segmented20") return BarStyle::Segmented20;
+    return std::nullopt;
+}
+
+std::string_view barStyleName(const BarStyle style)
+{
+    switch (style) {
+    case BarStyle::Solid: return "solid";
+    case BarStyle::Segmented6: return "segmented6";
+    case BarStyle::Segmented10: return "segmented10";
+    case BarStyle::Segmented12: return "segmented12";
+    case BarStyle::Segmented20: return "segmented20";
+    }
+    return "solid";
+}
+
+/** The two optional flags, exposed as ordinary boolean properties rather than as a flag list. */
+std::optional<BarFlag> barFlagFromName(const std::string_view name)
+{
+    if (name == "darkenSky" || name == "darkensky") return BarFlag::DarkenSky;
+    if (name == "createFog" || name == "createfog") return BarFlag::CreateFog;
+    return std::nullopt;
+}
+
+}  // namespace
+
+esn_status ApiBridge::bossBarInvoke(const esn_handle target, BossBar &bar, const std::string_view name,
+                                   const std::function<std::string(std::size_t)> &str,
+                                   const std::function<esn_handle(std::size_t)> &handle_at)
+{
+    if (name == "addPlayer" || name == "removePlayer") {
+        auto *player = static_cast<Player *>(resolve(handle_at(0), Kind::Player));
+        if (!player) {
+            return ESN_ERR_BAD_ARGUMENT;
+        }
+        if (name == "addPlayer") {
+            bar.addPlayer(*player);
+        }
+        else {
+            bar.removePlayer(*player);
+        }
+        return ESN_OK;
+    }
+    if (name == "removeAll") {
+        bar.removeAll();
+        return ESN_OK;
+    }
+    if (name == "addFlag" || name == "removeFlag") {
+        const auto flag = barFlagFromName(str(0));
+        if (!flag) {
+            return ESN_ERR_BAD_ARGUMENT;
+        }
+        if (name == "addFlag") {
+            bar.addFlag(*flag);
+        }
+        else {
+            bar.removeFlag(*flag);
+        }
+        return ESN_OK;
+    }
+    // Destroys the bar: clears it from every viewer's screen, then drops the handle so a later call on
+    // the same object is a clean stale-handle error rather than a use-after-free.
+    if (name == "remove") {
+        bar.removeAll();
+        handles_.erase(target);
+        std::erase_if(owned_boss_bars_, [&](const std::unique_ptr<BossBar> &owned) { return owned.get() == &bar; });
+        return ESN_OK;
+    }
+    return ESN_ERR_NO_SUCH_MEMBER;
+}
+
 esn_status ApiBridge::sendForm(const esn_handle player_handle, const std::uint32_t form_id,
                               const std::string_view spec)
 {
@@ -1115,6 +1381,16 @@ void ApiBridge::shutdown()
     }
     tasks_.clear();
     task_sink_ = nullptr;
+    // Clear the bars off every screen rather than leaving them there until the client reconnects.
+    for (auto &bar : owned_boss_bars_) {
+        if (bar) {
+            bar->removeAll();
+        }
+    }
+    owned_boss_bars_.clear();
+    // Players holding one of these keep working: Endstone falls back to the main scoreboard once the
+    // last reference goes, so releasing them here cannot leave a dangling sidebar.
+    owned_scoreboards_.clear();
 }
 
 // --- property dispatch ---------------------------------------------------------------------------
@@ -1166,17 +1442,123 @@ esn_status actorSetInt(Actor &actor, const std::string_view name, const std::int
     return ESN_ERR_NO_SUCH_MEMBER;
 }
 
+/**
+ * @brief The methods every actor has, including players.
+ *
+ * Player's own branch falls back to this, so anything Endstone puts on Actor is reachable on a Player
+ * too - the types say `Player extends Actor` and this is what makes that true. `remove` is safe to
+ * expose here: EndstonePlayer overrides it to log "use Player::kick instead" and do nothing.
+ */
+esn_status actorInvoke(Actor &actor, const std::string_view name, const std::string &text,
+                       const std::function<std::string(std::size_t)> &str,
+                       const std::function<double(std::size_t, double)> &number)
+{
+    // Actor derives from CommandSender, so both of its messaging methods belong here too.
+    if (name == "sendMessage") { actor.sendMessage(Message{text}); return ESN_OK; }
+    if (name == "sendErrorMessage") { actor.sendErrorMessage(Message{text}); return ESN_OK; }
+    if (name == "remove") { actor.remove(); return ESN_OK; }
+    if (name == "addScoreboardTag") { (void)actor.addScoreboardTag(text); return ESN_OK; }
+    if (name == "removeScoreboardTag") { (void)actor.removeScoreboardTag(text); return ESN_OK; }
+    // Backend for the `rotation` property. On a player this moves only the server-side rotation - the
+    // client owns its camera, so turning a player's view takes a teleport.
+    if (name == "setRotation") {
+        actor.setRotation(static_cast<float>(number(0, 0)), static_cast<float>(number(1, 0)));
+        return ESN_OK;
+    }
+    // teleport(location, { rotation, dimension }); rotation and dimension default to the current ones.
+    if (name == "teleport") {
+        const auto current = actor.getLocation();
+        auto *dimension = &actor.getDimension();
+        if (const auto requested = str(0); !requested.empty()) {
+            dimension = actor.getLevel().getDimension(requested);
+            if (!dimension) {
+                return ESN_ERR_BAD_ARGUMENT;
+            }
+        }
+        actor.teleport(Location{*dimension, static_cast<float>(number(0, 0)), static_cast<float>(number(1, 0)),
+                                static_cast<float>(number(2, 0)), static_cast<float>(number(4, current.getPitch())),
+                                static_cast<float>(number(3, current.getYaw()))});
+        return ESN_OK;
+    }
+    return ESN_ERR_NO_SUCH_MEMBER;
+}
+
+/** The remainder of `name` after `prefix`, or nullopt when it does not start with it. */
+std::optional<std::string> suffixOf(const std::string_view name, const std::string_view prefix)
+{
+    if (name.size() > prefix.size() && name.substr(0, prefix.size()) == prefix) {
+        return std::string{name.substr(prefix.size())};
+    }
+    return std::nullopt;
+}
+
+/**
+ * @brief Parses the 36-character form UUID::str() produces. Endstone offers no parser of its own.
+ *
+ * nullopt on anything that is not exactly 32 hex digits with the dashes ignored, so a player name that
+ * happens to look hex-ish cannot be mistaken for an id.
+ */
+std::optional<UUID> uuidFromString(const std::string_view text)
+{
+    const auto nibble = [](const char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    UUID out;
+    std::size_t digits = 0;
+    for (const auto c : text) {
+        if (c == '-') {
+            continue;
+        }
+        const auto value = nibble(c);
+        if (value < 0 || digits >= 32) {
+            return std::nullopt;
+        }
+        if (digits % 2 == 0) {
+            out.data[digits / 2] = static_cast<std::uint8_t>(value << 4);
+        }
+        else {
+            out.data[digits / 2] |= static_cast<std::uint8_t>(value);
+        }
+        ++digits;
+    }
+    return digits == 32 ? std::optional{out} : std::nullopt;
+}
+
+/** The handle a "name:<handle>" accessor carries, or 0 when it is not a number. */
+esn_handle parseHandleSuffix(const std::string_view digits)
+{
+    esn_handle value = 0;
+    for (const auto c : digits) {
+        if (c < '0' || c > '9') {
+            return 0;
+        }
+        value = value * 10 + static_cast<esn_handle>(c - '0');
+    }
+    return digits.empty() ? 0 : value;
+}
+
 }  // namespace
 
 esn_status ApiBridge::getBool(const esn_handle target, const std::string_view name, int *out)
 {
+    if (!out) {
+        return ESN_ERR_BAD_ARGUMENT;
+    }
     if (auto *server = static_cast<Server *>(resolve(target, Kind::Server))) {
         if (name == "onlineMode") { *out = server->getOnlineMode(); return ESN_OK; }
         if (name == "isPrimaryThread") { *out = server->isPrimaryThread(); return ESN_OK; }
+        if (const auto query = suffixOf(name, "isBanned:")) {
+            *out = server->getBanList().isBanned(*query, std::nullopt, std::nullopt);
+            return ESN_OK;
+        }
+        if (const auto query = suffixOf(name, "isIpBanned:")) {
+            *out = server->getIpBanList().isBanned(*query);
+            return ESN_OK;
+        }
         return ESN_ERR_NO_SUCH_MEMBER;
-    }
-    if (!out) {
-        return ESN_ERR_BAD_ARGUMENT;
     }
     if (auto *player = static_cast<Player *>(resolve(target, Kind::Player))) {
         if (name == "isOp") { *out = player->isOp(); return ESN_OK; }
@@ -1201,10 +1583,46 @@ esn_status ApiBridge::getBool(const esn_handle target, const std::string_view na
     }
     if (auto *map = static_cast<MapView *>(resolve(target, Kind::MapView))) {
         if (name == "isLocked") { *out = map->isLocked(); return ESN_OK; }
+        // True when a plugin supplied the lowermost renderer, i.e. the map is not a world map.
+        if (name == "isVirtual") { *out = map->isVirtual(); return ESN_OK; }
+        if (name == "unlimitedTracking") { *out = map->isUnlimitedTracking(); return ESN_OK; }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
         if (name == "hasItemMeta") { *out = stack->hasItemMeta(); return ESN_OK; }
+        if (name == "unbreakable") {
+            const auto meta = stack->getItemMeta();
+            *out = meta && meta->isUnbreakable();
+            return ESN_OK;
+        }
+        // enchant:<id> - whether the item carries that enchantment at all.
+        if (const auto id = suffixOf(name, "enchant:")) {
+            const auto meta = stack->getItemMeta();
+            *out = meta && meta->hasEnchant(EnchantmentId{*id});
+            return ESN_OK;
+        }
+        // Whether that enchantment fights one the item already has, e.g. sharpness against smite.
+        if (const auto id = suffixOf(name, "conflicts:")) {
+            const auto meta = stack->getItemMeta();
+            *out = meta && meta->hasConflictingEnchant(EnchantmentId{*id});
+            return ESN_OK;
+        }
+        // similarTo:<handle> - invoke cannot return a bool, so the other stack rides the accessor name
+        // the same way a custom NBT key does.
+        if (name.starts_with("similarTo:")) {
+            const auto other = parseHandleSuffix(name.substr(10));
+            const auto *against = static_cast<const ItemStack *>(resolve(other, Kind::ItemStack));
+            if (!against) {
+                return ESN_ERR_BAD_ARGUMENT;
+            }
+            *out = stack->isSimilar(*against);
+            return ESN_OK;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *bar = static_cast<BossBar *>(resolve(target, Kind::BossBar))) {
+        if (name == "visible") { *out = bar->isVisible(); return ESN_OK; }
+        if (const auto flag = barFlagFromName(name)) { *out = bar->hasFlag(*flag); return ESN_OK; }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *sender = static_cast<CommandSender *>(resolve(target, Kind::CommandSender))) {
@@ -1285,11 +1703,28 @@ esn_status ApiBridge::getInt(const esn_handle target, const std::string_view nam
             return ESN_OK;
         }
         if (name == "maxPlayers") { *out = server->getMaxPlayers(); return ESN_OK; }
+        // Epoch milliseconds, which is what `new Date(n)` takes.
+        if (name == "startTime") {
+            *out = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       server->getStartTime().time_since_epoch())
+                       .count();
+            return ESN_OK;
+        }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *dimension = static_cast<Dimension *>(resolve(target, Kind::Dimension))) {
         if (name == "actorCount") {
             *out = static_cast<std::int64_t>(dimension->getActors().size());
+            return ESN_OK;
+        }
+        // highestBlockYAt:<x>,<z> - just the height, without allocating a Block for it.
+        if (const auto request = suffixOf(name, "highestBlockYAt:")) {
+            const auto comma = request->find(',');
+            if (comma == std::string::npos) {
+                return ESN_ERR_BAD_ARGUMENT;
+            }
+            *out = dimension->getHighestBlockYAt(std::stoi(request->substr(0, comma)),
+                                                 std::stoi(request->substr(comma + 1)));
             return ESN_OK;
         }
         return ESN_ERR_NO_SUCH_MEMBER;
@@ -1305,6 +1740,18 @@ esn_status ApiBridge::getInt(const esn_handle target, const std::string_view nam
         if (name == "amount") { *out = stack->getAmount(); return ESN_OK; }
         if (name == "data") { *out = stack->getData(); return ESN_OK; }
         if (name == "maxStackSize") { *out = stack->getMaxStackSize(); return ESN_OK; }
+        // Metadata that reads as a number. All three are 0 on an item with no metadata at all.
+        if (name == "damage" || name == "repairCost") {
+            const auto meta = stack->getItemMeta();
+            *out = !meta ? 0 : name == "damage" ? meta->getDamage() : meta->getRepairCost();
+            return ESN_OK;
+        }
+        // enchantLevel:<id> - 0 when the item does not have it, which is what getEnchantLevel returns.
+        if (const auto id = suffixOf(name, "enchantLevel:")) {
+            const auto meta = stack->getItemMeta();
+            *out = meta ? meta->getEnchantLevel(EnchantmentId{*id}) : 0;
+            return ESN_OK;
+        }
         if (const auto key = tagKeyOf(name)) {
             const auto nbt = stack->getNbt();
             const auto *tag = findTag(nbt, *key);
@@ -1350,6 +1797,35 @@ esn_status ApiBridge::getInt(const esn_handle target, const std::string_view nam
         if (name == "centerX") { *out = map->getCenterX(); return ESN_OK; }
         if (name == "centerZ") { *out = map->getCenterZ(); return ESN_OK; }
         if (name == "scale") { *out = static_cast<std::int64_t>(map->getScale()); return ESN_OK; }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *bar = static_cast<BossBar *>(resolve(target, Kind::BossBar))) {
+        if (name == "playerCount") { *out = static_cast<std::int64_t>(bar->getPlayers().size()); return ESN_OK; }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *block = static_cast<Block *>(resolve(target, Kind::Block))) {
+        // The network id of this block's palette entry - what an UpdateBlockPacket carries.
+        if (name == "runtimeId") {
+            const auto data = block->getData();
+            *out = data ? static_cast<std::int64_t>(data->getRuntimeId()) : 0;
+            return ESN_OK;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *player = static_cast<Player *>(resolve(target, Kind::Player)); player && name.starts_with("skin")) {
+        // Skin and cape pixel data is an Image and stays on the C++ side - a JS plugin cannot render it -
+        // but the dimensions are worth having, and 0 distinguishes "no cape" from a 0x0 one.
+        const auto skin = player->getSkin();
+        if (name == "skinWidth") { *out = skin.getImage().getWidth(); return ESN_OK; }
+        if (name == "skinHeight") { *out = skin.getImage().getHeight(); return ESN_OK; }
+        if (name == "skinCapeWidth") {
+            *out = skin.getCapeImage() ? skin.getCapeImage()->getWidth() : 0;
+            return ESN_OK;
+        }
+        if (name == "skinCapeHeight") {
+            *out = skin.getCapeImage() ? skin.getCapeImage()->getHeight() : 0;
+            return ESN_OK;
+        }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
@@ -1410,6 +1886,13 @@ esn_status ApiBridge::getInt(const esn_handle target, const std::string_view nam
 
 esn_status ApiBridge::getDouble(const esn_handle target, const std::string_view name, double *out)
 {
+    if (!out) {
+        return ESN_ERR_BAD_ARGUMENT;
+    }
+    if (auto *bar = static_cast<BossBar *>(resolve(target, Kind::BossBar))) {
+        if (name == "progress") { *out = bar->getProgress(); return ESN_OK; }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
     if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
         if (const auto key = tagKeyOf(name)) {
             const auto nbt = stack->getNbt();
@@ -1432,9 +1915,6 @@ esn_status ApiBridge::getDouble(const esn_handle target, const std::string_view 
         if (name == "currentTickUsage") { *out = server->getCurrentTickUsage(); return ESN_OK; }
         if (name == "averageTickUsage") { *out = server->getAverageTickUsage(); return ESN_OK; }
         return ESN_ERR_NO_SUCH_MEMBER;
-    }
-    if (!out) {
-        return ESN_ERR_BAD_ARGUMENT;
     }
     if (auto *player = static_cast<Player *>(resolve(target, Kind::Player))) {
         if (name == "expProgress") { *out = player->getExpProgress(); return ESN_OK; }
@@ -1473,6 +1953,139 @@ esn_status ApiBridge::getString(const esn_handle target, const std::string_view 
         if (name == "name") { return emitString(server->getName(), buf, cap, needed); }
         if (name == "version") { return emitString(server->getVersion(), buf, cap, needed); }
         if (name == "minecraftVersion") { return emitString(server->getMinecraftVersion(), buf, cap, needed); }
+        if (name == "locale") { return emitString(server->getLanguage().getLocale(), buf, cap, needed); }
+        // blockStates: one "key\x1ftype\x1fvalue" per line - the map's values are a variant, so the type
+        // has to travel with them or the runtime could not tell "true" the string from true the boolean.
+        if (const auto request = suffixOf(name, "blockStates:")) {
+            const auto data = server->createBlockData(*request);
+            return emitString(data ? blockStatesRecord(*data) : std::string{}, buf, cap, needed);
+        }
+        if (const auto request = suffixOf(name, "blockRuntimeId:")) {
+            // Emitted as text because get_int is tried after get_string and this shares the prefix path.
+            const auto data = server->createBlockData(*request);
+            return emitString(data ? std::to_string(data->getRuntimeId()) : std::string{}, buf, cap, needed);
+        }
+        // translate:<locale>\x1f<text>[\x1f<param>...] - the whole request rides the accessor name
+        // because a method call cannot return a string. An empty locale means the server's own.
+        if (const auto request = suffixOf(name, "translate:")) {
+            std::vector<std::string> parts;
+            for (std::size_t start = 0;;) {
+                const auto end = request->find(kUnitSeparator, start);
+                parts.push_back(request->substr(start, end == std::string::npos ? end : end - start));
+                if (end == std::string::npos) {
+                    break;
+                }
+                start = end + 1;
+            }
+            if (parts.size() < 2) {
+                return ESN_ERR_BAD_ARGUMENT;
+            }
+            const auto &locale = parts[0];
+            const auto &text = parts[1];
+            const std::vector<std::string> params{parts.begin() + 2, parts.end()};
+            auto &language = server->getLanguage();
+            const auto translated = locale.empty() ? language.translate(text, params)
+                                                   : language.translate(text, params, locale);
+            return emitString(translated, buf, cap, needed);
+        }
+        // Ban entries: one 0x1f-delimited record, or empty when the target is not banned.
+        if (const auto query = suffixOf(name, "ban:")) {
+            const auto entry = server->getBanList().getBanEntry(*query, std::nullopt, std::nullopt);
+            return emitString(entry ? banRecord(*entry.get()) : std::string{}, buf, cap, needed);
+        }
+        if (const auto query = suffixOf(name, "ipBan:")) {
+            const auto entry = server->getIpBanList().getBanEntry(*query);
+            return emitString(entry ? banRecord(*entry.get()) : std::string{}, buf, cap, needed);
+        }
+        // Whole lists: one record per line, so a plugin can show them without a call per entry.
+        if (name == "banList" || name == "ipBanList") {
+            std::string joined;
+            const auto append = [&](const std::string &record) {
+                if (!joined.empty()) {
+                    joined += '\n';
+                }
+                joined += record;
+            };
+            if (name == "banList") {
+                for (const auto &entry : server->getBanList().getEntries()) {
+                    append(banRecord(*entry));
+                }
+            }
+            else {
+                for (const auto &entry : server->getIpBanList().getEntries()) {
+                    append(banRecord(*entry));
+                }
+            }
+            return emitString(joined, buf, cap, needed);
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *board = static_cast<Scoreboard *>(resolve(target, Kind::Scoreboard))) {
+        // "name\x1fdisplayName\x1fmodifiable" per objective. Keyed by name everywhere else, so this is
+        // the one way to discover what a scoreboard already has.
+        if (name == "objectiveList") {
+            std::string joined;
+            for (const auto &objective : board->getObjectives()) {
+                if (!objective) {
+                    continue;
+                }
+                if (!joined.empty()) {
+                    joined += '\n';
+                }
+                joined += objective->getName() + kUnitSeparator + objective->getDisplayName() +
+                          kUnitSeparator + (objective->isModifiable() ? "1" : "0");
+            }
+            return emitString(joined, buf, cap, needed);
+        }
+        if (name == "entryList") {
+            std::string joined;
+            for (const auto &entry : board->getEntries()) {
+                if (!joined.empty()) {
+                    joined += '\n';
+                }
+                // A ScoreEntry is a player, an actor or a plain name; only the name form is exposed.
+                if (const auto *by_name = std::get_if<std::string>(&entry)) {
+                    joined += *by_name;
+                }
+            }
+            return emitString(joined, buf, cap, needed);
+        }
+        // scores:<entry> - "objective\x1fvalue" per line, i.e. every score that entry holds.
+        if (const auto request = suffixOf(name, "scores:")) {
+            std::string joined;
+            for (const auto &score : board->getScores(ScoreEntry{*request})) {
+                if (!score || !score->isScoreSet()) {
+                    continue;
+                }
+                if (!joined.empty()) {
+                    joined += '\n';
+                }
+                joined += score->getObjective().getName() + kUnitSeparator +
+                          std::to_string(score->getValue());
+            }
+            return emitString(joined, buf, cap, needed);
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *bar = static_cast<BossBar *>(resolve(target, Kind::BossBar))) {
+        if (name == "title") { return emitString(bar->getTitle(), buf, cap, needed); }
+        if (name == "color") { return emitString(std::string{barColorName(bar->getColor())}, buf, cap, needed); }
+        if (name == "style") { return emitString(std::string{barStyleName(bar->getStyle())}, buf, cap, needed); }
+        // Viewers cross as names, one per line: handing out Player handles would tie the bar's lifetime
+        // to a dispatch scope, and a name is what a plugin wants for a lookup anyway.
+        if (name == "playerNameList") {
+            std::string joined;
+            for (const auto *viewer : bar->getPlayers()) {
+                if (!viewer) {
+                    continue;
+                }
+                if (!joined.empty()) {
+                    joined += '\n';
+                }
+                joined += viewer->getName();
+            }
+            return emitString(joined, buf, cap, needed);
+        }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *dimension = static_cast<Dimension *>(resolve(target, Kind::Dimension))) {
@@ -1537,6 +2150,20 @@ esn_status ApiBridge::getString(const esn_handle target, const std::string_view 
     if (auto *block = static_cast<Block *>(resolve(target, Kind::Block))) {
         if (name == "type") { return emitString(block->getType(), buf, cap, needed); }
         if (name == "dimension") { return emitString(block->getDimension().getName(), buf, cap, needed); }
+        // This block's own palette entry, rather than a type's default.
+        if (name == "blockStatesList") {
+            const auto data = block->getData();
+            return emitString(data ? blockStatesRecord(*data) : std::string{}, buf, cap, needed);
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *state = static_cast<BlockState *>(resolve(target, Kind::BlockState))) {
+        if (name == "type") { return emitString(state->getType(), buf, cap, needed); }
+        if (name == "dimension") { return emitString(state->getDimension().getName(), buf, cap, needed); }
+        if (name == "blockStatesList") {
+            const auto data = state->getData();
+            return emitString(data ? blockStatesRecord(*data) : std::string{}, buf, cap, needed);
+        }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *location = static_cast<Location *>(resolve(target, Kind::Location))) {
@@ -1554,6 +2181,43 @@ esn_status ApiBridge::getString(const esn_handle target, const std::string_view 
     if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
         if (name == "type") { return emitString(std::string{stack->getType().getId()}, buf, cap, needed); }
         if (name == "translationKey") { return emitString(stack->getTranslationKey(), buf, cap, needed); }
+        // Metadata that reads as text. An item with no metadata reads as empty rather than failing, so
+        // `item.displayName || item.type` is the natural idiom.
+        if (name == "displayName") {
+            const auto meta = stack->getItemMeta();
+            return emitString(meta && meta->hasDisplayName() ? meta->getDisplayName() : "", buf, cap, needed);
+        }
+        // Lore and the enchantment list are newline-joined; the runtime splits them.
+        if (name == "loreList") {
+            const auto meta = stack->getItemMeta();
+            std::string joined;
+            if (meta && meta->hasLore()) {
+                for (const auto &line : meta->getLore()) {
+                    if (!joined.empty()) {
+                        joined += '\n';
+                    }
+                    joined += line;
+                }
+            }
+            return emitString(joined, buf, cap, needed);
+        }
+        // "<id>,<level>" per line.
+        if (name == "enchantList") {
+            const auto meta = stack->getItemMeta();
+            std::string joined;
+            if (meta && meta->hasEnchants()) {
+                for (const auto &[enchantment, level] : meta->getEnchants()) {
+                    if (!enchantment) {
+                        continue;
+                    }
+                    if (!joined.empty()) {
+                        joined += '\n';
+                    }
+                    joined += static_cast<std::string>(enchantment->getId()) + "," + std::to_string(level);
+                }
+            }
+            return emitString(joined, buf, cap, needed);
+        }
         // The keys the item carries, newline-joined; the runtime splits them into an array.
         if (name == "tagKeyList") {
             std::string joined;
@@ -1748,9 +2412,9 @@ esn_status ApiBridge::getHandle(const esn_handle target, const std::string_view 
             return ESN_ERR_NO_SUCH_MEMBER;
         }
         if (name == "actor") {
-            bool is_mob = false;
-            if (auto *actor = eventActor(event, &is_mob)) {
-                *out = track(actor, is_mob ? Kind::Mob : Kind::Actor);
+            Mob *mob = nullptr;
+            if (auto *actor = eventActor(event, &mob)) {
+                *out = mob ? track(mob, Kind::Mob) : track(actor, Kind::Actor);
                 return ESN_OK;
             }
             return ESN_ERR_NO_SUCH_MEMBER;
@@ -1917,6 +2581,14 @@ esn_status ApiBridge::getHandle(const esn_handle target, const std::string_view 
         }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
+    if (auto *map = static_cast<MapView *>(resolve(target, Kind::MapView))) {
+        if (name == "dimension") {
+            auto *dimension = map->getDimension();
+            *out = dimension ? track(dimension, Kind::Dimension, true) : 0;
+            return ESN_OK;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
     if (auto *source = static_cast<DamageSource *>(resolve(target, Kind::DamageSource))) {
         // getActor() is who is responsible; getDamagingActor() is what actually struck, e.g. an arrow.
         if (name == "actor") { *out = trackActor(source->getActor()); return ESN_OK; }
@@ -1933,6 +2605,14 @@ esn_status ApiBridge::getHandle(const esn_handle target, const std::string_view 
         if (name == "level") {
             auto *level = server->getLevel();
             *out = level ? track(level, Kind::Level, true) : 0;
+            return ESN_OK;
+        }
+        // player:<name or uuid> - the only way to reach a player outside an event. Dispatch-scoped, as
+        // any player handle must be: the object is only valid while they are online.
+        if (const auto query = suffixOf(name, "player:")) {
+            const auto uuid = uuidFromString(*query);
+            auto *found = uuid ? server->getPlayer(*uuid) : server->getPlayer(*query);
+            *out = found ? track(found, Kind::Player) : 0;
             return ESN_OK;
         }
         return ESN_ERR_NO_SUCH_MEMBER;
@@ -1993,6 +2673,26 @@ esn_status ApiBridge::getHandle(const esn_handle target, const std::string_view 
         }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
+    if (auto *state = static_cast<BlockState *>(resolve(target, Kind::BlockState))) {
+        if (name == "location") {
+            owned_locations_.push_back(state->getLocation());
+            *out = track(&owned_locations_.back(), Kind::Location);
+            return ESN_OK;
+        }
+        // The live block at the snapshot's position, which is not necessarily what the snapshot holds.
+        if (name == "block") {
+            auto live = state->getBlock();
+            if (!live) {
+                *out = 0;
+                return ESN_OK;
+            }
+            auto *raw = live.get();
+            owned_blocks_.push_back(std::move(live));
+            *out = track(raw, Kind::Block);
+            return ESN_OK;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
     if (auto *dimension = static_cast<Dimension *>(resolve(target, Kind::Dimension))) {
         if (name == "level") { *out = track(&dimension->getLevel(), Kind::Level, true); return ESN_OK; }
         return ESN_ERR_NO_SUCH_MEMBER;
@@ -2049,7 +2749,30 @@ esn_status ApiBridge::getHandle(const esn_handle target, const std::string_view 
 
 esn_status ApiBridge::setBool(const esn_handle target, const std::string_view name, const bool value)
 {
+    if (auto *map = static_cast<MapView *>(resolve(target, Kind::MapView))) {
+        if (name == "isLocked") { map->setLocked(value); return ESN_OK; }
+        if (name == "unlimitedTracking") { map->setUnlimitedTracking(value); return ESN_OK; }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *bar = static_cast<BossBar *>(resolve(target, Kind::BossBar))) {
+        if (name == "visible") { bar->setVisible(value); return ESN_OK; }
+        if (const auto flag = barFlagFromName(name)) {
+            if (value) {
+                bar->addFlag(*flag);
+            }
+            else {
+                bar->removeFlag(*flag);
+            }
+            return ESN_OK;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
     if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
+        if (name == "unbreakable") {
+            editMeta(*stack, [&](ItemMeta &meta) { meta.setUnbreakable(value); });
+            persistItem(target);
+            return ESN_OK;
+        }
         if (const auto key = tagKeyOf(name)) {
             // NBT has no boolean type; a byte is the convention, and reads back as 0 or 1.
             editNbt(*stack, [&](CompoundTag &nbt) {
@@ -2097,11 +2820,37 @@ esn_status ApiBridge::setInt(const esn_handle target, const std::string_view nam
         }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
+    if (auto *map = static_cast<MapView *>(resolve(target, Kind::MapView))) {
+        if (name == "centerX") { map->setCenterX(static_cast<int>(value)); return ESN_OK; }
+        if (name == "centerZ") { map->setCenterZ(static_cast<int>(value)); return ESN_OK; }
+        // 0 (closest) to 4 (furthest); anything else would be an out-of-range enum value.
+        if (name == "scale") {
+            if (value < 0 || value > 4) {
+                return ESN_ERR_BAD_ARGUMENT;
+            }
+            map->setScale(static_cast<MapView::Scale>(value));
+            return ESN_OK;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
     if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
         // Writes reach the world only for a stack the server handed out live, such as the one on
         // PlayerDropItemEvent. A stack read out of an inventory is a copy - change the inventory.
         if (name == "amount") { stack->setAmount(static_cast<int>(value)); persistItem(target); return ESN_OK; }
         if (name == "data") { stack->setData(static_cast<int>(value)); persistItem(target); return ESN_OK; }
+        if (name == "damage" || name == "repairCost") {
+            const auto amount = static_cast<int>(value);
+            editMeta(*stack, [&](ItemMeta &meta) {
+                if (name == "damage") {
+                    meta.setDamage(amount);
+                }
+                else {
+                    meta.setRepairCost(amount);
+                }
+            });
+            persistItem(target);
+            return ESN_OK;
+        }
         if (const auto key = tagKeyOf(name)) {
             // Stored as a long so a JavaScript integer never silently narrows.
             editNbt(*stack, [&](CompoundTag &nbt) { nbt[*key] = LongTag{value}; });
@@ -2136,6 +2885,15 @@ esn_status ApiBridge::setInt(const esn_handle target, const std::string_view nam
 
 esn_status ApiBridge::setDouble(const esn_handle target, const std::string_view name, const double value)
 {
+    if (auto *bar = static_cast<BossBar *>(resolve(target, Kind::BossBar))) {
+        // Endstone clamps nothing, and a value outside 0..1 makes the client draw a bar wider than its
+        // frame, so it is clamped here rather than in JavaScript where a plugin could skip it.
+        if (name == "progress") {
+            bar->setProgress(static_cast<float>(value < 0.0 ? 0.0 : value > 1.0 ? 1.0 : value));
+            return ESN_OK;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
     if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
         if (const auto key = tagKeyOf(name)) {
             editNbt(*stack, [&](CompoundTag &nbt) { nbt[*key] = DoubleTag{value}; });
@@ -2162,8 +2920,53 @@ esn_status ApiBridge::setDouble(const esn_handle target, const std::string_view 
 
 esn_status ApiBridge::setString(const esn_handle target, const std::string_view name, const std::string_view value)
 {
+    if (auto *bar = static_cast<BossBar *>(resolve(target, Kind::BossBar))) {
+        if (name == "title") { bar->setTitle(std::string{value}); return ESN_OK; }
+        if (name == "color") {
+            const auto color = barColorFromName(value);
+            if (!color) {
+                return ESN_ERR_BAD_ARGUMENT;
+            }
+            bar->setColor(*color);
+            return ESN_OK;
+        }
+        if (name == "style") {
+            const auto style = barStyleFromName(value);
+            if (!style) {
+                return ESN_ERR_BAD_ARGUMENT;
+            }
+            bar->setStyle(*style);
+            return ESN_OK;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
     if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
         if (name == "type") { stack->setType(std::string{value}); persistItem(target); return ESN_OK; }
+        // An empty string clears the custom name, which is what setDisplayName(nullopt) does.
+        if (name == "displayName") {
+            editMeta(*stack, [&](ItemMeta &meta) {
+                meta.setDisplayName(value.empty() ? std::nullopt : std::optional{std::string{value}});
+            });
+            persistItem(target);
+            return ESN_OK;
+        }
+        // Newline-joined on the way in as well; empty clears it.
+        if (name == "loreList") {
+            std::vector<std::string> lines;
+            for (std::size_t start = 0; start <= value.size() && !value.empty();) {
+                const auto end = value.find('\n', start);
+                lines.emplace_back(value.substr(start, end == std::string_view::npos ? end : end - start));
+                if (end == std::string_view::npos) {
+                    break;
+                }
+                start = end + 1;
+            }
+            editMeta(*stack, [&](ItemMeta &meta) {
+                meta.setLore(lines.empty() ? std::nullopt : std::optional{lines});
+            });
+            persistItem(target);
+            return ESN_OK;
+        }
         if (const auto key = tagKeyOf(name)) {
             editNbt(*stack, [&](CompoundTag &nbt) { nbt[*key] = StringTag{std::string{value}}; });
             persistItem(target);
@@ -2281,12 +3084,18 @@ esn_status ApiBridge::setString(const esn_handle target, const std::string_view 
         if (name == "type") { (void)block->setType(std::string{value}); return ESN_OK; }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
+    if (auto *state = static_cast<BlockState *>(resolve(target, Kind::BlockState))) {
+        // Only changes the snapshot; update() is what writes it to the world.
+        if (name == "type") { state->setType(std::string{value}); return ESN_OK; }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
     return find(target) ? ESN_ERR_NO_SUCH_MEMBER : ESN_ERR_STALE_HANDLE;
 }
 
 esn_status ApiBridge::invoke(const esn_handle target, const std::string_view name,
                              const char *const *strings, const std::size_t string_count, const double *numbers,
-                             const std::size_t number_count, esn_handle *out_handle)
+                             const std::size_t number_count, const esn_handle *handles,
+                             const std::size_t handle_count, esn_handle *out_handle)
 {
     const auto number = [&](const std::size_t index, const double fallback = 0.0) {
         return index < number_count ? numbers[index] : fallback;
@@ -2294,10 +3103,14 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
     const auto str = [&](const std::size_t index) -> std::string {
         return index < string_count && strings[index] ? std::string{strings[index]} : std::string{};
     };
+    // An object argument, e.g. bar.addPlayer(player) or stack.isSimilar(other). 0 when absent, which
+    // every caller has to treat as a bad argument rather than as a null object.
+    const auto handle_at = [&](const std::size_t index) -> esn_handle {
+        return index < handle_count && handles ? handles[index] : 0;
+    };
     const auto text = str(0);
 
     if (auto *player = static_cast<Player *>(resolve(target, Kind::Player))) {
-        if (name == "sendMessage") { player->sendMessage(Message{std::string{text}}); return ESN_OK; }
         if (name == "sendErrorMessage") { player->sendErrorMessage(Message{std::string{text}}); return ESN_OK; }
         if (name == "sendPopup") { player->sendPopup(std::string{text}); return ESN_OK; }
         if (name == "sendTip") { player->sendTip(std::string{text}); return ESN_OK; }
@@ -2310,22 +3123,23 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
             player->transfer(std::string{text}, static_cast<int>(number(0, 19132)));
             return ESN_OK;
         }
-        // teleport(location, { rotation, dimension }). Rotation and dimension default to the
-        // player's current ones. Only a teleport can turn a player's view - setRotation moves the
-        // server-side rotation but the client owns its camera.
-        if (name == "teleport") {
-            const auto current = player->getLocation();
-            auto *dimension = &player->getDimension();
-            if (const auto requested = str(0); !requested.empty()) {
-                dimension = player->getLevel().getDimension(requested);
-                if (!dimension) {
-                    return ESN_ERR_BAD_ARGUMENT;
-                }
+        // Both take another object, which is what handle arguments are for.
+        if (name == "sendMap") {
+            auto *map = static_cast<MapView *>(resolve(handle_at(0), Kind::MapView));
+            if (!map) {
+                return ESN_ERR_BAD_ARGUMENT;
             }
-            player->teleport(Location{*dimension, static_cast<float>(number(0)),
-                                      static_cast<float>(number(1)), static_cast<float>(number(2)),
-                                      static_cast<float>(number(4, current.getPitch())),
-                                      static_cast<float>(number(3, current.getYaw()))});
+            player->sendMap(*map);
+            return ESN_OK;
+        }
+        // Backend for the `scoreboard` property: the ABI's setters carry only scalars, so a
+        // handle-valued write goes through a method the same way `rotation` does.
+        if (name == "setScoreboard") {
+            auto *board = static_cast<Scoreboard *>(resolve(handle_at(0), Kind::Scoreboard));
+            if (!board) {
+                return ESN_ERR_BAD_ARGUMENT;
+            }
+            player->setScoreboard(*board);
             return ESN_OK;
         }
         if (name == "playSound") {
@@ -2348,13 +3162,8 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
                                   string_count > 1 ? std::optional<std::string>{str(1)} : std::nullopt);
             return ESN_OK;
         }
-        // Backend for the `rotation` property: setRotation(yaw, pitch), matching Endstone. For a
-        // player this only moves the server-side rotation; the client owns its own camera.
-        if (name == "setRotation") {
-            player->setRotation(static_cast<float>(number(0)), static_cast<float>(number(1)));
-            return ESN_OK;
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
+        // Everything Actor offers, so `Player extends Actor` in the types is not a lie.
+        return actorInvoke(*player, name, text, str, number);
     }
     if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
         const auto ev = event->getEventName();
@@ -2396,7 +3205,107 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
             (void)server->dispatchCommand(server->getCommandSender(), str(0));
             return ESN_OK;
         }
+        // createBossBar(title, color, style). The bar is owned here and its handle is persistent, so
+        // JavaScript can keep it and drive it from a timer; bar.remove() is what frees it.
+        if (name == "reloadData") { server->reloadData(); return ESN_OK; }
+        // createMap(dimension) - the map is owned by the server, so its handle is persistent.
+        if (name == "createMap") {
+            auto *level = server->getLevel();
+            if (!level) {
+                return ESN_ERR_NOT_INITIALIZED;
+            }
+            const auto requested = str(0);
+            auto *dimension = level->getDimension(requested.empty() ? "overworld" : requested);
+            if (!dimension) {
+                return ESN_ERR_BAD_ARGUMENT;
+            }
+            auto &map = server->createMap(*dimension);
+            if (out_handle) {
+                *out_handle = track(&map, Kind::MapView, true);
+            }
+            return ESN_OK;
+        }
+        // A fresh scoreboard, for a sidebar only some players see. Owned here; see owned_scoreboards_.
+        if (name == "createScoreboard") {
+            auto board = server->createScoreboard();
+            if (!board) {
+                return ESN_ERR_INTERNAL;
+            }
+            auto *raw = board.get();
+            owned_scoreboards_.push_back(std::move(board));
+            if (out_handle) {
+                *out_handle = track(raw, Kind::Scoreboard, true);
+            }
+            return ESN_OK;
+        }
+        // broadcast(message, permission) - only players holding the permission see it.
+        if (name == "broadcast") {
+            server->broadcast(Message{str(0)}, str(1));
+            return ESN_OK;
+        }
+        // banPlayer(target, reason, source, durationSeconds) / banIp(...). A duration of 0 is permanent.
+        if (name == "banPlayer" || name == "banIp") {
+            const auto target_name = str(0);
+            if (target_name.empty()) {
+                return ESN_ERR_BAD_ARGUMENT;
+            }
+            const auto reason = str(1);
+            const auto source = str(2);
+            const auto seconds = static_cast<std::int64_t>(number(0, 0));
+            const auto optional_of = [](const std::string &value) {
+                return value.empty() ? std::nullopt : std::optional{value};
+            };
+            if (name == "banIp") {
+                auto &list = server->getIpBanList();
+                if (seconds > 0) {
+                    (void)list.addBan(target_name, optional_of(reason), std::chrono::seconds{seconds},
+                                      optional_of(source));
+                }
+                else {
+                    (void)list.addBan(target_name, optional_of(reason), std::nullopt, optional_of(source));
+                }
+                return ESN_OK;
+            }
+            auto &list = server->getBanList();
+            if (seconds > 0) {
+                (void)list.addBan(target_name, std::nullopt, std::nullopt, optional_of(reason),
+                                  std::chrono::seconds{seconds}, optional_of(source));
+            }
+            else {
+                (void)list.addBan(target_name, std::nullopt, std::nullopt, optional_of(reason), std::nullopt,
+                                  optional_of(source));
+            }
+            return ESN_OK;
+        }
+        if (name == "unbanPlayer") {
+            server->getBanList().removeBan(str(0), std::nullopt, std::nullopt);
+            return ESN_OK;
+        }
+        if (name == "unbanIp") {
+            server->getIpBanList().removeBan(str(0));
+            return ESN_OK;
+        }
+        if (name == "createBossBar") {
+            const auto color = barColorFromName(str(1));
+            const auto style = barStyleFromName(str(2));
+            if (!color || !style) {
+                return ESN_ERR_BAD_ARGUMENT;
+            }
+            auto bar = server->createBossBar(str(0), *color, *style);
+            if (!bar) {
+                return ESN_ERR_INTERNAL;
+            }
+            auto *raw = bar.get();
+            owned_boss_bars_.push_back(std::move(bar));
+            if (out_handle) {
+                *out_handle = track(raw, Kind::BossBar, true);
+            }
+            return ESN_OK;
+        }
         return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *bar = static_cast<BossBar *>(resolve(target, Kind::BossBar))) {
+        return bossBarInvoke(target, *bar, name, str, handle_at);
     }
     if (auto *board = static_cast<Scoreboard *>(resolve(target, Kind::Scoreboard))) {
         return scoreboardInvoke(*board, name, str, number, number_count, out_handle);
@@ -2516,14 +3425,13 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
             }
             return ESN_OK;
         }
-        if (name == "setHeldItemSlot") {
-            if (auto *player_inventory = static_cast<PlayerInventory *>(resolve(target, Kind::PlayerInventory))) {
+        // Everything below needs a PlayerInventory, so it all lives under the one guard - the nesting
+        // is what says which type owns a method, and scripts/check_methods.py reads it that way.
+        if (auto *player_inventory = static_cast<PlayerInventory *>(resolve(target, Kind::PlayerInventory))) {
+            if (name == "setHeldItemSlot") {
                 player_inventory->setHeldItemSlot(static_cast<int>(number(0)));
                 return ESN_OK;
             }
-            return ESN_ERR_NO_SUCH_MEMBER;
-        }
-        if (auto *player_inventory = static_cast<PlayerInventory *>(resolve(target, Kind::PlayerInventory))) {
             if (name == "setHelmet") { player_inventory->setHelmet(described(0)); return ESN_OK; }
             if (name == "setChestplate") { player_inventory->setChestplate(described(0)); return ESN_OK; }
             if (name == "setLeggings") { player_inventory->setLeggings(described(0)); return ESN_OK; }
@@ -2534,30 +3442,7 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *actor = resolveActor(target)) {
-        if (name == "sendMessage") { actor->sendMessage(Message{std::string{text}}); return ESN_OK; }
-        if (name == "remove") { actor->remove(); return ESN_OK; }
-        if (name == "addScoreboardTag") { (void)actor->addScoreboardTag(std::string{text}); return ESN_OK; }
-        if (name == "removeScoreboardTag") { (void)actor->removeScoreboardTag(std::string{text}); return ESN_OK; }
-        if (name == "setRotation") {
-            actor->setRotation(static_cast<float>(number(0)), static_cast<float>(number(1)));
-            return ESN_OK;
-        }
-        if (name == "teleport") {
-            const auto current = actor->getLocation();
-            auto *dimension = &actor->getDimension();
-            if (const auto requested = str(0); !requested.empty()) {
-                dimension = actor->getLevel().getDimension(requested);
-                if (!dimension) {
-                    return ESN_ERR_BAD_ARGUMENT;
-                }
-            }
-            actor->teleport(Location{*dimension, static_cast<float>(number(0)),
-                                     static_cast<float>(number(1)), static_cast<float>(number(2)),
-                                     static_cast<float>(number(4, current.getPitch())),
-                                     static_cast<float>(number(3, current.getYaw()))});
-            return ESN_OK;
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
+        return actorInvoke(*actor, name, text, str, number);
     }
     if (auto *block = static_cast<Block *>(resolve(target, Kind::Block))) {
         if (name == "getRelative" && out_handle) {
@@ -2572,6 +3457,41 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
             *out_handle = track(raw, Kind::Block);
             return ESN_OK;
         }
+        // A snapshot of this position, detached from the world. Change its type, then update() to write
+        // it back - which is how you restore a block later, or stage a change and apply it.
+        // A second handle on the same position, released with this dispatch like any other Block.
+        if (name == "clone" && out_handle) {
+            auto copy = block->clone();
+            if (!copy) {
+                return ESN_ERR_INTERNAL;
+            }
+            auto *raw = copy.get();
+            owned_blocks_.push_back(std::move(copy));
+            *out_handle = track(raw, Kind::Block);
+            return ESN_OK;
+        }
+        if (name == "captureState" && out_handle) {
+            auto state = block->captureState();
+            if (!state) {
+                return ESN_ERR_INTERNAL;
+            }
+            auto *raw = state.get();
+            owned_block_states_.push_back(std::move(state));
+            *out_handle = track(raw, Kind::BlockState);
+            return ESN_OK;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *state = static_cast<BlockState *>(resolve(target, Kind::BlockState))) {
+        // update(force, applyPhysics) - writes the snapshot back to the world. Without force it only
+        // applies if the position is still the type it was captured as, so a racing change is not
+        // clobbered; applyPhysics lets neighbours react, e.g. sand falling.
+        if (name == "update") {
+            const auto force = number(0, 0) != 0;
+            const auto physics = number(1, 0) != 0;
+            (void)state->update(force, physics);
+            return ESN_OK;
+        }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
@@ -2581,6 +3501,43 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
                 return ESN_ERR_WRONG_TYPE;
             }
             cancellable->cancel();
+            return ESN_OK;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
+        // Deleting a custom data key. Unlike reading and writing one this cannot ride the accessor
+        // name, because there is no "set to nothing" - so it is the one tag operation that is a method.
+        if (name == "removeTag") {
+            editNbt(*stack, [&](CompoundTag &nbt) { (void)nbt.erase(text); });
+            persistItem(target);
+            return ESN_OK;
+        }
+        // addEnchant(id, level) - forced, so a level above vanilla's maximum is allowed, which is the
+        // point of doing it from a plugin rather than an anvil.
+        if (name == "addEnchant") {
+            if (text.empty()) {
+                return ESN_ERR_BAD_ARGUMENT;
+            }
+            const auto level = static_cast<int>(number(0, 1));
+            editMeta(*stack, [&](ItemMeta &meta) { (void)meta.addEnchant(EnchantmentId{text}, level, true); });
+            persistItem(target);
+            return ESN_OK;
+        }
+        if (name == "removeEnchant") {
+            editMeta(*stack, [&](ItemMeta &meta) { (void)meta.removeEnchant(EnchantmentId{text}); });
+            persistItem(target);
+            return ESN_OK;
+        }
+        if (name == "removeEnchants") {
+            editMeta(*stack, [&](ItemMeta &meta) { meta.removeEnchants(); });
+            persistItem(target);
+            return ESN_OK;
+        }
+        // A detached copy: no writeback, so changing it cannot reach the slot the original came from.
+        // That is the point - it is how you keep an item's contents past the callback.
+        if (name == "clone" && out_handle) {
+            *out_handle = trackOwnedItem(*stack, nullptr);
             return ESN_OK;
         }
         return ESN_ERR_NO_SUCH_MEMBER;
@@ -2610,6 +3567,15 @@ esn_status ApiBridge::typeName(const esn_handle target, char *buf, const std::si
     }
     if (resolve(target, Kind::ItemStack)) {
         return emitString("ItemStack", buf, cap, needed);
+    }
+    if (resolve(target, Kind::BossBar)) {
+        return emitString("BossBar", buf, cap, needed);
+    }
+    if (resolve(target, Kind::BlockData)) {
+        return emitString("BlockData", buf, cap, needed);
+    }
+    if (resolve(target, Kind::BlockState)) {
+        return emitString("BlockState", buf, cap, needed);
     }
     if (resolve(target, Kind::Location)) {
         return emitString("Location", buf, cap, needed);
@@ -2703,9 +3669,10 @@ esn_status ESN_CALL tSetString(void *c, esn_handle t, const char *n, const char 
     ESN_GUARD(bridge(c).setString(t, n ? n : "", std::string_view(v ? v : "", v ? len : 0)))
 }
 esn_status ESN_CALL tInvoke(void *c, esn_handle t, const char *n, const char *const *strs, std::size_t str_count,
-                            const double *nums, std::size_t num_count, esn_handle *out)
+                            const double *nums, std::size_t num_count, const esn_handle *handles,
+                            std::size_t handle_count, esn_handle *out)
 {
-    ESN_GUARD(bridge(c).invoke(t, n ? n : "", strs, str_count, nums, num_count, out))
+    ESN_GUARD(bridge(c).invoke(t, n ? n : "", strs, str_count, nums, num_count, handles, handle_count, out))
 }
 esn_status ESN_CALL tTypeName(void *c, esn_handle t, char *b, std::size_t cap, std::size_t *need)
 {

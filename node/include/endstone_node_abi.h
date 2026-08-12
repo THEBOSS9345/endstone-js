@@ -52,7 +52,7 @@ extern "C" {
 #endif
 
 /* Bumped on any incompatible change below. Checked by both sides at load time. */
-#define ESN_ABI_VERSION 13u
+#define ESN_ABI_VERSION 14u
 
 typedef enum esn_status {
     ESN_OK = 0,
@@ -120,6 +120,17 @@ typedef uint64_t esn_handle;
  * entry point per property would neither scale nor survive upstream additions. Exposing a new
  * property means adding a dispatch entry on the Endstone side and a line of JavaScript - never an ABI
  * change. Unknown names fail with ESN_ERR_NO_SUCH_MEMBER; type mismatches with ESN_ERR_WRONG_TYPE.
+ *
+ * Three conventions ride the accessor *name*, because they need something the fixed signatures cannot
+ * express. Keep them here rather than letting more accumulate undocumented:
+ *
+ *   "tag:<key>"          an item stack's custom NBT entry, e.g. "tag:myplugin:uses". Addresses an
+ *                        arbitrary key without an entry point per key.
+ *   "similarTo:<handle>" a predicate taking another object. `invoke` cannot return a bool, so a
+ *                        comparison goes through get_bool with the operand encoded in the name.
+ *   "<name>List"         a list, newline-joined into one string, because no accessor returns an array.
+ *                        The runtime splits it. Every one of these needs a matching reader in the
+ *                        runtime or the property reads back as undefined.
  */
 typedef struct esn_accessors {
     esn_status(ESN_CALL *get_bool)(void *context, esn_handle target, const char *name, int *out);
@@ -137,15 +148,16 @@ typedef struct esn_accessors {
                                      size_t length);
 
     /*
-     * Calls a method. Arguments arrive as an array of NUL-terminated strings plus an array of doubles,
-     * in the order JavaScript passed them. That covers Endstone's whole method surface -
-     * sendMessage(text), teleport(location), sendToast(title, content),
-     * sendTitle(title, subtitle, fadeIn, stay, fadeOut) - so new methods never touch the ABI.
-     * `out_handle` is optional and receives a result object for methods that return one.
+     * Calls a method. Arguments arrive as an array of NUL-terminated strings, an array of doubles and
+     * an array of handles, each in the order JavaScript passed them. That covers Endstone's whole
+     * method surface - sendMessage(text), teleport(location), sendToast(title, content),
+     * sendTitle(title, subtitle, fadeIn, stay, fadeOut), bar.addPlayer(player) - so new methods never
+     * touch the ABI. `out_handle` is optional and receives a result object for methods that return one.
      */
     esn_status(ESN_CALL *invoke)(void *context, esn_handle target, const char *name,
                                 const char *const *strings, size_t string_count, const double *numbers,
-                                size_t number_count, esn_handle *out_handle);
+                                size_t number_count, const esn_handle *handles, size_t handle_count,
+                                esn_handle *out_handle);
 
     /* Names the concrete Endstone type behind a handle, for diagnostics and JS class selection. */
     esn_status(ESN_CALL *type_name)(void *context, esn_handle target, char *buf, size_t cap, size_t *out_needed);

@@ -3,9 +3,23 @@ cmake_minimum_required(VERSION 3.20)
 # The Node side of the ABI firewall. Built with the toolchain libnode itself was built with
 # (libstdc++ on Linux, MSVC ABI on Windows) - NOT Endstone's libc++ toolchain. It links no Endstone
 # target and includes no Endstone header.
-add_library(endstone_node_host SHARED host.cpp node_embed.cpp)
+# The bootstrap is a real .js file, compiled in as a string. Editing it re-runs this and rebuilds
+# host.cpp; a syntax error fails the build here rather than at server start-up.
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+set(BOOTSTRAP_HEADER ${CMAKE_CURRENT_BINARY_DIR}/generated/bootstrap_source.h)
+add_custom_command(
+        OUTPUT ${BOOTSTRAP_HEADER}
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/embed_js.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/bootstrap.js --out ${BOOTSTRAP_HEADER} --check
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/bootstrap.js
+        ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/embed_js.py
+        COMMENT "Embedding bootstrap.js"
+        VERBATIM)
+
+add_library(endstone_node_host SHARED host.cpp node_embed.cpp ${BOOTSTRAP_HEADER})
 add_library(endstone::node_host ALIAS endstone_node_host)
 
+target_include_directories(endstone_node_host PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
 target_include_directories(endstone_node_host PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../include)
 if (LIBNODE_INCLUDE_DIR)
     target_include_directories(endstone_node_host PRIVATE ${LIBNODE_INCLUDE_DIR})

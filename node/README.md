@@ -50,6 +50,12 @@ exported surface of the host: esn_abi_version esn_host_create esn_host_destroy
 mangled C++ symbols on it   : (none)
 ```
 
+The runtime that JavaScript actually sees - the `@endstone-js/server` module, the event and command
+registries, the packet codec - is [`host/bootstrap.js`](host/bootstrap.js). It is a real JavaScript file
+so it can be linted and syntax-checked, and `scripts/embed_js.py` compiles it into the host as a string
+at build time, so there is still no runtime asset to locate. A syntax error there fails the build rather
+than the server's first start-up. Editing it rebuilds the host; nothing needs re-staging beyond the DLL.
+
 ## The API
 
 `@endstone-js/server` is a **virtual module** served from memory by the host - nothing to install, and it

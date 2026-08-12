@@ -1,7 +1,7 @@
 # Node.js Scripting Rules
 
 Rules for writing and extending the JavaScript plugin API for Endstone. Applies to every plugin and
-every change to the API surface (the bridge in `plugin/api_bridge.cpp`, the runtime in `host/host.cpp`,
+every change to the API surface (the bridge in `plugin/api_bridge.cpp`, the runtime in `host/bootstrap.js`,
 and the declarations in `endstone-server-types/index.d.ts`).
 
 ## 1. Plugins never touch the engine
@@ -48,13 +48,22 @@ Simplicity is a hard requirement, not a nicety. The rules that keep it that way:
   `player.location`, `block.location`, `player.velocity`. Reads are `readonly`; writes are plain
   assignment.
 
-- **Adding anything to the API requires three edits in the same change:**
+- **Adding anything to the API requires four edits in the same change:**
   1. the bridge in `node/plugin/api_bridge.cpp`,
-  2. the runtime in `node/host/host.cpp` (if the runtime must know about it),
+  2. the runtime in `node/host/bootstrap.js` (if the runtime must know about it),
   3. the declaration in `endstone-server-types/index.d.ts`,
   4. an example that actually calls it, under `node/examples/`.
 
   There is no such thing as a runtime feature without types, or a type without an implementation.
+
+- **A method also goes in `METHODS_BY_TYPE`, under the type that really implements it.** The runtime
+  will not call a name that is not listed for the handle's type, and listing it under a type the bridge
+  does not implement it for gives you a function that throws. `scripts/check_methods.py` compares the
+  two and **fails the build** on a disagreement, so this is checked rather than remembered.
+
+  Which type owns a method is decided by *which `resolve(target, Kind::X)` branch it sits in* in the
+  bridge - so put it in the right branch rather than guarding inside a wider one, or the check will
+  read it as belonging to the wider type.
 
 ## 3. Commands are registered at the top level, and they are always `/` commands
 
