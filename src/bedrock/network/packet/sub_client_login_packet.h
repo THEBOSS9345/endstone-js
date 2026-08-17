@@ -25,7 +25,9 @@ BEDROCK_STATIC_ASSERT_SIZE(SubClientLoginPacketPayload, 8, 8);
 
 class SubClientLoginPacket : public Packet {
 public:
-    SubClientLoginPacketPayload payload;                                               // +48
+    static constexpr bool SHARE_WITH_HANDLER = true;
+
+    SubClientLoginPacketPayload payload;                                                // +48
     SerializationMode serialization_mode{SerializationMode::SideBySide_LogOnMismatch};  // +56
 };
 BEDROCK_STATIC_ASSERT_SIZE(SubClientLoginPacket, 64, 64);

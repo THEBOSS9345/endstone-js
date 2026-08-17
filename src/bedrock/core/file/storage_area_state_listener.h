@@ -14,8 +14,11 @@
 
 #pragma once
 
+#include <functional>
 #include <memory>
 
+#include "bedrock/core/file/file_types.h"
+#include "bedrock/core/file/level_storage_state.h"
 #include "bedrock/forward.h"
 #include "bedrock/platform/threading/mutex_details.h"
 
@@ -23,9 +26,13 @@ namespace Core {
 class StorageAreaStateListener {
 public:
     virtual ~StorageAreaStateListener() = 0;
+    virtual void onExtendDiskSpace(bool, std::weak_ptr<FileStorageArea> const &, FileSize, std::function<void()>) = 0;
+    virtual void onLowDiskSpace(bool, FileSize) = 0;
+    virtual void onOutOfDiskSpace(bool, FileSize) = 0;
+    virtual void onCriticalDiskError(bool, LevelStorageState const &) = 0;
 
 private:
-    std::shared_ptr<Core::StorageAreaState> file_storage_area_;  // +8
-    Bedrock::Threading::Mutex mutex_;                            // +24
+    std::shared_ptr<FileStorageArea> file_storage_area_;  // +8
+    Bedrock::Threading::Mutex mutex_;                     // +24
 };
 }  // namespace Core

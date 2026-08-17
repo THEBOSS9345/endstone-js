@@ -22,7 +22,7 @@
 #include "bedrock/world/level/block_source.h"
 #include "bedrock/world/level/material/material_type.h"
 
-std::optional<BlockPos> BedBlock::findWakeupPosition(BlockSource &region, const BlockPos &pos,
+std::optional<BlockPos> BedBlock::findWakeupPosition(const BlockSource &region, const BlockPos &pos,
                                                      const std::optional<Vec3> &entered_bed_pos)
 {
     const auto &block = region.getBlock(pos);
@@ -89,7 +89,7 @@ std::optional<BlockPos> BedBlock::findWakeupPosition(BlockSource &region, const 
     return first_valid_standup_pos;
 }
 
-bool BedBlock::isDangerousSpawnPosition(BlockSource &region, const BlockPos &pos)
+bool BedBlock::isDangerousSpawnPosition(const BlockSource &region, const BlockPos &pos)
 {
     const auto &block = region.getBlock(pos);
     if (block.hasProperty(BlockProperty::CausesDamage) || block.getMaterial().isType(MaterialType::Lava) ||
@@ -106,7 +106,7 @@ bool BedBlock::isDangerousSpawnPosition(BlockSource &region, const BlockPos &pos
     return false;
 }
 
-bool BedBlock::isValidStandUpPosition(BlockSource &region, const BlockPos &pos)
+bool BedBlock::isValidStandUpPosition(const BlockSource &region, const BlockPos &pos)
 {
     const auto &block = region.getBlock(pos);
     const auto is_bed = block.getName() == VanillaBlockTypeIds::Bed;

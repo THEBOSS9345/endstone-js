@@ -14,6 +14,11 @@
 
 #pragma once
 
+#include <optional>
+#include <string_view>
+
+#include "bedrock/network/packet.h"
+
 enum class SideBySideValidation : int {
     LogOnError = 0,
     AssertOnError = 1,

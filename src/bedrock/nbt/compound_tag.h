@@ -42,7 +42,9 @@ public:
 
     CompoundTag() = default;
     void write(IDataOutput &output) const override;
+    void write(IDataOutput &output, int depth) const;
     Bedrock::Result<void> load(IDataInput &input) override;
+    Bedrock::Result<void> load(IDataInput &input, int depth);
     [[nodiscard]] std::string toString() const override;
     [[nodiscard]] Type getId() const override;
     [[nodiscard]] bool equals(const Tag &other) const override;

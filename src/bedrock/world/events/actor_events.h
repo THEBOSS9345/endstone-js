@@ -49,6 +49,7 @@ struct ActorBeforeHurtEvent {
     const Actor &entity;
     const ActorDamageSource &source;
     float damage;
+    bool was_modified;
 };
 
 struct ActorBeforeHealEvent {
@@ -117,9 +118,9 @@ struct ActorHurtEvent {
 };
 
 struct ActorHealEvent {
-    WeakEntityRef mEntity;
-    ActorHealCause mCause;
-    float mHealing;
+    WeakEntityRef entity;
+    ActorHealCause cause;
+    float healing;
 };
 
 struct ActorHealthChangedEvent {
@@ -158,9 +159,24 @@ struct KnockBackEvent {
     WeakRef<EntityContext> actor;
 };
 
+struct BeforeTamingEvent {
+    Actor &actor;
+    Actor &taming_actor;
+};
+
+struct BeforeMountTamingEvent {
+    Actor &passenger;
+    Actor &mount;
+};
+
+struct TamingEvent {
+    WeakEntityRef actor;
+    WeakEntityRef taming_actor;
+};
+
 struct MountTamingEvent {
-    WeakRef<EntityContext> passenger;
-    WeakRef<EntityContext> mount;
+    WeakEntityRef passenger;
+    WeakEntityRef mount;
 };
 
 struct ProjectileHitEvent {
@@ -229,13 +245,6 @@ struct ActorItemEventAfterDroppedItem {
     std::vector<WeakRef<EntityContext>> item_actors;
 };
 
-// TODO(fixme): check the name
-struct UnknownActorEvent22 {};  // added in 1.26.40; 48 bytes, two WeakRef<EntityContext>, index 21 or 22
-// TODO(fixme): check the name
-struct UnknownActorBeforeEvent5 {};  // added in 1.26.40 at index 5; 16 bytes
-// TODO(fixme): check the name
-struct UnknownActorBeforeEvent6 {};  // added in 1.26.40 at index 6; 16 bytes
-
 template <typename Result>
 struct ActorGameplayEvent;
 
@@ -246,8 +255,8 @@ struct ActorGameplayEvent<void>
                         ActorDiedEvent, ActorDroppedItemEvent, ActorEquippedArmorEvent, ActorHealEvent, ActorHurtEvent,
                         ActorHealthChangedEvent, ActorKilledEvent, ActorPlacedItemEvent, ActorRemovedEvent,
                         ActorRemoveEffectEvent, ActorStartRidingEvent, ActorUpgradeTriggeredEvent,
-                        ActorUpgradeEndedEvent, ActorUseItemEvent, KnockBackEvent, MountTamingEvent,
-                        UnknownActorEvent22, ActorItemEventAfterDroppedItem> {};
+                        ActorUpgradeEndedEvent, ActorUseItemEvent, KnockBackEvent, MountTamingEvent, TamingEvent,
+                        ActorItemEventAfterDroppedItem> {};
 
 template <>
 struct ActorGameplayEvent<CoordinatorResult>
@@ -262,5 +271,5 @@ struct MutableActorGameplayEvent<void> : MutableEventVariant<ActorItemEventBefor
 template <>
 struct MutableActorGameplayEvent<CoordinatorResult>
     : MutableEventVariant<ActorDefinitionStartedEvent, ActorAddEffectEvent, ActorBeforeAcquireItemEvent,
-                          ActorBeforeHealEvent, ActorBeforeHurtEvent, UnknownActorBeforeEvent5,
-                          UnknownActorBeforeEvent6, ActorUpgradeStartedEvent> {};
+                          ActorBeforeHealEvent, ActorBeforeHurtEvent, BeforeTamingEvent, BeforeMountTamingEvent,
+                          ActorUpgradeStartedEvent> {};

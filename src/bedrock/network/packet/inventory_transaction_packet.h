@@ -15,14 +15,13 @@
 #pragma once
 
 #include <memory>
-#include <utility>
 #include <variant>
 #include <vector>
 
 #include "bedrock/forward.h"
 #include "bedrock/network/packet.h"
 #include "bedrock/network/packet/cerealize/core/serialization_mode.h"
-#include "bedrock/world/containers/container_enum.h"
+#include "bedrock/network/packet/legacy_set_slot.h"
 #include "bedrock/world/inventory/network/item_stack_net_id_variant.h"
 #include "bedrock/world/inventory/transaction/item_release_inventory_transaction.h"
 #include "bedrock/world/inventory/transaction/item_use_inventory_transaction.h"
@@ -39,8 +38,8 @@ struct InventoryMismatchData {
 };
 
 struct InventoryTransactionPacketPayload {
-    ItemStackLegacyRequestId legacy_request_id;                                                   // +0
-    std::vector<std::pair<ContainerEnumName, std::vector<unsigned char>>> legacy_set_item_slots;  // +16
+    ItemStackLegacyRequestId legacy_request_id;        // +0
+    std::vector<LegacySetSlot> legacy_set_item_slots;  // +16
     std::variant<NormalTransactionData, InventoryMismatchData, ItemUseInventoryTransaction,
                  ItemUseOnActorInventoryTransaction, ItemReleaseInventoryTransaction>
         variant_transaction;                                   // +40

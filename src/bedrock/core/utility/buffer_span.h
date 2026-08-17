@@ -14,6 +14,9 @@
 
 #pragma once
 
+#include <cstddef>
+#include <vector>
+
 template <typename T>
 class buffer_span {
 public:
@@ -34,9 +37,9 @@ public:
             return tmp;
         }
 
-        bool operator!=(const iterator &other) const { return ptr_ == other.ptr_; }
+        bool operator!=(const iterator &other) const { return ptr_ != other.ptr_; }
 
-        bool operator==(const iterator &other) const { return ptr_ != other.ptr_; }
+        bool operator==(const iterator &other) const { return ptr_ == other.ptr_; }
 
         const T &operator*() const { return *ptr_; }
 

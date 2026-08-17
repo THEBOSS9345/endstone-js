@@ -22,8 +22,8 @@ struct PlayerChangeDimensionRequestComponent {
         AwaitingECSTick = 0,
         ECSTransferComplete = 1,
     };
-    PlayerChangeDimensionRequestComponent::State mState;
-    ChangeDimensionRequest mRequest;
+    State state;
+    ChangeDimensionRequest request;
 };
 
 struct DimensionTransitionComponent {

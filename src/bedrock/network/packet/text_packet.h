@@ -37,6 +37,10 @@ enum class TextPacketType : std::uint8_t {
 struct TextPacketPayload {
     static constexpr int MAX_CHAT_LENGTH = 512;
     static constexpr int MAX_MESSAGE_PARAMS = 4;
+    static constexpr int MAX_WIRE_MESSAGE_LENGTH = 65536;
+    static constexpr int MAX_AUTHOR_LENGTH = 256;
+    static constexpr int MAX_XUID_LENGTH = 64;
+    static constexpr int MAX_PLATFORM_ID_LENGTH = 256;
     struct MessageOnly {
         bool operator==(const MessageOnly &) const;
         TextPacketType type;
@@ -61,6 +65,7 @@ struct TextPacketPayload {
     std::variant<MessageOnly, AuthorAndMessage, MessageAndParams> body;
     TextPacketType getType() const;
     const std::string &getMessage() const;
+    const std::string &getFilteredMessageOrEmpty() const;
     const std::string &getAuthorOrEmpty() const;
     const std::vector<std::string> &getParams() const;
 };

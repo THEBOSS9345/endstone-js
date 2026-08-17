@@ -14,7 +14,6 @@
 
 #pragma once
 
-#include "bedrock/core/utility/buffer_span.h"
 #include "bedrock/world/level/saveddata/map_item_saved_data.h"
 
 struct ClientboundMapItemDataPacketPayload {
@@ -47,20 +46,8 @@ public:
     using Type = ClientboundMapItemDataPacketPayload::Type;
 
     ClientboundMapItemDataPacket();
-    ClientboundMapItemDataPacket(ActorUniqueID, int8_t, const MapItemSavedData::DecorationCollection &,
-                                 buffer_span<unsigned int>, int, int, int, int, DimensionType, bool, const BlockPos &);
-    ClientboundMapItemDataPacket(gsl::not_null<MapItemSavedData *>, Level &);
     ActorUniqueID getMapId() const { return payload.map_id; }
-    const std::vector<ActorUniqueID> &getMapIds() const;
     DimensionType getDimensionId() const { return DimensionType(payload.dimension); }
-    int8_t getScale() const;
-    void applyToMap(MapItemSavedData &, const bool) const;
-    void resampleClientMap(MapItemSavedData &, BlockSource &, const BlockPos &, int) const;
-    bool isTextureUpdate() const;
-    bool isOfType(Type) const;
-    bool isLocked() const;
-    BlockPos getMapOrigin() const;
-    bool hasEmptyOrBlackPixels() const;
 
     // protected: ENDSTONE: protected -> public
     ClientboundMapItemDataPacketPayload payload;                          // +48

@@ -15,6 +15,7 @@
 #pragma once
 #include <cstddef>
 #include <memory>
+#include <optional>
 
 #include "bedrock/platform/uuid.h"
 #include "bedrock/world/attribute/attribute_buff.h"
@@ -53,7 +54,7 @@ struct AttributeInstanceForwarder {
     void resetToDefaultValue();
     void serializationSetValue(float current_value, int operand, float max_value);
     void serializationSetRange(float, float, float, float, float);
-    void addBuff(const AttributeBuff &buff);
+    std::optional<float> addBuff(const AttributeBuff &buff);
     void removeBuffs();
     void addModifiers(gsl::not_null<std::vector<std::shared_ptr<AttributeModifier>> *>);
     void addModifier(std::shared_ptr<AttributeModifier> modifier);

@@ -20,8 +20,8 @@
 class IContentSourceRepository {
 public:
     virtual ~IContentSourceRepository();
-    virtual void deletePackFiles(const ResourceLocation &) {}
+    virtual void deletePackFiles(const ResourceLocation &) = 0;
     virtual void postDeletePack(const ResourceLocation &) = 0;
-    virtual std::vector<ResourceLocation> getInvalidPacks(const InvalidPacksFilterGroup &) = 0;
+    [[nodiscard]] virtual std::vector<ResourceLocation> getInvalidPacks(const InvalidPacksFilterGroup &) const = 0;
     virtual ResourcePackStack createStack(const std::vector<PackInstanceId> &) = 0;
 };

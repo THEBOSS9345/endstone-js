@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include "bedrock/core/utility/buffer_span.h"
 #include "bedrock/core/utility/serialize_simple_types.h"
 #include "bedrock/platform/brstd/function_ref.h"
 #include "bedrock/platform/result.h"
@@ -31,8 +32,13 @@ public:
     [[nodiscard]] size_t getReadPointer() const;
     [[nodiscard]] size_t getUnreadLength() const;
     [[nodiscard]] size_t getLength() const;
+    Bedrock::Result<bool> getBool();
     Bedrock::Result<unsigned char> getByte();
+    Bedrock::Result<int> getSignedInt();
     Bedrock::Result<unsigned int> getUnsignedVarInt();
+    Bedrock::Result<std::uint64_t> getUnsignedVarInt64();
+    Bedrock::Result<std::int64_t> getVarInt64();
+    Bedrock::Result<std::string> getString(std::size_t max_length);
     [[nodiscard]] std::string_view getView() const;
     [[nodiscard]] bool hasOverflowed() const;
 
@@ -106,8 +112,8 @@ public:
     }
 
 public:
-    void writeRawBytes(std::string_view span);
-    void writeStream(BinaryStream &);
+    void writeRawBytes(buffer_span<unsigned char> bytes, char const *doc_field_name, char const *doc_field_notes);
+    void writeStream(BinaryStream &, char const *doc_field_name, char const *doc_field_notes);
     void writeUnsignedChar(unsigned char value, char const *doc_field_name, char const *doc_field_notes);
 
 protected:
@@ -120,6 +126,6 @@ private:
                              std::function<void(BinaryStream &)> &&writer, char const *doc_field_name,
                              char const *doc_field_notes);
     void write(const void *data, std::size_t size);
-    std::string *buffer_;  // +72
+    std::string &buffer_;  // +72
 };
 BEDROCK_STATIC_ASSERT_SIZE(BinaryStream, 80, 72);

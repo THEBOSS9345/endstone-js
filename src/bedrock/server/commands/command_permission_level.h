@@ -15,7 +15,9 @@
 
 #pragma once
 
-enum class CommandPermissionLevel : char {
+#include <cstdint>
+
+enum class CommandPermissionLevel : std::uint8_t {
     Any = 0,
     GameDirectors = 1,
     Admin = 2,

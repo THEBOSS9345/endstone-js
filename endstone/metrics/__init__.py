@@ -6,6 +6,7 @@ import psutil
 
 from endstone.plugin import Plugin
 
+from ._arch import host_arch
 from .base import MetricsBase
 from .charts import (
     AdvancedBarChart,
@@ -101,10 +102,7 @@ class Metrics(MetricsBase):
             platform_data["osName"] = "Linux"
             platform_data["osVersion"] = platform.release()
 
-        os_arch = platform.machine().lower()
-        if os_arch == "x86_64":
-            os_arch = "amd64"
-        platform_data["osArch"] = os_arch
+        platform_data["osArch"] = host_arch()
         platform_data["coreCount"] = psutil.cpu_count(logical=False)
 
     def append_service_data(self, service_data: Dict[str, Any]):

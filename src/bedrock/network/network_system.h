@@ -34,9 +34,14 @@ public:
     [[nodiscard]] Bedrock::NotNullNonOwnerPtr<const RemoteConnector> getRemoteConnector() const;
     void send(const NetworkIdentifier &network_id, const Packet &packet, SubClientId sender_sub_id);
     void sendToMultiple(const std::vector<NetworkIdentifierWithSubId> &recipients, const Packet &packet);
-    void setCloseConnection(const NetworkIdentifier &id);
+    [[nodiscard]] NetworkPeer *getPeerForUser(const NetworkIdentifier &id) const;
+    void setCloseConnection(const NetworkIdentifier &id, Connection::DisconnectFailReason close_connection_reason);
     void closeConnection(const NetworkIdentifier &id, const Connection::DisconnectFailReason reason,
                          const std::string &message_from_server);
+    [[nodiscard]] const std::vector<std::unique_ptr<NetworkConnection>> &getConnections() const
+    {
+        return connections_;
+    }
     [[nodiscard]] const cereal::ReflectionCtx &getPacketReflectionCtx() const;
     [[nodiscard]] IPacketSerializationController &getPacketOverrides() const { return *packet_overrides_; }  // Endstone
 
@@ -52,6 +57,7 @@ protected:
 
 public:
     NetworkConnection *_getConnectionFromId(const NetworkIdentifier &) const;  // Endstone: private -> public
+    [[nodiscard]] bool _isUsingNetherNetTransportLayer() const;                // Endstone: protected -> public
 
 private:
     void _sendInternal(const NetworkIdentifier &id, const Packet &packet, const std::string &data);
@@ -70,10 +76,10 @@ public:                           // Endstone: private -> public
 
 private:
     struct IncomingPacketQueue {
-        NetEventCallback &callback_obj;
-        Bedrock::Threading::Mutex mutex;
+        IncomingPacketQueue(NetEventCallback &callbacks_obj);
+        NetEventCallback &callbacks_obj;
     };
-    std::unique_ptr<IncomingPacketQueue> incoming_packets[4];
+    std::unique_ptr<IncomingPacketQueue> incoming_packets_[4];
     bool use_ipv6_only_;
     uint16_t default_game_port_;
     uint16_t default_game_port_v6_;
@@ -85,6 +91,7 @@ private:
     gsl::not_null<std::unique_ptr<cereal::ReflectionCtx>> reflection_ctx_;             // +512
     gsl::not_null<std::unique_ptr<IPacketSerializationController>> packet_overrides_;  // +520
     gsl::not_null<std::unique_ptr<
-        Bedrock::PubSub::Publisher<void(const Json::Value &), Bedrock::PubSub::ThreadModel::MultiThreaded>>>
+        Bedrock::PubSub::Publisher<void(const Json::Value &), Bedrock::PubSub::ThreadModel::MultiThreaded,
+                                   Bedrock::PubSub::ReturnPolicyType::Aggregate>>>
         session_summary_publisher_;
 };

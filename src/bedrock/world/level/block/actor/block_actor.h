@@ -45,10 +45,9 @@ public:
     [[nodiscard]] BlockActorType getType() const { return type_; }
 
 protected:
-    BlockPos position_;                                                         // +8
-    const BlockActorType type_;                                                 // +20
-    std::unique_ptr<BlockActorDynamicPropertiesComponent> dynamic_properties_;  // +24
-    // TODO(fixme): check the name
-    void *unknown_32_;  // +32, a unique_ptr whose T has a virtual destructor
+    BlockPos position_;                                                                 // +8
+    const BlockActorType type_;                                                         // +20
+    std::unique_ptr<DynamicPropertiesBlockActorComponent> dynamic_properties_;          // +24
+    std::unique_ptr<RandomizableContainerBlockActorComponent> randomizable_container_;  // +32
 };
 BEDROCK_STATIC_ASSERT_SIZE(BlockActor, 40, 40);

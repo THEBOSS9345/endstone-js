@@ -18,5 +18,5 @@
 
 class ServerSoundHandle {
 public:
-    std::uint64_t value_;
+    std::uint64_t value;
 };

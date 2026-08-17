@@ -60,19 +60,19 @@ Only needed for the manual `cmake --preset` path below; `pip install`-based buil
 **Windows (cmd):**
 
 ```shell
-.\build\Release\generators\conanbuild.bat
+build\RelWithDebInfo\generators\conanbuild.bat
 ```
 
 **Windows (PowerShell):**
 
 ```shell
-.\build\Release\generators\conanbuild.ps1
+build\RelWithDebInfo\generators\conanbuild.ps1
 ```
 
 **Linux:**
 
 ```bash
-source ./build/Release/generators/conanbuild.sh
+source build/RelWithDebInfo/generators/conanbuild.sh
 ```
 
 ## Building
@@ -80,8 +80,8 @@ source ./build/Release/generators/conanbuild.sh
 ### Build with CMake
 
 ```bash
-cmake --preset conan-release
-cmake --build --preset conan-release
+cmake --preset conan-relwithdebinfo
+cmake --build --preset conan-relwithdebinfo
 ```
 
 ### Install from Source (builds Python wheel)
@@ -105,7 +105,7 @@ pip install -U . -C build-dir=./build
 ### C++ Tests (GTest)
 
 ```bash
-ctest --test-dir build/Release
+ctest --preset conan-relwithdebinfo
 ```
 
 ### Python Tests
@@ -139,79 +139,27 @@ Before submitting a PR, please ensure:
 
 ## Generating Type Stubs
 
-After adding new Python bindings, you need to regenerate the type stub files to ensure IDE support and type checking
-work correctly.
+`endstone/**/__init__.pyi` and the `lazy.attach` re-export lists in `endstone/**/__init__.py` are generated from the
+built `_python` extension. The build regenerates them: the `endstone_stubs` target reruns whenever the extension
+relinks, so they can never go stale, and any failure fails the build.
 
-### When to Regenerate Stubs
-
-You should regenerate stubs after:
-
-- Adding new Python bindings in `src/endstone/python/`
-- Modifying existing C++ classes exposed to Python
-- Installing the wheel with `pip install .`
-
-### Stub Generation Process
-
-1. **Install the wheel** to make the bindings available:
-
-   ```bash
-   pip install -U .
-   ```
-
-2. **Install endstone-stubgen** (if not already installed):
-
-   ```bash
-   pip install endstone-stubgen
-   ```
-
-3. **Run the stubgen script**:
-
-   ```bash
-   python scripts/stubgen.py
-   ```
-
-   This will:
-    - Load the `endstone._python` module from the installed wheel
-    - Generate `.pyi` stub files in a temporary `stubs/` directory
-    - Process and format the stubs (adjusting imports, removing Registry duplicates, etc.)
-    - Copy the processed stubs to the `endstone/` directory
-    - Run `ruff format` and `ruff check` to ensure code style compliance
-
-4. **Verify the generated stubs**:
-
-   Check the generated `.pyi` files in the `endstone/` directory to ensure they correctly represent your new bindings.
-
-5. **Commit the changes**:
-
-   The generated stub files should be committed along with your binding changes.
-
-### Example Workflow
+Nothing to run by hand. After changing a binding, build as usual and commit whatever appears in `git status`:
 
 ```bash
-# 1. Make your binding changes
-# (e.g., edit src/endstone/python/... )
-
-# 2. Build and install
-pip install -U .
-
-# 3. Generate stubs
-python scripts/stubgen.py
-
-# 4. Verify
-git status  # Check the generated .pyi files
-
-# 5. Commit
-git add endstone/*.pyi
-git commit -m "docs: update type stubs for new bindings"
+cmake --build --preset conan-release
+git status                 # the regenerated .pyi / __init__.py
 ```
 
-### Troubleshooting
+Generation needs [uv](https://docs.astral.sh/uv/) on `PATH`; the dependencies come from the script's PEP 723 header.
+Without uv it falls back to the interpreter CMake found, which then needs `griffe`, `lazy-loader` and `ruff`
+installed. Configure with `-DENDSTONE_GENERATE_STUBS=OFF` to skip generation entirely.
 
-If you encounter errors running the stubgen script:
+The pieces of the stubs that have no pybind11 counterpart — the generic `Registry`, `Server.get_registry`, the `_T`
+typevar — live in `src/endstone/python/stubgen.pat`. If a binding is renamed and a pattern there stops matching, the
+build fails and names the pattern.
 
-- **"endstone-stubgen not installed"**: Install it with `pip install endstone-stubgen`
-- **Module not found errors**: Make sure you've installed the wheel with `pip install .`
-- **Incomplete stubs**: Verify that your bindings are properly exposed in the pybind11 module
+Note that generation writes into the source tree, so two build directories configured against one checkout would
+race; use one, or turn generation off in the others.
 
 ## Code Style
 

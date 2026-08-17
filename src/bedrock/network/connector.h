@@ -14,6 +14,9 @@
 
 #pragma once
 
+#include <optional>
+
+#include "bedrock/forward.h"
 #include "bedrock/network/network_system_toggles.h"
 
 class Connector {
@@ -23,8 +26,9 @@ public:
         virtual bool onNewIncomingConnection(NetworkIdentifier const &, std::shared_ptr<::NetworkPeer> &&) = 0;
         virtual bool onNewOutgoingConnection(NetworkIdentifier const &, std::shared_ptr<::NetworkPeer> &&) = 0;
         virtual void onConnectionClosed(NetworkIdentifier const &id, Connection::DisconnectFailReason disconnect_reason,
-                                        std::string const &message_from_server, std::string &message_body_override,
-                                        bool skip_disconnect_message, const Json::Value &session_summary) = 0;
+                                        std::string const &message_from_server,
+                                        std::string const &message_body_override, bool skip_disconnect_message,
+                                        const Json::Value &session_summary) = 0;
     };
 
     Connector(ConnectionCallbacks &);
@@ -32,8 +36,7 @@ public:
     virtual std::string getLocalIp();
     [[nodiscard]] virtual uint16_t getPort() const;
     [[nodiscard]] virtual const Social::GameConnectionInfo &getConnectedGameInfo() const;
-    // TODO(fixme): check the name
-    virtual void unknown5() = 0;  // added in 1.26.40; a bare ret in LocalConnector
+    virtual void setConnectedResolvedExperienceInfo(const std::optional<Social::ResolvedExperienceInfo> &);
     [[nodiscard]] virtual bool isIPv4Supported() const;
     [[nodiscard]] virtual bool isIPv6Supported() const;
     [[nodiscard]] virtual uint16_t getIPv4Port() const;

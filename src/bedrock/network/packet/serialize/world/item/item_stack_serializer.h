@@ -14,6 +14,10 @@
 
 #pragma once
 
+#include "bedrock/core/utility/binary_stream.h"
+#include "bedrock/world/item/network_item_stack_descriptor.h"
+#include "bedrock/world/item/registry/item_registry_manager.h"
+
 namespace ItemStackSerializerHelpers {
 template <typename NetworkItemDescriptorType>
 void write(const NetworkItemDescriptorType &item, BinaryStream &stream);

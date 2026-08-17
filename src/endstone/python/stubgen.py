@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.10"
 # dependencies = [
-#     "griffe",
+#     "griffe>=2.1,<3",
 # ]
 # ///
 
@@ -119,6 +119,10 @@ def _valid_sig(sig: str) -> bool:
         return True
     except SyntaxError:
         return False
+
+
+def is_private(name: str) -> bool:
+    return len(name) > 2 and ((name[0] == "_" and name[1] != "_") or (name[-1] == "_" and name[-2] != "_"))
 
 
 def _local_class_names(mod: Module) -> set:
@@ -343,6 +347,8 @@ class StubGen:
         include_private: bool = False,
         include_values: bool = True,
         patterns: Optional[List[ReplacePattern]] = None,
+        rename: Optional[tuple[str, str]] = None,
+        aliases: Optional[dict[str, str]] = None,
         quiet: bool = True,
     ) -> None:
         self.top = top
@@ -351,6 +357,8 @@ class StubGen:
         self.include_private = include_private
         self.include_values = include_values
         self.patterns = patterns or []
+        self.rename = rename
+        self.aliases = aliases or {}
         self.quiet = quiet
 
         self.depth = 0
@@ -366,8 +374,13 @@ class StubGen:
         self._import_modules: dict[str, Optional[str]] = {}
         # ``from <module> import <name>`` entries (module -> {name: bound name}):
         self._import_from: dict[str, dict[str, str]] = {}
+        # Names already bound by an import, so two modules cannot claim the same one.
+        self._bound: dict[str, str] = {}
 
         self._local_names = _local_class_names(mod)
+
+        # Names declared via the pattern file's \export directive.
+        self._extra_exports: List[str] = []
 
     # ---- output primitives ----
 
@@ -413,9 +426,10 @@ class StubGen:
             return binds[name]
         bound = as_name if as_name else name
         if not as_name:
-            while bound in self.mod.members:
+            while bound in self.mod.members or self._bound.get(bound, module) != module:
                 bound = "_" + bound
         binds[name] = bound
+        self._bound[bound] = module
         return bound
 
     def check_party(self, module: str) -> int:
@@ -443,6 +457,10 @@ class StubGen:
 
     def _process_name(self, m: "re.Match[str]") -> str:
         full = m.group(0)
+        # Rewritten before any import is registered, so an aliased name never
+        # drags its module into the import block.
+        if (alias := self.aliases.get(full)) is not None:
+            return alias
         mod_name = m.group(1)[:-1]
         cls_name = m.group(2)
 
@@ -460,11 +478,10 @@ class StubGen:
                 if enclosing and qual.startswith(enclosing + "."):
                     qual = qual[len(enclosing) + 1 :]
                 return qual or full
-            self.import_object(mod_path)
-            return full
-
-        if mod_name in ("typing", "typing_extensions", "collections.abc"):
-            return self.import_object(mod_name, cls_name)
+            # In-package names read as short names; everything else stays qualified.
+            head, _, nested = qual.partition(".")
+            bound = self.import_object(mod_path, head)
+            return f"{bound}.{nested}" if nested else bound
 
         # A same-module class/enum referenced by short name (pybind11 drops the
         # package prefix, e.g. RenderType.INTEGER) is already in scope; keep bare.
@@ -476,6 +493,8 @@ class StubGen:
 
     def simplify(self, s: str) -> str:
         """Rewrite dotted names in a rendered type string and register imports."""
+        if self.rename is not None:
+            s = s.replace(self.rename[0], self.rename[1])
         return _ID_SEQ.sub(self._process_name, s)
 
     def type_str(self, annotation) -> str:
@@ -484,7 +503,8 @@ class StubGen:
         return self.simplify(str(annotation))
 
     def any_type(self) -> str:
-        return self.import_object("typing", "Any")
+        self.import_object("typing")
+        return "typing.Any"
 
     def _render_value(self, value, owner=None) -> str:
         # Rendered verbatim; simplify() must not touch a literal (a dotted
@@ -517,10 +537,7 @@ class StubGen:
 
     # ---- dispatch ----
 
-    def _is_private(self, name: str) -> bool:
-        return len(name) > 2 and ((name[0] == "_" and name[1] != "_") or (name[-1] == "_" and name[-2] != "_"))
-
-    def apply_pattern(self, query: str, obj) -> bool:
+    def apply_pattern(self, query: str, obj) -> Optional[ReplacePattern]:
         """Apply the first pattern-file entry whose query matches (mirrors nanobind)."""
         match = None
         pattern = None
@@ -529,7 +546,7 @@ class StubGen:
             if match:
                 break
         if not match or not pattern:
-            return False
+            return None
         for line in pattern.lines:
             ls = line.strip()
             if ls == "\\doc":
@@ -570,6 +587,9 @@ class StubGen:
                         raise RuntimeError(f"Could not parse import declaration {mod}")
                     self.import_object(modname, None, as_name=as_name)
                 continue
+            elif ls.startswith("\\export "):
+                self._extra_exports.extend(n.strip() for n in ls[7:].split(","))
+                continue
             groups = match.groups()
             for i in reversed(range(len(groups))):
                 line = line.replace(f"\\{i + 1}", groups[i])
@@ -577,16 +597,17 @@ class StubGen:
                 line = line.replace(f"\\{k}", v)
             self.write_ln(line)
         pattern.matches += 1
-        return True
+        return pattern
 
-    def put(self, obj) -> None:
+    def put(self, obj) -> bool:
+        """Emit ``obj``; returns whether anything was written."""
         if isinstance(obj, Alias):
-            return
+            return False
         name = obj.name
         if name in SKIP_LIST:
-            return
-        if self._is_private(name) and not self.include_private:
-            return
+            return False
+        if is_private(name) and not self.include_private:
+            return False
         # Drop pybind11's default __init__ (carries object.__init__'s docstring).
         if (
             obj.kind == Kind.FUNCTION
@@ -594,13 +615,14 @@ class StubGen:
             and obj.docstring is not None
             and obj.docstring.value == object.__init__.__doc__
         ):
-            return
+            return False
 
         old_prefix = self.prefix
         self.prefix = self.prefix + (("." + name) if name else "")
+        before = self._output.tell()
         try:
             if self.apply_pattern(self.prefix, obj):
-                return
+                return self._output.tell() > before
             kind = obj.kind
             if kind == Kind.CLASS:
                 self.put_type(obj)
@@ -614,6 +636,7 @@ class StubGen:
             # Submodules are emitted as separate files by the driver.
         finally:
             self.prefix = old_prefix
+        return self._output.tell() > before
 
     # ---- class ----
 
@@ -661,8 +684,8 @@ class StubGen:
         for i, s in enumerate(sigs):
             if s[1] is not None and last_idx[s[1]] != i:
                 s = (s[0], None)
-            overload = self.import_object("typing", "overload")
-            self.write_ln(f"@{overload}")
+            self.import_object("typing")
+            self.write_ln("@typing.overload")
             self.put_py_overload(func, s)
 
     def put_py_overload(self, func: Function, sig: tuple) -> None:
@@ -771,19 +794,28 @@ class StubGen:
         else:
             line += " = ..."
         self.write_ln(line)
+        # Values pack together (an enum body reads better dense); only a
+        # documented one gets a separating blank line.
         if attr.docstring and self.include_docstrings and attr.docstring.value:
             self.put_docstr(attr.docstring.value)
-        self.write("\n")
+            self.write("\n")
 
     # ---- assembly ----
 
     def render(self) -> None:
+        emitted: List[str] = []
         self.apply_pattern(self.prefix + ".__prefix__", None)
         for member in self.mod.members.values():
             if isinstance(member, Alias) or member.kind == Kind.MODULE:
                 continue
-            self.put(member)
+            if self.put(member):
+                emitted.append(member.name)
         self.apply_pattern(self.prefix + ".__suffix__", None)
+        # A pybind11 module has no __all__, so griffe leaves exports unset;
+        # derive it from what was actually emitted (pattern-dropped members
+        # therefore drop out of __all__ too).
+        if self.mod.exports is None:
+            self.mod.exports = sorted(set(emitted) | set(self.mod.modules) | set(self._extra_exports))
 
     def _imports_block(self) -> str:
         groups: List[List[str]] = [[], [], []]
@@ -805,12 +837,14 @@ class StubGen:
         return "\n\n".join(chunks)
 
     def _submodule_block(self) -> str:
+        # Plain names, not the redundant "x as x" re-export form: __all__ already
+        # marks them exported, and isort splits aliased imports one per statement.
         subs = [name for name in self.mod.modules]
         if not subs:
             return ""
         if len(subs) == 1:
-            return f"from . import {subs[0]} as {subs[0]}"
-        lines = ",\n".join(f"    {s} as {s}" for s in subs)
+            return f"from . import {subs[0]}"
+        lines = ",\n".join(f"    {s}" for s in subs)
         return "from . import (\n" + lines + "\n)"
 
     def get(self) -> str:

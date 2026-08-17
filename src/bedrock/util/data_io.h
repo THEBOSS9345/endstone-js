@@ -26,7 +26,7 @@ public:
     virtual void writeLongString(std::string_view v) = 0;
     virtual void writeFloat(float v) = 0;
     virtual void writeDouble(double v) = 0;
-    virtual void writeByte(std::uint8_t v) = 0;
+    virtual void writeByte(char v) = 0;
     virtual void writeShort(std::int16_t v) = 0;
     virtual void writeInt(std::int32_t v) = 0;
     virtual void writeLongLong(std::int64_t v) = 0;
@@ -55,7 +55,7 @@ public:
     void writeLongString(std::string_view v) override;
     void writeFloat(float v) override;
     void writeDouble(double v) override;
-    void writeByte(std::uint8_t v) override;
+    void writeByte(char v) override;
     void writeShort(std::int16_t v) override;
     void writeInt(std::int32_t v) override;
     void writeLongLong(std::int64_t v) override;

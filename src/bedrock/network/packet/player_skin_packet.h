@@ -21,12 +21,17 @@
 #include "bedrock/platform/uuid.h"
 #include "bedrock/world/actor/player/serialized_skin.h"
 
-class PlayerSkinPacket : public Packet {
-public:
+struct PlayerSkinPacketPayload {
     mce::UUID uuid;
     SerializedSkinRef skin;
     std::string localized_new_skin_name;
     std::string localized_old_skin_name;
+};
+BEDROCK_STATIC_ASSERT_SIZE(PlayerSkinPacketPayload, 96, 80);
+
+class PlayerSkinPacket : public Packet {
+public:
+    PlayerSkinPacketPayload payload;
     SerializationMode serialization_mode{SerializationMode::CerealOnly};
 };
 BEDROCK_STATIC_ASSERT_SIZE(PlayerSkinPacket, 152, 136);

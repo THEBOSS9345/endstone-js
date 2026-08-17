@@ -35,8 +35,11 @@ void SynchedActorDataAccess::setActorFlag(EntityContext &entity, ActorFlags flag
         if (flag < ActorFlags::LAYING_DOWN) {
             dirty_flags.dirty_flags.set(static_cast<size_t>(ActorDataIDs::RESERVED_0), true);
         }
-        else {
+        else if (flag < ActorFlags::USES_UNIFORM_AIR_DRAG) {
             dirty_flags.dirty_flags.set(static_cast<size_t>(ActorDataIDs::RESERVED_092), true);
+        }
+        else {
+            dirty_flags.dirty_flags.set(static_cast<size_t>(ActorDataIDs::RESERVED_139), true);
         }
     }
 }

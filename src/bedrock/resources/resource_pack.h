@@ -14,6 +14,9 @@
 
 #pragma once
 
+#include <atomic>
+#include <cstdint>
+
 #include "bedrock/core/utility/enable_non_owner_references.h"
 #include "bedrock/core/utility/non_owner_pointer.h"
 #include "bedrock/resources/pack.h"
@@ -39,6 +42,8 @@ private:
     bool is_slice_pack_;
     ResourceSignature resource_signature_;
     bool is_marked_for_removal_;
+    std::atomic<double> asset_read_ms_;
+    std::atomic<std::uint64_t> asset_read_bytes_;
 };
 
 using NotNullResourcePack = gsl::not_null<std::shared_ptr<ResourcePack>>;

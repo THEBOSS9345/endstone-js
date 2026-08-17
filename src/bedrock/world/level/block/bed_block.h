@@ -55,7 +55,8 @@ class BedBlock : public BlockType {
 public:
     BedBlock(const std::string &, int);
     static void setOccupied(BlockSource &, const BlockPos &, bool);
-    static std::optional<BlockPos> findWakeupPosition(BlockSource &, const BlockPos &, const std::optional<Vec3> &);
-    static bool isDangerousSpawnPosition(BlockSource &, const BlockPos &);
-    static bool isValidStandUpPosition(BlockSource &, const BlockPos &);
+    static std::optional<BlockPos> findWakeupPosition(const BlockSource &, const BlockPos &,
+                                                      const std::optional<Vec3> &);
+    static bool isDangerousSpawnPosition(const BlockSource &, const BlockPos &);
+    static bool isValidStandUpPosition(const BlockSource &, const BlockPos &);
 };

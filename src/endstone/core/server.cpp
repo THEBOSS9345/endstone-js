@@ -543,12 +543,12 @@ Player *EndstoneServer::getPlayer(std::string name) const
 
 int EndstoneServer::getPort() const
 {
-    return getRakNetConnector().getIPv4Port();
+    return getRemoteConnector().getIPv4Port();
 }
 
 int EndstoneServer::getPortV6() const
 {
-    return getRakNetConnector().getIPv6Port();
+    return getRemoteConnector().getIPv6Port();
 }
 
 bool EndstoneServer::getOnlineMode() const
@@ -846,10 +846,14 @@ ServerInstance &EndstoneServer::getServer() const
     return *server_instance_;
 }
 
+RemoteConnector &EndstoneServer::getRemoteConnector() const
+{
+    return *getServer().getMinecraft()->getServerNetworkHandler()->network_.getRemoteConnector();
+}
+
 RakNetConnector &EndstoneServer::getRakNetConnector() const
 {
-    return static_cast<RakNetConnector &>(
-        *getServer().getMinecraft()->getServerNetworkHandler()->network_.getRemoteConnector());
+    return static_cast<RakNetConnector &>(getRemoteConnector());
 }
 
 EndstoneServer &EndstoneServer::getInstance()

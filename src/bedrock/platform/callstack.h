@@ -56,7 +56,7 @@ struct CallStack {
 
     CallStack(FrameWithContext &&frame) { frames.emplace_back(std::move(frame)); }
 
-    CallStack(std::vector<FrameWithContext> &&frames) { frames = std::move(frames); }
+    CallStack(std::vector<FrameWithContext> &&frames) : frames(std::move(frames)) {}
 
     std::vector<FrameWithContext> frames;
 };

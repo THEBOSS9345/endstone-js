@@ -17,7 +17,7 @@
 class DenyList {
     enum class Duration : int {
         Session = 0,
-        OneTime = 1,
+        OneTimeForInvalidPlayer = 1,
         Invalid = 2,
     };
 

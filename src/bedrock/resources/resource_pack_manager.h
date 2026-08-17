@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <unordered_set>
 
 #include "bedrock/core/resource/resource_helper.h"
@@ -23,11 +24,10 @@
 class ResourcePackManager : public ResourceLoader {
 public:
     [[nodiscard]] ResourcePackStack const &getStack(ResourcePackStackType stack_type) const;
-    bool setStack(std::unique_ptr<ResourcePackStack> stack, ResourcePackStackType stack_type, bool compose);
+    bool setStack(std::unique_ptr<ResourcePackStack> stack, ResourcePackStackType stack_type);
 
 private:
     std::unordered_set<gsl::not_null<ResourcePackListener *>> listeners_set_;      // +88
-    // std::unique_ptr<ResourcePackStack> addon_stack_;                            // removed in 1.21.130
     std::unique_ptr<ResourcePackStack> level_stack_;                               // +152
     std::unique_ptr<ResourcePackStack> global_stack_;                              // +160
     std::unique_ptr<ResourcePackStack> treatment_stack_;                           // +168
@@ -38,9 +38,9 @@ private:
     bool initializing_;                                                            // +240
     bool pending_restack_;                                                         // +241
     bool use_global_pack_stack_;                                                   // +242
+    bool gameplay_resources_loaded_;                                               // +243
     Bedrock::Threading::SharedMutex full_stack_access_;                            // +248
-    // TODO(fixme): check the name
-    int unknown_256_;                                                              // added in 1.26.40
+    std::uint32_t compose_generation_;                                             // +256
     Bedrock::NotNullNonOwnerPtr<const IContentTierManager> content_tier_manager_;  // +264
     SemVersion full_stack_min_engine_version_DEPRECATED_DONOTUSE_;                 // +288 NOLINT
 };

@@ -14,6 +14,11 @@
 
 #pragma once
 
+#include <cstddef>
+#include <functional>
+
+#include "bedrock/world/effect/effect_duration.h"
+
 class MobEffect {
 public:
     static constexpr std::size_t NUM_EFFECTS = 38;

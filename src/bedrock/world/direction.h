@@ -14,6 +14,8 @@
 
 #pragma once
 
+#include <cstdint>
+
 class Direction {
 public:
     enum Type : std::uint8_t {
@@ -21,6 +23,7 @@ public:
         WEST = 1,
         NORTH = 2,
         EAST = 3,
+        _Count = 4,
         UNDEFINED = 255,
     };
 };

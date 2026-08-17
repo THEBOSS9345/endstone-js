@@ -19,5 +19,5 @@ class TypedRuntimeId {
     RawIdT raw_id_;
 };
 
-using ContainerRuntimeId = TypedRuntimeId<struct ContainerRuntimeIdTag>;
+using ContainerRuntimeId = TypedRuntimeId<struct ContainerRuntimeIdTag, unsigned int, 0>;
 static_assert(sizeof(ContainerRuntimeId) == 4);

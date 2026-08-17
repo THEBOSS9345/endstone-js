@@ -17,7 +17,8 @@
 #include <cstdint>
 
 enum class CurrentCmdVersion : std::int32_t {
-    Latest = 49
+    ClonePartialBedBlockFix = 50,
+    Latest = 50,
 };
 
 struct CommandVersion {

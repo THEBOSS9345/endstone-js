@@ -23,15 +23,16 @@
 #include "bedrock/world/attribute/attribute_instance_handle.h"
 
 class BaseAttributeMap {
-    using UnderlyingMapContainer = brstd::flat_map<std::uint32_t, AttributeInstance>;
+    using UnderlyingMapContainer = brstd::flat_map<std::uint32_t, AttributeInstance, std::less<std::uint32_t>,
+                                                   std::vector<std::uint32_t>, std::vector<AttributeInstance>>;
 
 public:
     [[nodiscard]] const AttributeInstance &getInstance(const Attribute &attribute) const;
     [[nodiscard]] const AttributeInstance &getInstance(std::uint32_t id_value) const;
     void onAttributeModified(AttributeInstance const &instance);
 
-    [[nodiscard]] const AttributeInstance *getInstance(const HashedString &name) const;                 // Endstone
-    [[nodiscard]] MutableAttributeWithContext getMutableInstanceWithContext(const HashedString &name);  // Endstone
+    [[nodiscard]] const AttributeInstance *getInstance(const HashedString &name) const;
+    [[nodiscard]] MutableAttributeWithContext getMutableInstanceWithContext(const HashedString &name);
 
 private:
     void _onAttributeModified(const AttributeInstance &instance);

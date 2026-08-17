@@ -138,6 +138,7 @@ void dumpItemData(VanillaData &data, const ::Level &level)
             data.item_tags[tag_name].push_back(name);
         }
 
+        const ::ItemStack item_stack(*item);
         data.items[name] = {{"id", item->getId()},
                             {"attackDamage", item->getAttackDamage()},
                             {"armorValue", item->getArmorValue()},
@@ -146,8 +147,8 @@ void dumpItemData(VanillaData &data, const ::Level &level)
                             {"maxDamage", item->getMaxDamage()},
                             {"isDamageable", item->isDamageable()},
                             {"maxStackSize", item->getMaxStackSize(ItemDescriptor())},
-                            {"furnaceBurnDuration", FurnaceBlockActor::getBurnDuration(::ItemStack(*item), 200)},
-                            {"furnaceXPMultiplier", item->getFurnaceXPmultiplier(nullptr)}};
+                            {"furnaceBurnDuration", FurnaceBlockActor::getBurnDuration(item_stack, 200)},
+                            {"furnaceXPMultiplier", item->getFurnaceXPmultiplier(item_stack)}};
 
         if (const auto components = item->buildNetworkTag()) {
             ::CompoundTag tag;
@@ -219,28 +220,28 @@ void dumpShapedRecipe(int width, int height, nlohmann::json &json)
 
 void dumpRecipes(VanillaData &data, ::Level &level)
 {
-    auto payload = CraftingDataPacket::prepareFromRecipes(level.getRecipes(), false);
+    auto payload = CraftingDataPacketPayload::fromRecipes(level.getRecipes(), false);
     auto id_to_name = [&level](int id) {
         return level.getItemRegistry().getItem(id)->getFullItemName();
     };
 
-    auto dump_ingredient = [](const RecipeIngredient &ingredient, nlohmann::json &json) {
-        json.push_back({{"count", ingredient.getStackSize()}});
+    auto dump_ingredient = [](const RecipeIngredientData &ingredient, nlohmann::json &json) {
+        json.push_back({{"count", ingredient.stack_size}});
         Json::Value json_value;
-        ingredient.serialize(json_value);
+        ingredient.descriptor.serialize(json_value);
         if (nlohmann::json value = json_value; value.is_object()) {
             json.back()["tag"] = value.at("item_tag").get<std::string>();
         }
         else {
-            json.back()["item"] = ingredient.getFullName();
+            json.back()["item"] = ingredient.descriptor.getFullName();
         }
-        if (ingredient.getAuxValue() != 0 && ingredient.getAuxValue() != ItemDescriptor::ANY_AUX_VALUE) {
-            json.back()["data"] = ingredient.getAuxValue();
+        if (ingredient.aux_value != 0 && ingredient.aux_value != ItemDescriptor::ANY_AUX_VALUE) {
+            json.back()["data"] = ingredient.aux_value;
         }
     };
 
     // The wire form carries only a numeric item id, so the name is resolved through the registry.
-    auto dump_result = [&id_to_name](const NetworkItemInstanceDescriptorData &result, nlohmann::json &json) {
+    auto dump_result = [&id_to_name](const CraftingDataNetworkItem &result, nlohmann::json &json) {
         json.push_back({
             {"item", id_to_name(result.id)},
             {"count", result.stack_size},
@@ -288,7 +289,7 @@ void dumpRecipes(VanillaData &data, ::Level &level)
 
     // Smithing recipes carry three fixed ingredient slots and no uuid or priority.
     auto dump_smithing = [&](const std::string &recipe_id, RecipeNetId net_id, const std::string &tag,
-                             std::initializer_list<const RecipeIngredient *> ingredients) {
+                             std::initializer_list<const RecipeIngredientData *> ingredients) {
         nlohmann::json recipe;
         recipe["id"] = recipe_id;
         recipe["netId"] = net_id.raw_id;

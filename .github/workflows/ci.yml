@@ -71,10 +71,16 @@ jobs:
       - name: Set up Conan
         uses: ./.github/actions/setup-conan
 
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
       - name: Build with CMake
         run: |
           cmake --preset conan-relwithdebinfo
           cmake --build --preset conan-relwithdebinfo
+
+      - name: Check generated stubs are up to date
+        run: git diff --exit-code -- endstone/
 
       - name: Run Tests
         run: ctest --preset conan-relwithdebinfo
@@ -109,7 +115,7 @@ jobs:
 
       - name: Build with CMake
         run: |
-          cmake --preset conan-debug -DCODE_COVERAGE=ON
+          cmake --preset conan-debug -DCODE_COVERAGE=ON -DENDSTONE_GENERATE_STUBS=OFF
           cmake --build --preset conan-debug
 
       - name: Run Tests

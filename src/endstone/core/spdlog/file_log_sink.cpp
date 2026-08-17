@@ -95,6 +95,11 @@ void FileLogSink::rotate()
     using spdlog::details::os::filename_to_str;
     using spdlog::details::os::path_exists;
 
+    file_helper_.flush();
+    if (file_helper_.size() == 0) {
+        return;
+    }
+
     file_helper_.close();
     for (auto i = max_files_; i > 0; --i) {
         spdlog::filename_t src = calcFilename(base_filename_, file_pattern_, i - 1);
@@ -155,12 +160,12 @@ bool FileLogSink::compress(const spdlog::filename_t &src_filename, const spdlog:
             return false;
         }
         output << input.rdbuf();
-        output.flush();
         output.close();
         input.close();
         return spdlog::details::os::remove(src_filename) == 0;
     }
     catch (...) {
+        (void)spdlog::details::os::remove(target_filename);
         return false;
     }
 }

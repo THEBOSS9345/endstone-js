@@ -97,7 +97,7 @@ private:
     }
 
     std::shared_ptr<EnableNonOwnerReferences::ControlBlock> control_block_{nullptr};  // +0
-    T *pointer_{nullptr};                                                             // +24
+    T *pointer_{nullptr};                                                             // +16
 };
 
 template <typename T>

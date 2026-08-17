@@ -25,7 +25,7 @@
 namespace endstone {
 
 /**
- * @brief Represents an event that is called when a player right-clicks a block.
+ * @brief Represents an event that is called when a player interacts with an object or air.
  */
 class PlayerInteractEvent : public Cancellable<PlayerEvent> {
 public:

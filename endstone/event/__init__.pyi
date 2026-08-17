@@ -3,6 +3,7 @@ Classes relating to handling triggered code executions.
 """
 
 import enum
+import typing
 
 from endstone import GameMode, Player, Skin
 from endstone.actor import Actor, Item, Mob
@@ -98,22 +99,27 @@ class EventPriority(enum.IntEnum):
     """
     Event call is of very low importance and should be run first, to allow other plugins to further customise the outcome
     """
+
     LOW = 1
     """
     Event call is of low importance
     """
+
     NORMAL = 2
     """
     Event call is neither important nor unimportant, and may be run normally
     """
+
     HIGH = 3
     """
     Event call is of high importance
     """
+
     HIGHEST = 4
     """
     Event call is critical and must have the final say in what happens to the event
     """
+
     MONITOR = 5
     """
     Event is listened to purely for monitoring the outcome of an event. No modifications to the event should be made under this priority.
@@ -128,13 +134,12 @@ class Event:
         """
         Gets a user-friendly identifier for this event.
         """
-        ...
+
     @property
     def is_asynchronous(self) -> bool:
         """
         Whether the event fires asynchronously.
         """
-        ...
 
 class EventResult(enum.Enum):
     DENY = 0
@@ -150,7 +155,7 @@ class Cancellable:
         """
         Gets or sets the cancellation state of this event. A cancelled event will not be executed in the server, but will still pass to other plugins. [Warning] Deprecated: Use is_cancelled instead.
         """
-        ...
+
     @cancelled.setter
     def cancelled(self, arg1: bool) -> None: ...
     @property
@@ -158,14 +163,13 @@ class Cancellable:
         """
         Gets or sets the cancellation state of this event. A cancelled event will not be executed in the server, but will still pass to other plugins.
         """
-        ...
+
     @is_cancelled.setter
     def is_cancelled(self, arg1: bool) -> None: ...
     def cancel(self) -> None:
         """
         Cancel this event. A cancelled event will not be executed in the server, but will still pass to other plugins.
         """
-        ...
 
 class ActorEvent(Event):
     """
@@ -176,7 +180,6 @@ class ActorEvent(Event):
         """
         Returns the Actor involved in this event
         """
-        ...
 
 class MobEvent(Event):
     """
@@ -187,7 +190,6 @@ class MobEvent(Event):
         """
         Returns the Mob involved in this event
         """
-        ...
 
 class ActorDamageEvent(MobEvent, Cancellable):
     """
@@ -198,7 +200,7 @@ class ActorDamageEvent(MobEvent, Cancellable):
         """
         Gets or sets the amount of damage caused by the event
         """
-        ...
+
     @damage.setter
     def damage(self, arg1: float) -> None: ...
     @property
@@ -206,7 +208,6 @@ class ActorDamageEvent(MobEvent, Cancellable):
         """
         Gets the source of damage.
         """
-        ...
 
 class ActorDeathEvent(MobEvent):
     """
@@ -217,7 +218,6 @@ class ActorDeathEvent(MobEvent):
         """
         Gets the source of damage which caused the death.
         """
-        ...
 
 class PlayerDeathEvent(ActorDeathEvent):
     """
@@ -228,13 +228,13 @@ class PlayerDeathEvent(ActorDeathEvent):
         """
         Gets the Player that is breaking the block involved in this event.
         """
-        ...
+
     @property
     def death_message(self) -> str | Translatable | None:
         """
         Gets or sets the death message that will appear to everyone on the server.
         """
-        ...
+
     @death_message.setter
     def death_message(self, arg1: str | Translatable | None) -> None: ...
 
@@ -247,13 +247,13 @@ class ActorExplodeEvent(ActorEvent, Cancellable):
         """
         Returns the location where the explosion happened.
         """
-        ...
+
     @property
     def block_list(self) -> list[Block]:
         """
         Gets or sets the list of blocks that would have been removed or were removed from the explosion event.
         """
-        ...
+
     @block_list.setter
     def block_list(self, arg1: list[Block]) -> None: ...
 
@@ -266,13 +266,13 @@ class ActorKnockbackEvent(MobEvent, Cancellable):
         """
         Get the source actor that has caused knockback to the defender, if exists.
         """
-        ...
+
     @property
     def knockback(self) -> Vector:
         """
         Gets or sets the knockback that will be applied to the entity.
         """
-        ...
+
     @knockback.setter
     def knockback(self, arg1: Vector) -> None: ...
 
@@ -295,7 +295,7 @@ class ActorTeleportEvent(ActorEvent, Cancellable):
         """
         Gets or sets the location that this actor moved from.
         """
-        ...
+
     @from_location.setter
     def from_location(self, arg1: Location) -> None: ...
     @property
@@ -303,7 +303,7 @@ class ActorTeleportEvent(ActorEvent, Cancellable):
         """
         Gets or sets the location that this actor moved to.
         """
-        ...
+
     @to_location.setter
     def to_location(self, arg1: Location) -> None: ...
 
@@ -316,7 +316,6 @@ class BlockEvent(Event):
         """
         Gets the block involved in this event.
         """
-        ...
 
 class BlockBreakEvent(BlockEvent, Cancellable):
     """
@@ -327,7 +326,6 @@ class BlockBreakEvent(BlockEvent, Cancellable):
         """
         Gets the Player that is breaking the block involved in this event.
         """
-        ...
 
 class BlockExplodeEvent(BlockEvent, Cancellable):
     """
@@ -338,7 +336,7 @@ class BlockExplodeEvent(BlockEvent, Cancellable):
         """
         Gets or sets the list of blocks that would have been removed or were removed from the explosion event.
         """
-        ...
+
     @block_list.setter
     def block_list(self, arg1: list[Block]) -> None: ...
 
@@ -351,13 +349,13 @@ class BlockCookEvent(BlockEvent, Cancellable):
         """
         Gets the smelted ItemStack for this event
         """
-        ...
+
     @property
     def result(self) -> ItemStack:
         """
         Gets or sets the resultant ItemStack for this event
         """
-        ...
+
     @result.setter
     def result(self, arg1: ItemStack) -> None: ...
 
@@ -371,7 +369,6 @@ class BlockGrowEvent(BlockEvent, Cancellable):
         """
         Gets the state of the block where it will form or spread to.
         """
-        ...
 
 class BlockFormEvent(BlockGrowEvent):
     """
@@ -389,7 +386,6 @@ class BlockFromToEvent(BlockEvent, Cancellable):
         """
         Gets the faced Block.
         """
-        ...
 
 class BlockPistonEvent(BlockEvent, Cancellable):
     """
@@ -400,7 +396,6 @@ class BlockPistonEvent(BlockEvent, Cancellable):
         """
         Return the direction in which the piston will operate.
         """
-        ...
 
 class BlockPistonExtendEvent(BlockPistonEvent):
     """
@@ -421,25 +416,24 @@ class BlockPlaceEvent(BlockEvent, Cancellable):
         """
         Gets the player who placed the block involved in this event.
         """
-        ...
+
     @property
     def block_placed_state(self) -> BlockState:
         """
         Gets the BlockState for the block which was placed.
         """
-        ...
+
     @property
     def block_replaced(self) -> Block:
         """
         Gets the block which was replaced.
         """
-        ...
+
     @property
     def block_against(self) -> Block:
         """
         Gets the block that this block was placed against
         """
-        ...
 
 class LeavesDecayEvent(BlockEvent, Cancellable):
     """
@@ -456,7 +450,6 @@ class LevelEvent(Event):
         """
         Gets the level primarily involved with this event
         """
-        ...
 
 class DimensionEvent(LevelEvent):
     """
@@ -467,7 +460,6 @@ class DimensionEvent(LevelEvent):
         """
         Gets the dimension primarily involved with this event
         """
-        ...
 
 class ChunkEvent(DimensionEvent):
     """
@@ -478,7 +470,6 @@ class ChunkEvent(DimensionEvent):
         """
         Gets the chunk being loaded/unloaded
         """
-        ...
 
 class ChunkLoadEvent(ChunkEvent):
     """
@@ -499,7 +490,6 @@ class PlayerEvent(Event):
         """
         Returns the player involved in this event.
         """
-        ...
 
 class PlayerBedEnterEvent(PlayerEvent, Cancellable):
     """
@@ -510,7 +500,6 @@ class PlayerBedEnterEvent(PlayerEvent, Cancellable):
         """
         Returns the bed block involved in this event.
         """
-        ...
 
 class PlayerBedLeaveEvent(PlayerEvent):
     """
@@ -521,7 +510,6 @@ class PlayerBedLeaveEvent(PlayerEvent):
         """
         Returns the bed block involved in this event.
         """
-        ...
 
 class PlayerChatEvent(PlayerEvent, Cancellable):
     """
@@ -532,7 +520,7 @@ class PlayerChatEvent(PlayerEvent, Cancellable):
         """
         Gets or sets the message that the player will send.
         """
-        ...
+
     @message.setter
     def message(self, arg1: str) -> None: ...
     @property
@@ -540,7 +528,7 @@ class PlayerChatEvent(PlayerEvent, Cancellable):
         """
         Gets or sets the player that this message will display as
         """
-        ...
+
     @player.setter
     def player(self, arg1: Player) -> None: ...
     @property
@@ -548,7 +536,7 @@ class PlayerChatEvent(PlayerEvent, Cancellable):
         """
         Sets the format to use to display this chat message
         """
-        ...
+
     @format.setter
     def format(self, arg1: str) -> None: ...
     @property
@@ -556,7 +544,6 @@ class PlayerChatEvent(PlayerEvent, Cancellable):
         """
         Gets a set of recipients that this chat message will be displayed to
         """
-        ...
 
 class PlayerCommandEvent(PlayerEvent, Cancellable):
     """
@@ -567,7 +554,7 @@ class PlayerCommandEvent(PlayerEvent, Cancellable):
         """
         Gets or sets the command that the player will send.
         """
-        ...
+
     @command.setter
     def command(self, arg1: str) -> None: ...
 
@@ -580,13 +567,12 @@ class PlayerDimensionChangeEvent(PlayerEvent):
         """
         Gets the dimension the player is switching from.
         """
-        ...
+
     @property
     def to_dimension(self) -> Dimension:
         """
         Gets the dimension the player is switching to.
         """
-        ...
 
 class PlayerDropItemEvent(PlayerEvent, Cancellable):
     """
@@ -597,7 +583,6 @@ class PlayerDropItemEvent(PlayerEvent, Cancellable):
         """
         Gets the ItemStack dropped by the player
         """
-        ...
 
 class PlayerEmoteEvent(PlayerEvent, Cancellable):
     """
@@ -608,13 +593,13 @@ class PlayerEmoteEvent(PlayerEvent, Cancellable):
         """
         Gets the emote piece ID
         """
-        ...
+
     @property
     def is_muted(self) -> bool:
         """
         Gets or sets the muted state for the emote.
         """
-        ...
+
     @is_muted.setter
     def is_muted(self, arg1: bool) -> None: ...
 
@@ -627,11 +612,10 @@ class PlayerGameModeChangeEvent(PlayerEvent, Cancellable):
         """
         Gets the GameMode the player is switched to.
         """
-        ...
 
 class PlayerInteractEvent(PlayerEvent, Cancellable):
     """
-    Represents an event that is called when a player right-clicks a block.
+    Represents an event that is called when a player interacts with an object or air.
     """
     class Action(enum.Enum):
         LEFT_CLICK_BLOCK = 0
@@ -648,43 +632,42 @@ class PlayerInteractEvent(PlayerEvent, Cancellable):
         """
         Returns the action type of interaction
         """
-        ...
+
     @property
     def has_item(self) -> bool:
         """
         Check if this event involved an item
         """
-        ...
+
     @property
     def item(self) -> ItemStack | None:
         """
         Returns the item in hand represented by this event
         """
-        ...
+
     @property
     def has_block(self) -> bool:
         """
         Check if this event involved a block
         """
-        ...
+
     @property
     def block(self) -> Block:
         """
         Returns the clicked block
         """
-        ...
+
     @property
     def block_face(self) -> BlockFace:
         """
         Returns the face of the block that was clicked
         """
-        ...
+
     @property
     def clicked_position(self) -> Vector | None:
         """
         Gets the exact position on the block the player interacted with.
         """
-        ...
 
 class PlayerInteractActorEvent(PlayerEvent, Cancellable):
     """
@@ -695,7 +678,6 @@ class PlayerInteractActorEvent(PlayerEvent, Cancellable):
         """
         Gets the actor that was right-clicked by the player.
         """
-        ...
 
 class PlayerItemConsumeEvent(PlayerEvent, Cancellable):
     """
@@ -706,13 +688,12 @@ class PlayerItemConsumeEvent(PlayerEvent, Cancellable):
         """
         Gets the item that is being consumed.
         """
-        ...
+
     @property
     def hand(self) -> EquipmentSlot:
         """
         Get the hand used to consume the item.
         """
-        ...
 
 class PlayerItemHeldEvent(PlayerEvent, Cancellable):
     """
@@ -723,13 +704,12 @@ class PlayerItemHeldEvent(PlayerEvent, Cancellable):
         """
         Gets the new held slot index
         """
-        ...
+
     @property
     def previous_slot(self) -> int:
         """
         Gets the previous held slot index.
         """
-        ...
 
 class PlayerJoinEvent(PlayerEvent):
     """
@@ -740,7 +720,7 @@ class PlayerJoinEvent(PlayerEvent):
         """
         Gets or sets the join message to send to all online players.
         """
-        ...
+
     @join_message.setter
     def join_message(self, arg1: str | Translatable | None) -> None: ...
 
@@ -753,7 +733,7 @@ class PlayerKickEvent(PlayerEvent, Cancellable):
         """
         Gets or sets the reason why the player is getting kicked
         """
-        ...
+
     @reason.setter
     def reason(self, arg1: str) -> None: ...
 
@@ -766,7 +746,7 @@ class PlayerLoginEvent(PlayerEvent, Cancellable):
         """
         Gets or sets kick message to display if event is cancelled
         """
-        ...
+
     @kick_message.setter
     def kick_message(self, arg1: str) -> None: ...
 
@@ -779,7 +759,7 @@ class PlayerMoveEvent(PlayerEvent, Cancellable):
         """
         Gets or sets the location that this player moved from.
         """
-        ...
+
     @from_location.setter
     def from_location(self, arg1: Location) -> None: ...
     @property
@@ -787,7 +767,7 @@ class PlayerMoveEvent(PlayerEvent, Cancellable):
         """
         Gets or sets the location that this player moved to.
         """
-        ...
+
     @to_location.setter
     def to_location(self, arg1: Location) -> None: ...
 
@@ -805,7 +785,7 @@ class PlayerQuitEvent(PlayerEvent):
         """
         Gets or sets the quit message to send to all online players.
         """
-        ...
+
     @quit_message.setter
     def quit_message(self, arg1: str | Translatable | None) -> None: ...
 
@@ -823,13 +803,13 @@ class PlayerSkinChangeEvent(PlayerEvent, Cancellable):
         """
         Gets the player's new skin.
         """
-        ...
+
     @property
     def skin_change_message(self) -> str | Translatable | None:
         """
         Gets or sets the message to send to all online players for this skin change.
         """
-        ...
+
     @skin_change_message.setter
     def skin_change_message(self, arg1: str | Translatable | None) -> None: ...
 
@@ -852,7 +832,6 @@ class PlayerPickupItemEvent(PlayerEvent, Cancellable):
         """
         Gets the Item picked up by the entity.
         """
-        ...
 
 class ServerEvent(Event):
     """
@@ -868,7 +847,7 @@ class BroadcastMessageEvent(ServerEvent, Cancellable):
         """
         Gets or sets the message to broadcast.
         """
-        ...
+
     @message.setter
     def message(self, arg1: str | Translatable) -> None: ...
     @property
@@ -876,7 +855,6 @@ class BroadcastMessageEvent(ServerEvent, Cancellable):
         """
         Gets a set of recipients that this broadcast message will be displayed to.
         """
-        ...
 
 class MapInitializeEvent(ServerEvent):
     """
@@ -887,7 +865,6 @@ class MapInitializeEvent(ServerEvent):
         """
         Gets the map initialized in this event.
         """
-        ...
 
 class PacketReceiveEvent(ServerEvent, Cancellable):
     """
@@ -898,13 +875,13 @@ class PacketReceiveEvent(ServerEvent, Cancellable):
         """
         Gets the ID of the packet.
         """
-        ...
+
     @property
     def payload(self) -> bytes:
         """
         Gets or sets the raw packet data **excluding** the header.
         """
-        ...
+
     @payload.setter
     def payload(self, arg1: bytes) -> None: ...
     @property
@@ -913,19 +890,18 @@ class PacketReceiveEvent(ServerEvent, Cancellable):
         Gets the player involved in this event
         NOTE: This may return None if the packet is sent before the player completes the login process.
         """
-        ...
+
     @property
     def address(self) -> SocketAddress:
         """
         Gets the network address to which this packet is being sent.
         """
-        ...
+
     @property
     def sub_client_id(self) -> int:
         """
         Gets the SubClient ID (0 = primary client; 1-3 = split-screen clients).
         """
-        ...
 
 class PacketSendEvent(ServerEvent, Cancellable):
     """
@@ -936,13 +912,13 @@ class PacketSendEvent(ServerEvent, Cancellable):
         """
         Gets the ID of the packet.
         """
-        ...
+
     @property
     def payload(self) -> bytes:
         """
         Gets or sets the raw packet data **excluding** the header.
         """
-        ...
+
     @payload.setter
     def payload(self, arg1: bytes) -> None: ...
     @property
@@ -951,19 +927,18 @@ class PacketSendEvent(ServerEvent, Cancellable):
         Gets the player involved in this event
         NOTE: This may return None if the packet is sent before the player completes the login process.
         """
-        ...
+
     @property
     def address(self) -> SocketAddress:
         """
         Gets the network address to which this packet is being sent.
         """
-        ...
+
     @property
     def sub_client_id(self) -> int:
         """
         Gets the SubClient ID (0 = primary client; 1-3 = split-screen clients).
         """
-        ...
 
 class PluginEnableEvent(ServerEvent):
     """
@@ -988,19 +963,18 @@ class ScriptMessageEvent(ServerEvent, Cancellable):
         """
         Get the message id to send.
         """
-        ...
+
     @property
     def message(self) -> str:
         """
         Get the message to send.
         """
-        ...
+
     @property
     def sender(self) -> CommandSender:
         """
         Gets the command sender who initiated the command.
         """
-        ...
 
 class ServerCommandEvent(ServerEvent, Cancellable):
     """
@@ -1011,13 +985,13 @@ class ServerCommandEvent(ServerEvent, Cancellable):
         """
         Get the command sender.
         """
-        ...
+
     @property
     def command(self) -> str:
         """
         Gets or sets the command that the server will execute
         """
-        ...
+
     @command.setter
     def command(self, arg1: str) -> None: ...
 
@@ -1030,13 +1004,13 @@ class ServerListPingEvent(ServerEvent, Cancellable):
         """
         Get the address the ping is coming from.
         """
-        ...
+
     @property
     def server_guid(self) -> str:
         """
         Get or set the unique identifier of the server.
         """
-        ...
+
     @server_guid.setter
     def server_guid(self, arg1: str) -> None: ...
     @property
@@ -1044,7 +1018,7 @@ class ServerListPingEvent(ServerEvent, Cancellable):
         """
         Get or set the local port of the server.
         """
-        ...
+
     @local_port.setter
     def local_port(self, arg1: int) -> None: ...
     @property
@@ -1052,7 +1026,7 @@ class ServerListPingEvent(ServerEvent, Cancellable):
         """
         Get or set the local port of the server for IPv6 support
         """
-        ...
+
     @local_port_v6.setter
     def local_port_v6(self, arg1: int) -> None: ...
     @property
@@ -1060,7 +1034,7 @@ class ServerListPingEvent(ServerEvent, Cancellable):
         """
         Gets or sets the message of the day message.
         """
-        ...
+
     @motd.setter
     def motd(self, arg1: str) -> None: ...
     @property
@@ -1068,13 +1042,13 @@ class ServerListPingEvent(ServerEvent, Cancellable):
         """
         Get the network protocol version of this server
         """
-        ...
+
     @property
     def minecraft_version_network(self) -> str:
         """
         Gets or sets the network version of Minecraft that is supported by this server
         """
-        ...
+
     @minecraft_version_network.setter
     def minecraft_version_network(self, arg1: str) -> None: ...
     @property
@@ -1082,7 +1056,7 @@ class ServerListPingEvent(ServerEvent, Cancellable):
         """
         Gets or sets the number of players online.
         """
-        ...
+
     @num_players.setter
     def num_players(self, arg1: int) -> None: ...
     @property
@@ -1090,7 +1064,7 @@ class ServerListPingEvent(ServerEvent, Cancellable):
         """
         Gets or sets the maximum number of players allowed.
         """
-        ...
+
     @max_players.setter
     def max_players(self, arg1: int) -> None: ...
     @property
@@ -1098,7 +1072,7 @@ class ServerListPingEvent(ServerEvent, Cancellable):
         """
         Gets or sets the level name.
         """
-        ...
+
     @level_name.setter
     def level_name(self, arg1: str) -> None: ...
     @property
@@ -1106,7 +1080,7 @@ class ServerListPingEvent(ServerEvent, Cancellable):
         """
         Gets or sets the current game mode.
         """
-        ...
+
     @game_mode.setter
     def game_mode(self, arg1: GameMode) -> None: ...
 
@@ -1130,7 +1104,6 @@ class WeatherEvent(Event):
         """
         Returns the Level where this event is occurring
         """
-        ...
 
 class ThunderChangeEvent(WeatherEvent, Cancellable):
     """
@@ -1141,7 +1114,6 @@ class ThunderChangeEvent(WeatherEvent, Cancellable):
         """
         Gets the state of thunder that the world is being set to
         """
-        ...
 
 class WeatherChangeEvent(WeatherEvent, Cancellable):
     """
@@ -1152,8 +1124,7 @@ class WeatherChangeEvent(WeatherEvent, Cancellable):
         """
         Gets the state of weather that the world is being set to
         """
-        ...
 
 def event_handler(
     func=None, *, priority: EventPriority = EventPriority.NORMAL, ignore_cancelled: bool = False
-) -> None: ...
+) -> typing.Any: ...

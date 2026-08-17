@@ -28,9 +28,14 @@ public:
         std::vector<std::uint32_t> values;
     };
 
+    struct ChainedSubcommandRelationship {
+        std::uint32_t sub_command_first_value;
+        std::uint32_t sub_command_second_value;
+    };
+
     struct ChainedSubcommandData {
         std::string name;
-        std::vector<std::pair<std::uint32_t, std::uint32_t>> values;
+        std::vector<ChainedSubcommandRelationship> values;
     };
 
     struct SoftEnumData {

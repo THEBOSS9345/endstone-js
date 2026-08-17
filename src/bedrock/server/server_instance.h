@@ -31,6 +31,7 @@
 #include "bedrock/world/game_session.h"
 #include "bedrock/world/minecraft.h"
 
+struct ServerInstanceArguments;
 struct ServerInstanceInitArguments;
 
 class ServerInstance : public Bedrock::EnableNonOwnerReferences,
@@ -39,7 +40,7 @@ class ServerInstance : public Bedrock::EnableNonOwnerReferences,
                        public Core::StorageAreaStateListener {
 public:
     ENDSTONE_HOOK ServerInitialization::ServerInitResult initializeServer(ServerInstanceInitArguments &&args);
-    ServerInstance(IMinecraftApp &, const Bedrock::NotNullNonOwnerPtr<ServerInstanceEventCoordinator> &);
+    explicit ServerInstance(ServerInstanceArguments &&);
     enum InstanceState : unsigned int {
         Running = 0,
         Suspended = 1,
@@ -62,8 +63,6 @@ private:
     friend class endstone::core::EndstoneServer;
     const bool is_dedicated_server_;
     std::unique_ptr<Minecraft> minecraft_;
-    // std::unique_ptr<ProfilingManager> profiling_manager;
-    // ServiceRegistrationToken<ProfilingManager> profiling_manager_service_registration_token_;
     std::shared_ptr<ServerNetworkSystem> network_;
     std::unique_ptr<LoopbackPacketSender> packet_sender_;
     std::unique_ptr<Timer> sim_timer_;
@@ -94,7 +93,6 @@ private:
     std::shared_ptr<ItemRegistry> server_item_registry_;
     bool enable_item_stack_net_manager_;
     bool enable_realms_stories_;
-    bool initialized_;
     bool flagged_for_early_destruction_;
     ServiceRegistrationToken<ServerInstance> service_registration_token_;
     bool has_scheduled_leave_game_;

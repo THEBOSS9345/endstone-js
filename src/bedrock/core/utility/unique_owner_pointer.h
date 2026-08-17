@@ -46,7 +46,7 @@ public:
     void reset();
 
 private:
-    std::unique_ptr<EnableNonOwnerReferences> mEnableNonOwnerReferences;
-    std::unique_ptr<T> mValue;
+    std::unique_ptr<EnableNonOwnerReferences> enable_non_owner_references_;
+    std::unique_ptr<T> value_;
 };
 }  // namespace Bedrock

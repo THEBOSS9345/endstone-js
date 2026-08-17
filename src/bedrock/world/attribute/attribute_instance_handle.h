@@ -14,6 +14,8 @@
 
 #pragma once
 
+#include <cstdint>
+
 class AttributeInstanceHandle {
 public:
     std::uint32_t attribute_id;

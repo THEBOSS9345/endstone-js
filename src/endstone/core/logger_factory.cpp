@@ -41,8 +41,9 @@ Logger &LoggerFactory::getLogger(const std::string &name)
         std::make_shared<ConsoleLogSink>(stdout),
         std::make_shared<FileLogSink>("logs/latest.log", "logs/%Y-%m-%d-{}.log.gz", 1000)};
 
-    auto console = std::make_shared<spdlog::logger>(name, std::begin(sinks), std::end(sinks));
-    it = loggers.emplace(name, SpdLogAdapter(console)).first;
+    auto logger = std::make_shared<spdlog::logger>(name, std::begin(sinks), std::end(sinks));
+    logger->flush_on(spdlog::level::trace);
+    it = loggers.emplace(name, SpdLogAdapter(logger)).first;
     return it->second;
 }
 

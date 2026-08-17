@@ -5,7 +5,13 @@ Classes relevant to bans.
 import datetime
 import uuid
 
-__all__ = ["BanEntry", "IpBanEntry", "IpBanList", "PlayerBanEntry", "PlayerBanList"]
+__all__ = [
+    "BanEntry",
+    "IpBanEntry",
+    "IpBanList",
+    "PlayerBanEntry",
+    "PlayerBanList",
+]
 
 class BanEntry:
     """
@@ -16,7 +22,7 @@ class BanEntry:
         """
         Gets or sets the date this ban entry was created.
         """
-        ...
+
     @created.setter
     def created(self, arg1: datetime.datetime) -> None: ...
     @property
@@ -24,7 +30,7 @@ class BanEntry:
         """
         Gets or sets the source of this ban.
         """
-        ...
+
     @source.setter
     def source(self, arg1: str) -> None: ...
     @property
@@ -32,7 +38,7 @@ class BanEntry:
         """
         Gets or sets the date this ban expires on.
         """
-        ...
+
     @expiration.setter
     def expiration(self, arg1: datetime.datetime | None) -> None: ...
     @property
@@ -40,7 +46,7 @@ class BanEntry:
         """
         Gets or sets the reason for this ban.
         """
-        ...
+
     @reason.setter
     def reason(self, arg1: str) -> None: ...
 
@@ -54,7 +60,6 @@ class IpBanEntry(BanEntry):
         """
         Gets the banned IP address.
         """
-        ...
 
 class IpBanList:
     """
@@ -64,7 +69,7 @@ class IpBanList:
         """
         Gets a BanEntry by IP address.
         """
-        ...
+
     def add_ban(
         self,
         address: str,
@@ -75,23 +80,22 @@ class IpBanList:
         """
         Adds a ban to this list, or updates an existing one.
         """
-        ...
+
     def is_banned(self, address: str) -> bool:
         """
         Checks if a BanEntry exists for the target by IP address.
         """
-        ...
+
     def remove_ban(self, address: str) -> None:
         """
         Removes an IP address from the ban list.
         """
-        ...
+
     @property
     def entries(self) -> list[IpBanEntry]:
         """
         Gets a vector of pointers to entries in the ban list.
         """
-        ...
 
 class PlayerBanEntry(BanEntry):
     """
@@ -103,19 +107,18 @@ class PlayerBanEntry(BanEntry):
         """
         Gets the banned player's name.
         """
-        ...
+
     @property
     def unique_id(self) -> uuid.UUID | None:
         """
         Gets the banned player's unique ID, or None if not available.
         """
-        ...
+
     @property
     def xuid(self) -> str | None:
         """
         Gets the banned player's Xbox user ID (XUID), or None if not available.
         """
-        ...
 
 class PlayerBanList:
     """
@@ -125,7 +128,7 @@ class PlayerBanList:
         """
         Gets a BanEntry by player name, UUID, or XUID.
         """
-        ...
+
     def add_ban(
         self,
         name: str,
@@ -138,20 +141,19 @@ class PlayerBanList:
         """
         Adds a ban to this list, or updates an existing one.
         """
-        ...
+
     def is_banned(self, name: str, uuid: uuid.UUID | None = None, xuid: str | None = None) -> bool:
         """
         Checks if a BanEntry exists for the target by name, UUID, or XUID.
         """
-        ...
+
     def remove_ban(self, name: str, uuid: uuid.UUID | None = None, xuid: str | None = None) -> None:
         """
         Removes a player from the ban list by name, UUID, or XUID.
         """
-        ...
+
     @property
     def entries(self) -> list[PlayerBanEntry]:
         """
         Gets a vector of pointers to entries in the ban list.
         """
-        ...

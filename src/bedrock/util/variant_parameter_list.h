@@ -40,7 +40,7 @@ struct VariantParameterList {
     Actor *target;
     Actor *parent;
     Mob *baby;
-    BlockPos *block;
+    BlockPos const *block;
     Actor *damager;
     Actor *holder;
 };

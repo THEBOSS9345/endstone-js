@@ -27,9 +27,9 @@ public:
     // ENDSTONE_HOOK void onChunkDiscarded(LevelChunk &);
     // ENDSTONE_HOOK void onChunkLoaded(ChunkSource &, LevelChunk &);
 
-    virtual void *getArmorTrimUnloader() = 0;
-    [[nodiscard]] virtual void *getPlayerSleepManager() const = 0;
-    virtual void *getPlayerSleepManager() = 0;
+    virtual ArmorTrimUnloader *getArmorTrimUnloader() = 0;
+    [[nodiscard]] virtual const PlayerSleepManager &getPlayerSleepManager() const = 0;
+    virtual PlayerSleepManager &getPlayerSleepManager() = 0;
 
     // #blameMojang - Linux build has extra virtual methods not in Windows build.
     // Same class, different vtable layout per platform. Why? Ask Mojang.

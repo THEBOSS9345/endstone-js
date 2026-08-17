@@ -35,6 +35,7 @@
 
 using BlockShape = std::int64_t;
 
+class ILevel;
 class ItemStackBase;
 class Level;
 class Mob;
@@ -57,7 +58,8 @@ public:
     Item(const std::string &, short);
 
     virtual ~Item() = 0;
-    virtual void initServer(ItemComprehensiveLoadResult &&, SemVersion const &, PackLoadContext &) = 0;
+    virtual void initServer(SharedTypes::Comprehensive::ItemDocument &&, SemVersion const &, Experiments const &,
+                            std::optional<LegacyEventItemComponentData>) = 0;
     virtual void tearDown() = 0;
     virtual Item &setDescriptionId(std::string const &) = 0;
     virtual std::string const &getDescriptionId() const = 0;
@@ -110,16 +112,17 @@ public:
     virtual bool shouldInteractionWithBlockBypassLiquid(Block const &) const = 0;
     virtual bool requiresInteract() const = 0;
     virtual std::string getHoverTextColor(ItemStackBase const &stack) const;
-    virtual void appendFormattedHovertext(ItemStackBase const &, Level &, std::string &, bool) const = 0;
+    virtual void appendFormattedHovertext(ItemStackBase const &, Level &, Bedrock::Safety::RedactableString &,
+                                          bool) const = 0;
     virtual bool isValidRepairItem(ItemStackBase const &, ItemStackBase const &, BaseGameVersion const &) const = 0;
     virtual int getEnchantSlot() const = 0;
     virtual int getEnchantValue() const = 0;
     virtual int getArmorValue() const = 0;
     virtual int getToughnessValue() const = 0;
     virtual float getKnockbackResistanceValue() const;
-    virtual std::optional<SharedTypes::Legacy::LevelSoundEvent> getAttackMissSound() const;
-    virtual std::optional<SharedTypes::Legacy::LevelSoundEvent> getAttackHitSound() const;
-    virtual std::optional<SharedTypes::Legacy::LevelSoundEvent> getAttackCriticalHitSound() const;
+    virtual std::optional<SoundEventIdentifier> getAttackMissSound() const;
+    virtual std::optional<SoundEventIdentifier> getAttackHitSound() const;
+    virtual std::optional<SoundEventIdentifier> getAttackCriticalHitSound() const;
     virtual LevelSoundEvent getBreakSound() const = 0;
     virtual LevelSoundEvent getEquipSound() const;
     virtual bool isComplex() const = 0;
@@ -134,14 +137,12 @@ public:
     virtual bool hasCustomColor(CompoundTag const *) const = 0;
     virtual void clearColor(ItemStackBase &) const = 0;
     virtual void setColor(ItemStackBase &, mce::Color const &) const = 0;
-    // virtual mce::Color getBaseColor(ItemStack const &) const = 0;
-    // virtual mce::Color getSecondaryColor(ItemStack const &) const = 0;
     virtual ActorDefinitionIdentifier getActorIdentifier(ItemStack const &) const = 0;
     virtual int buildIdAux(std::int16_t, CompoundTag const *) const = 0;
     virtual bool canUseOnSimTick() const = 0;
     virtual ItemStack &use(ItemStack &, Player &) const = 0;
     virtual bool canUseAsAttack() const = 0;
-    virtual ItemStack &useAsAttack(ItemStack &itemStack, Player &) const = 0;
+    virtual ItemStack &useAsAttack(ItemStack &itemStack, Player &, Vec3 const &) const = 0;
     virtual Actor *createProjectileActor(BlockSource &, ItemStack const &, Vec3 const &, Vec3 const &) const = 0;
     virtual bool dispense(BlockSource &, Container &, int slot, Vec3 const &, FacingID face) const = 0;
     virtual ItemUseMethod useTimeDepleted(ItemStack &, Level *, Player *) const = 0;
@@ -155,7 +156,7 @@ public:
     virtual std::string buildDescriptionId(ItemDescriptor const &, CompoundTag const *) const = 0;
     virtual Bedrock::Safety::RedactableString getRedactedCustomName(const ItemStackBase &stack) const = 0;
     virtual bool hasCustomHoverName(const ItemStackBase &stack) const = 0;
-    virtual std::string buildEffectDescriptionName(ItemStackBase const &) const = 0;
+    virtual std::string buildEffectDescriptionName(ItemStackBase const &, bool) const = 0;
     ENDSTONE_HOOK virtual void readUserData(ItemStackBase &stack, IDataInput &input,
                                             ReadOnlyBinaryStream &underlying_stream) const;
     virtual void writeUserData(ItemStackBase const &, IDataOutput &) const = 0;
@@ -166,7 +167,7 @@ public:
     virtual int getCooldownDuration() const = 0;
     virtual ItemCooldownType getCooldownType() const;
     virtual void fixupCommon(ItemStackBase &) const = 0;
-    virtual void fixupCommon(ItemStackBase &, Level &) const = 0;
+    virtual void fixupCommon(ItemStackBase &, ILevel &) const = 0;
     virtual InHandUpdateType getInHandUpdateType(Player const &, ItemStack const &, ItemStack const &, bool,
                                                  bool) const = 0;
     virtual bool validFishInteraction(int) const = 0;
@@ -175,7 +176,7 @@ public:
     virtual bool shouldEmitInUseGameEvents() const = 0;
     virtual bool useInterruptedByAttacking() const = 0;
     virtual bool hasSameRelevantUserData(ItemStackBase const &, ItemStackBase const &) const = 0;
-    virtual void initClient(ItemComprehensiveLoadResult &&, SemVersion const &, PackLoadContext &,
+    virtual void initClient(SharedTypes::Comprehensive::ItemDocument &&, SemVersion const &, Experiments const &,
                             ItemIconInfoFactory) = 0;
     virtual Item &setIconInfo(std::string const &, int) = 0;
     virtual ResolvedItemIconInfo getIconInfo(ItemStackBase const &, int, bool) const = 0;
@@ -185,7 +186,7 @@ public:
     virtual Brightness getLightEmission(int) const = 0;
     virtual bool canBeCharged() const = 0;
     virtual void playSoundIncrementally(ItemStack const &, Mob &) const = 0;
-    virtual float getFurnaceXPmultiplier(ItemStackBase const *) const = 0;
+    virtual float getFurnaceXPmultiplier(ItemStackBase const &) const = 0;
     virtual bool calculatePlacePos(ItemStackBase &, Actor &, FacingID &, BlockPos &) const = 0;
 
 private:

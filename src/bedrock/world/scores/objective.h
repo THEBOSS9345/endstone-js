@@ -64,7 +64,7 @@ private:
                                                  PlayerScoreSetFunction action);  // NOLINT
 
     std::unordered_map<ScoreboardId, int> scores_;  // +24
-    std::string name_;                              // +88
+    const std::string name_;                        // +88
     std::string display_name_;                      // +120
     const ObjectiveCriteria &criteria_;             // +152
 };

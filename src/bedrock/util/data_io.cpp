@@ -36,9 +36,9 @@ void BytesDataOutput::writeDouble(double v)
     writeBytes(&v, sizeof(double));
 }
 
-void BytesDataOutput::writeByte(std::uint8_t v)
+void BytesDataOutput::writeByte(char v)
 {
-    writeBytes(&v, sizeof(std::uint8_t));
+    writeBytes(&v, sizeof(char));
 }
 
 void BytesDataOutput::writeShort(std::int16_t v)

@@ -15,7 +15,6 @@
 #pragma once
 
 #include "bedrock/forward.h"
-#include "bedrock/platform/threading/mutex_details.h"
 #include "bedrock/resources/content_source_repository.h"
 #include "bedrock/resources/repository_loading.h"
 #include "bedrock/resources/repository_sources.h"
@@ -25,7 +24,7 @@ class IRepositoryFactory {
 public:
     virtual ~IRepositoryFactory() = default;
     virtual std::shared_ptr<RepositorySources> createSources(const IResourcePackRepository &) const = 0;
-    virtual std::unique_ptr<IPackIOProvider> createIO() = 0;
+    [[nodiscard]] virtual std::unique_ptr<IPackIOProvider> createIO() const = 0;
 };
 
 class RepositoryFactory : public IRepositoryFactory {
@@ -62,10 +61,8 @@ private:
     std::unique_ptr<PackSettingsFactory> pack_settings_factory_;
     PackSourceFactory &pack_source_factory_;
     Bedrock::NonOwnerPointer<PackCommand::IPackCommandPipeline> commands_;
-    std::unique_ptr<TaskGroup> task_group_;
-    Bedrock::Threading::Mutex initialize_mutex_;
+    gsl::not_null<std::unique_ptr<TaskGroup>> task_group_;
     ContentIdentity current_premium_world_template_identity_;
     gsl::not_null<std::unique_ptr<ResourcePackRepositoryRefreshQueue>> refresher_;
 };
-// TODO(fixme): check size
-// BEDROCK_STATIC_ASSERT_SIZE(ResourcePackRepository, 576, 496);
+BEDROCK_STATIC_ASSERT_SIZE(ResourcePackRepository, 384, 344);

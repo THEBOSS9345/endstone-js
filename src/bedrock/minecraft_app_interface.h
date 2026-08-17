@@ -14,7 +14,9 @@
 
 #pragma once
 
-#include "bedrock/core/islands.h"
+#include <memory>
+
+#include "bedrock/common_types.h"
 #include "bedrock/core/utility/non_owner_pointer.h"
 #include "bedrock/forward.h"
 
@@ -23,11 +25,17 @@ class Minecraft;
 class IMinecraftApp {
 public:
     virtual ~IMinecraftApp() = default;
-    [[nodiscard]] virtual Bedrock::NotNullNonOwnerPtr<Minecraft> getPrimaryMinecraft() const = 0;
+    [[nodiscard]] virtual Bedrock::NonOwnerPointer<EDUSystems> getEDUSystems() = 0;
+    [[nodiscard]] virtual Bedrock::NonOwnerPointer<const EDUSystems> getEDUSystems() const = 0;
+    [[nodiscard]] virtual std::shared_ptr<OptionRegistry> getPrimaryUserOptions() = 0;
+    [[nodiscard]] virtual std::shared_ptr<const OptionRegistry> getPrimaryUserOptions() const = 0;
+    [[nodiscard]] virtual Bedrock::NotNullNonOwnerPtr<Minecraft> getPrimaryMinecraft() = 0;
     [[nodiscard]] virtual Bedrock::NotNullNonOwnerPtr<Automation::AutomationClient> getAutomationClient() const = 0;
     [[nodiscard]] virtual bool isEduMode() const = 0;
     [[nodiscard]] virtual bool isDedicatedServer() const = 0;
     virtual void onNetworkMaxPlayersChanged(std::uint32_t) = 0;
-    [[nodiscard]] virtual IGameModuleShared &getGameModuleShared() const = 0;
+    [[nodiscard]] virtual IGameModuleShared &getGameModuleShared() = 0;
     virtual void requestServerShutdown() = 0;
+    [[nodiscard]] virtual Bedrock::NotNullNonOwnerPtr<FileArchiver> getFileArchiver() const = 0;
+    virtual bool requestInGamePause(const SubClientId &, bool) = 0;
 };

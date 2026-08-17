@@ -34,9 +34,9 @@ public:
 
     [[nodiscard]] const ItemStack &getToItem() const { return to_item_; }
 
-    [[nodiscard]] const NetworkItemStackDescriptor &getToItemDescriptor() const { return from_item_descriptor_; }
+    [[nodiscard]] const NetworkItemStackDescriptor &getToItemDescriptor() const { return to_item_descriptor_; }
 
-    [[nodiscard]] const NetworkItemStackDescriptor &getFromItemDescriptor() const { return to_item_descriptor_; }
+    [[nodiscard]] const NetworkItemStackDescriptor &getFromItemDescriptor() const { return from_item_descriptor_; }
 
 private:
     InventorySource source_;

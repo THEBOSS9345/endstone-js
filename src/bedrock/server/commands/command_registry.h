@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <format>
 #include <functional>
@@ -264,9 +265,7 @@ public:
         int first_factorization;                                // +132
         int first_optional;                                     // +136
         bool runnable;                                          // +140
-        bool has_chained_subcommands;                           // +141
-        bool finalized_chained_subcommands;                     // +142
-        std::int64_t rule_counter;                              // +144
+        std::size_t rule_counter;                               // +144
     };
 
     struct ParseToken {

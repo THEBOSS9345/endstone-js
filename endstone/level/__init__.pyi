@@ -6,7 +6,12 @@ from endstone.block import Block
 from endstone.inventory import ItemStack
 from endstone.util import Vector
 
-__all__ = ["Chunk", "Dimension", "Level", "Location"]
+__all__ = [
+    "Chunk",
+    "Dimension",
+    "Level",
+    "Location",
+]
 
 class Level:
     @property
@@ -14,19 +19,19 @@ class Level:
         """
         Gets the unique name of this level
         """
-        ...
+
     @property
     def actors(self) -> list[Actor]:
         """
         Get a list of all actors in this level
         """
-        ...
+
     @property
     def time(self) -> int:
         """
         Gets and sets the relative in-game time on the server
         """
-        ...
+
     @time.setter
     def time(self, arg1: int) -> None: ...
     @property
@@ -34,18 +39,17 @@ class Level:
         """
         Gets a list of all dimensions within this level.
         """
-        ...
+
     def get_dimension(self, name: str) -> Dimension:
         """
         Gets the dimension with the given name.
         """
-        ...
+
     @property
     def seed(self) -> int:
         """
         Gets the Seed for this level.
         """
-        ...
 
 class Dimension:
     """
@@ -70,70 +74,69 @@ class Dimension:
         """
         Gets the name of this dimension
         """
-        ...
+
     @property
     def type(self) -> Type:
         """
         Gets the type of this dimension
         """
-        ...
+
     @property
     def level(self) -> Level:
         """
         Gets the level to which this dimension belongs
         """
-        ...
+
     @typing.overload
     def get_block_at(self, location: Location) -> Block:
         """
         Gets the Block at the given Location
         """
-        ...
+
     @typing.overload
     def get_block_at(self, x: int, y: int, z: int) -> Block:
         """
         Gets the Block at the given coordinates
         """
-        ...
+
     def get_highest_block_y_at(self, x: int, z: int) -> int:
         """
         Gets the highest non-empty (impassable) coordinate at the given coordinates.
         """
-        ...
+
     @typing.overload
     def get_highest_block_at(self, location: Location) -> Block:
         """
         Gets the highest non-empty (impassable) block at the given Location.
         """
-        ...
+
     @typing.overload
     def get_highest_block_at(self, x: int, z: int) -> Block:
         """
         Gets the highest non-empty (impassable) block at the given coordinates.
         """
-        ...
+
     @property
     def loaded_chunks(self) -> list[Chunk]:
         """
         Gets a list of all loaded Chunks
         """
-        ...
+
     def drop_item(self, location: Location, item: ItemStack) -> Item:
         """
         Drops an item at the specified Location
         """
-        ...
+
     def spawn_actor(self, location: Location, type: str) -> Actor:
         """
         Creates an actor at the given Location
         """
-        ...
+
     @property
     def actors(self) -> list[Actor]:
         """
         Get a list of all actors in this dimension
         """
-        ...
 
 class Location:
     """
@@ -147,7 +150,7 @@ class Location:
         """
         The Dimension that contains this position
         """
-        ...
+
     @dimension.setter
     def dimension(self, arg1: Dimension) -> None: ...
     @property
@@ -155,13 +158,13 @@ class Location:
         """
         Gets the block at the represented location
         """
-        ...
+
     @property
     def pitch(self) -> float:
         """
         The pitch of this location, measured in degrees.
         """
-        ...
+
     @pitch.setter
     def pitch(self, arg1: float) -> None: ...
     @property
@@ -169,7 +172,7 @@ class Location:
         """
         The yaw of this location, measured in degrees.
         """
-        ...
+
     @yaw.setter
     def yaw(self, arg1: float) -> None: ...
     @property
@@ -177,7 +180,7 @@ class Location:
         """
         The x-coordinate of this location
         """
-        ...
+
     @x.setter
     def x(self, arg1: float) -> None: ...
     @property
@@ -185,7 +188,7 @@ class Location:
         """
         The y-coordinate of this location
         """
-        ...
+
     @y.setter
     def y(self, arg1: float) -> None: ...
     @property
@@ -193,7 +196,7 @@ class Location:
         """
         The z-coordinate of this location
         """
-        ...
+
     @z.setter
     def z(self, arg1: float) -> None: ...
     @property
@@ -201,25 +204,25 @@ class Location:
         """
         Gets the floored value of the X component, indicating the block that this location is contained with.
         """
-        ...
+
     @property
     def block_y(self) -> int:
         """
         Gets the floored value of the Y component, indicating the block that this location is contained with.
         """
-        ...
+
     @property
     def block_z(self) -> int:
         """
         Gets the floored value of the Z component, indicating the block that this location is contained with.
         """
-        ...
+
     @property
     def direction(self) -> Vector:
         """
         Gets or sets a vector of yaw and pitch that points in the direction of the vector
         """
-        ...
+
     @direction.setter
     def direction(self, arg1: Vector) -> Location: ...
     @property
@@ -227,23 +230,23 @@ class Location:
         """
         The magnitude of the Location
         """
-        ...
+
     @property
     def length_squared(self) -> float:
         """
         The squared magnitude of the Location
         """
-        ...
+
     def distance(self, other: Location) -> float:
         """
         The distance between this Location and another
         """
-        ...
+
     def distance_squared(self, other: Location) -> float:
         """
         The squared distance between this Location and another
         """
-        ...
+
     @typing.overload
     def __iadd__(self, arg0: Location) -> Location: ...
     @typing.overload
@@ -257,7 +260,7 @@ class Location:
         """
         Zero this vector's components.
         """
-        ...
+
     def __eq__(self, arg0: Location) -> bool: ...
     def __ne__(self, arg0: Location) -> bool: ...
     def __repr__(self) -> str: ...
@@ -267,13 +270,12 @@ class Location:
         """
         Normalizes the given yaw angle to a value between `+/-180` degrees.
         """
-        ...
+
     @staticmethod
     def normalize_pitch(pitch: float) -> float:
         """
         Normalizes the given pitch angle to a value between `+/-90` degrees.
         """
-        ...
 
 class Chunk:
     """
@@ -284,24 +286,24 @@ class Chunk:
         """
         Gets the X-coordinate of this chunk
         """
-        ...
+
     @property
     def z(self) -> int:
         """
         Gets the Z-coordinate of this chunk
         """
-        ...
+
     @property
     def level(self) -> Level:
         """
         Gets the level containing this chunk
         """
-        ...
+
     @property
     def dimension(self) -> Dimension:
         """
         Gets the dimension containing this chunk
         """
-        ...
+
     def __repr__(self) -> str: ...
     def __str__(self) -> str: ...

@@ -34,6 +34,6 @@ public:
     virtual void sendBroadcast(NetworkIdentifier const &, SubClientId, Packet const &) = 0;
     virtual void flush(NetworkIdentifier const &, std::function<void()> &&) = 0;
 
-private:
+protected:
     SubClientId sub_id_{SubClientId::PrimaryClient};
 };

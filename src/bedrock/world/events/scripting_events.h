@@ -17,6 +17,7 @@
 #include <optional>
 #include <string>
 
+#include "bedrock/forward.h"
 #include "bedrock/gameplayhandlers/coordinator_result.h"
 #include "bedrock/scripting/lifetime_registry/lifetime_scope.h"
 #include "bedrock/world/actor/actor_unique_id.h"
@@ -34,7 +35,13 @@ struct BeforeWatchdogTerminateEvent {
     WatchdogTerminateReason watchdog_terminate_reason;  // +16
 };
 
-struct ScriptModuleStartupEvent {};
+struct ScriptModuleStartupEvent {
+    ScriptModuleMinecraft::IScriptItemCustomComponentRegistry &item_component_registry;
+    ScriptModuleMinecraft::ScriptBlockCustomComponentsRegistry &block_component_registry;
+    ScriptModuleMinecraft::ScriptCustomSpawnRulesRegistry &spawn_rules_registry;
+    ScriptModuleMinecraft::CustomCommandRegistry &custom_command_registry;
+    ScriptModuleMinecraft::ScriptCustomDimensionRegistry &custom_dimension_registry;
+};
 struct ScriptModuleShutdownEvent {};
 
 struct BlockObject {

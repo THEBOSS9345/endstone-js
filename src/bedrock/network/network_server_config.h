@@ -16,11 +16,18 @@
 
 #include "bedrock/network/network_permissions.h"
 
+enum class ServerPlayerJoinBehavior : int {
+    Allow = 0,
+    Deny = 1,
+};
+
 struct NetworkServerConfig {
     std::string server_type;
     bool require_trusted_authentication;
+    bool require_nonce;
     std::vector<std::string> extra_trusted_keys;
     NetworkPermissions network_permissions;
     bool allow_subclient_login;
     bool enable_packet_receipt_eventing;
+    ServerPlayerJoinBehavior default_join_behavior;
 };

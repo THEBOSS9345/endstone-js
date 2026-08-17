@@ -40,6 +40,7 @@ public:
     virtual ~IRandom() = default;
     virtual int nextInt() = 0;
     virtual int nextInt(int) = 0;
+    int nextIntInclusive(int, int);
     virtual int64_t nextLong() = 0;
     virtual bool nextBoolean() = 0;
     virtual float nextFloat() = 0;
@@ -48,6 +49,13 @@ public:
     virtual void consumeCount(unsigned int) = 0;
     virtual std::unique_ptr<IRandom> fork() = 0;
     virtual std::unique_ptr<IPositionalRandomFactory> forkPositional();
+    virtual bool chance(int, int);
+    virtual bool chanceOneIn(int);
+    virtual bool chanceAllButOneIn(int);
+    virtual bool chanceFloatLessThan(float);
+    virtual bool chanceFloatLessOrEqual(float);
+    virtual bool chanceFloatGreaterThan(float);
+    virtual bool chanceFloatGreaterOrEqual(float);
 };
 
 class Random : public IRandom {
@@ -76,7 +84,6 @@ public:
     result_type operator()();
     int operator()(int);
     int nextInt(int, int);
-    int nextIntInclusive(int, int);
     uint32_t nextUnsignedInt();
     uint32_t nextUnsignedInt(unsigned int);
     unsigned char nextUnsignedChar();
@@ -95,5 +102,5 @@ public:
     static Random &getThreadLocal();
 
 private:
-    Bedrock::Application::ThreadOwner<Core::Random> random_;  // +32
+    Bedrock::Application::ThreadOwner<Core::Random> random_;  // +8
 };

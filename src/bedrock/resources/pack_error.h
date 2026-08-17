@@ -15,11 +15,13 @@
 #pragma once
 
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 #include "bedrock/core/resource/pack_id_version.h"
 #include "bedrock/core/resource/resource_helper.h"
 #include "bedrock/core/sem_ver/sem_version.h"
+#include "bedrock/forward.h"
 
 enum class PackErrorType : int {
     None = 0,
@@ -30,12 +32,17 @@ enum class PackErrorType : int {
     PackSettingsError = 5,
 };
 
+using MessageMap = std::unordered_map<int, std::string>;
+
 class PackError {
 public:
     virtual ~PackError() = default;
-    [[nodiscard]] virtual std::string getLocErrorMessage() const;
+    [[nodiscard]] virtual std::string getLocErrorMessage(I18n &) const;
 
 private:
+    [[nodiscard]] virtual MessageMap const &getLocErrorMessageMap() const = 0;
+    [[nodiscard]] virtual MessageMap const &getEventErrorMessageMap() const = 0;
+
     std::vector<std::string> error_parameters_;  // +8
     int error_value_;                            // +32
     PackErrorType pack_error_type_;              // +36

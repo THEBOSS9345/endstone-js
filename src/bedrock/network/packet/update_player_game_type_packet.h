@@ -16,6 +16,9 @@
 
 #include "bedrock/network/packet.h"
 #include "bedrock/network/packet/player_input_tick.h"
+#include "bedrock/network/packet/serialize/serialized_packet.h"
+#include "bedrock/world/actor/actor_unique_id.h"
+#include "bedrock/world/level/game_type.h"
 
 struct UpdatePlayerGameTypePacketInfo {
     static constexpr auto PACKET_NAME = "UpdatePlayerGameTypePacket";

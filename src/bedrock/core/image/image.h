@@ -15,6 +15,7 @@
 #pragma once
 
 #include "bedrock/core/container/blob.h"
+#include "bedrock/core/image/alpha_usage.h"
 
 namespace mce {
 enum class ImageFormat : uint32_t {
@@ -39,6 +40,7 @@ struct Image {
     uint32_t height;
     uint32_t depth;
     ImageUsage usage;
+    AlphaUsage alpha_usage;
     Storage image_bytes;
 };
 static_assert(sizeof(Image) == 48);

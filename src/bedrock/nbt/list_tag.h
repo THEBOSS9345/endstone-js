@@ -20,6 +20,7 @@
 
 #include "bedrock/bedrock.h"
 #include "bedrock/nbt/tag.h"
+#include "bedrock/platform/brstd/function_ref.h"
 
 class CompoundTag;
 
@@ -30,7 +31,9 @@ public:
     ListTag() = default;
     void deleteChildren() override;
     void write(IDataOutput &output) const override;
+    void write(IDataOutput &output, int depth) const;
     Bedrock::Result<void> load(IDataInput &input) override;
+    Bedrock::Result<void> load(IDataInput &input, int depth);
     [[nodiscard]] std::string toString() const override;
     [[nodiscard]] Type getId() const override;
     [[nodiscard]] bool equals(const Tag &other) const override;
@@ -48,13 +51,13 @@ public:
     [[nodiscard]] std::int64_t getInt64(int index) const;
     [[nodiscard]] std::int16_t getShort(int index) const;
     [[nodiscard]] std::uint8_t getByte(int index) const;
-    [[nodiscard]] std::size_t size() const;
+    [[nodiscard]] int size() const;
     [[nodiscard]] std::unique_ptr<ListTag> copyList() const;
     [[nodiscard]] const CompoundTag *getCompound(int index) const;
     CompoundTag *getCompound(int index);
     void erase(int index);
     void popBack();
-    void forEachCompoundTag(std::function<void(const CompoundTag &)> func) const;
+    void forEachCompoundTag(brstd::function_ref<void(const CompoundTag &)> func) const;
 
 private:
     List list_;  // +8

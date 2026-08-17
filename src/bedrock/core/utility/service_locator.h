@@ -22,5 +22,5 @@ public:
     void unregister();
 
 private:
-    T *service = nullptr;
+    T *service_ = nullptr;
 };

@@ -14,4 +14,6 @@
 
 #include "bedrock/world/item/vanilla_item_tags.h"
 
-const ItemTag VanillaItemTags::Trident = "minecraft:is_trident";
+namespace VanillaItemTags {
+const ItemTag Trident = "minecraft:is_trident";
+}  // namespace VanillaItemTags

@@ -2,7 +2,7 @@
 Classes relating to the NBT data format.
 """
 
-import collections
+import collections.abc
 import typing
 
 __all__ = [
@@ -167,16 +167,16 @@ class ByteArrayTag(Tag):
     def __init__(self, iterable: collections.abc.Iterable) -> None: ...
     @typing.overload
     def __init__(self, buffer: collections.abc.Buffer) -> None: ...
-    def __buffer__(self, flags) -> None:
+    def __buffer__(self, flags, /) -> typing.Any:
         """
         Return a buffer object that exposes the underlying memory of the object.
         """
-        ...
-    def __release_buffer__(self, buffer) -> None:
+
+    def __release_buffer__(self, buffer, /) -> typing.Any:
         """
         Release the buffer object that exposes the underlying memory of the object.
         """
-        ...
+
     def clear(self) -> None: ...
     def append(self, value: int) -> None: ...
     def extend(self, iterable: collections.abc.Iterable) -> None: ...

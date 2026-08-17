@@ -16,6 +16,7 @@
 
 #include <memory>
 
+#include "bedrock/bedrock.h"
 #include "bedrock/certificates/identity/player_authentication_info.h"
 #include "bedrock/certificates/web_token.h"
 #include "bedrock/util/new_type.h"
@@ -24,11 +25,6 @@ struct RawGameServerToken : NewType<std::string> {};
 
 class GameServerToken {
 public:
-    enum class VerificationOptions : int {
-        Default = 0,
-        IgnoreTimestamp = 1,
-    };
-
     GameServerToken();
 
     operator bool() const { return isValid(); }
@@ -41,5 +37,7 @@ protected:
     GameServerToken(const std::string &);
     bool is_self_signed_;
     bool is_valid_;
+    bool is_local_;
     WebToken raw_token_;
 };
+BEDROCK_STATIC_ASSERT_SIZE(GameServerToken, 136, 112);

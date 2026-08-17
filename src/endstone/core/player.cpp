@@ -80,6 +80,7 @@ EndstonePlayer::EndstonePlayer(EndstoneServer &server, ::Player &player)
     const auto component = player.getPersistentComponent<UserEntityIdentifierComponent>();
     uuid_ = EndstoneUUID::fromMinecraft(component->getClientUUID());
     xuid_ = component->getXuid(false);
+    address_ = EndstoneSocketAddress::fromNetworkIdentifier(component->getNetworkId());
     last_op_status_ = EndstonePlayer::isOp();
 }
 
@@ -237,8 +238,7 @@ std::string EndstonePlayer::getXuid() const
 
 SocketAddress EndstonePlayer::getAddress() const
 {
-    auto component = getHandle().getPersistentComponent<UserEntityIdentifierComponent>();
-    return EndstoneSocketAddress::fromNetworkIdentifier(component->getNetworkId());
+    return address_;
 }
 
 void EndstonePlayer::transfer(std::string host, int port) const
@@ -516,9 +516,15 @@ void EndstonePlayer::spawnParticle(std::string name, float x, float y, float z,
 
 std::chrono::milliseconds EndstonePlayer::getPing() const
 {
-    auto *peer = server_.getRakNetConnector().getPeer();
     const auto *component = getHandle().tryGetComponent<UserEntityIdentifierComponent>();
-    return std::chrono::milliseconds(peer->GetAveragePing(component->getNetworkId().guid));
+    if (!component) {
+        return {};
+    }
+    const auto *peer = server_.getServer().getNetwork().getPeerForUser(component->getNetworkId());
+    if (!peer) {
+        return {};
+    }
+    return peer->getNetworkStatus().average_ping;
 }
 
 std::string EndstonePlayer::getLocale() const
@@ -698,20 +704,20 @@ bool EndstonePlayer::handlePacket(Packet &packet)
     case MinecraftPacketIds::PlayerSkin: {
         auto &server = static_cast<EndstoneServer &>(getServer());
         auto &pk = static_cast<PlayerSkinPacket &>(packet);
-        if (getHandle().getPersistentComponent<UserEntityIdentifierComponent>()->getClientUUID() == pk.uuid) {
-            Message skin_change_message =
-                Translatable(ColorFormat::Yellow + (pk.skin.getIsPersona() ? "%multiplayer.player.changeToPersona"
-                                                                           : "%multiplayer.player.changeToSkin"),
-                             {getName()});
-            PlayerSkinChangeEvent e{*this, EndstoneSkin::fromMinecraft(pk.skin), skin_change_message};
+        if (getHandle().getPersistentComponent<UserEntityIdentifierComponent>()->getClientUUID() == pk.payload.uuid) {
+            Message skin_change_message = Translatable(
+                ColorFormat::Yellow + (pk.payload.skin.getIsPersona() ? "%multiplayer.player.changeToPersona"
+                                                                      : "%multiplayer.player.changeToSkin"),
+                {getName()});
+            PlayerSkinChangeEvent e{*this, EndstoneSkin::fromMinecraft(pk.payload.skin), skin_change_message};
             getServer().getPluginManager().callEvent(e);
             if (e.isCancelled()) {
                 auto new_packet = MinecraftPackets::createPacket(MinecraftPacketIds::PlayerSkin);
                 auto &new_pk = static_cast<PlayerSkinPacket &>(*new_packet);
-                new_pk.uuid = pk.uuid;
-                new_pk.skin = getHandle().getSkin();
-                new_pk.localized_new_skin_name = pk.localized_old_skin_name;
-                new_pk.localized_old_skin_name = pk.localized_new_skin_name;
+                new_pk.payload.uuid = pk.payload.uuid;
+                new_pk.payload.skin = getHandle().getSkin();
+                new_pk.payload.localized_new_skin_name = pk.payload.localized_old_skin_name;
+                new_pk.payload.localized_old_skin_name = pk.payload.localized_new_skin_name;
                 getHandle().sendNetworkPacket(new_pk);
                 return false;
             }
@@ -749,6 +755,21 @@ bool EndstonePlayer::handlePacket(Packet &packet)
     }
     case MinecraftPacketIds::PlayerAuthInputPacket: {
         auto &pk = static_cast<PlayerAuthInputPacket &>(packet);
+        if (pk.getInput(PlayerAuthInputPacket::InputData::MissedSwing)) {
+            PlayerInteractEvent e{
+                *this,
+                PlayerInteractEvent::Action::LeftClickAir,
+                getInventory().getItemInMainHand(),
+                nullptr,
+                BlockFace::South,
+                std::nullopt,
+            };
+            getServer().getPluginManager().callEvent(e);
+            if (e.isCancelled()) {
+                pk.setInput(PlayerAuthInputPacket::InputData::MissedSwing, false);
+            }
+        }
+
         auto &actions = pk.payload.player_block_actions.actions_;
         for (auto it = actions.begin(); it != actions.end();) {
             const auto &action = *it;
@@ -1002,7 +1023,7 @@ void EndstonePlayer::updateAbilities() const
 {
     auto packet = MinecraftPackets::createPacket(MinecraftPacketIds::UpdateAbilitiesPacket);
     std::shared_ptr<UpdateAbilitiesPacket> pk = std::static_pointer_cast<UpdateAbilitiesPacket>(packet);
-    pk->data = {getHandle().getOrCreateUniqueID(), getHandle().getAbilities()};
+    pk->payload.data = {getHandle().getOrCreateUniqueID(), getHandle().getAbilities()};
     getHandle().sendNetworkPacket(*packet);
 }
 

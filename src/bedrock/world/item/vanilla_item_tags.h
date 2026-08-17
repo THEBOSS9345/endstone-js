@@ -16,7 +16,6 @@
 
 #include "bedrock/world/item/vanilla_item_tag.h"
 
-class VanillaItemTags {
-public:
-    static const ItemTag Trident;
-};
+namespace VanillaItemTags {
+extern const ItemTag Trident;
+}  // namespace VanillaItemTags

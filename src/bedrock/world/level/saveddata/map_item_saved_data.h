@@ -101,6 +101,7 @@ public:
     std::vector<ClientTerrainPixel> &getClientPixels();
     void copyMapData(const MapItemSavedData &);
     static AABB getMapWorldBounds(const BlockPos &, int, int);
+    size_t update_interval;
 
     void setClientPixelsDirty(bool);
     [[nodiscard]] bool areClientPixelsDirty() const;
@@ -109,7 +110,6 @@ public:
     void checkNeedsResampling();
 
     endstone::core::EndstoneMapView &getMapView() const;  // Endstone
-    size_t update_interval;
 
 private:
     friend class endstone::core::EndstoneMapView;

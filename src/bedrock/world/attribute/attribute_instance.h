@@ -15,10 +15,12 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "bedrock/world/attribute/attribute.h"
 #include "bedrock/world/attribute/attribute_buff.h"
+#include "bedrock/world/attribute/attribute_instance_handle.h"
 #include "bedrock/world/attribute/mutable_attribute_with_context.h"
 
 class AttributeInstanceDelegate;
@@ -27,7 +29,7 @@ class BaseAttributeMap;
 class AttributeInstance {
 public:
     virtual ~AttributeInstance() = default;
-    // virtual void tick() = 0;
+    // virtual void tick(AttributeModificationContext context);
 
     [[nodiscard]] const Attribute *getAttribute() const;
     [[nodiscard]] float getMaxValue() const;
@@ -39,17 +41,17 @@ public:
     void setMaxValue(float max, AttributeModificationContext context);
     void setMinValue(float min, AttributeModificationContext context);
     void setCurrentValue(float value, AttributeModificationContext context);
-    void addBuff(const AttributeBuff &, AttributeModificationContext);
+    std::optional<float> addBuff(const AttributeBuff &, AttributeModificationContext);
 
 private:
     friend class BaseAttributeMap;
 
     void _setDirty(AttributeModificationContext context);
 
-    Attribute *attribute_;
+    const Attribute *attribute_;
     std::vector<void *> modifier_list_;
     std::vector<void *> temporal_buffs_;
-    std::vector<void *> listeners_;
+    std::vector<AttributeInstanceHandle> listeners_;
     std::shared_ptr<AttributeInstanceDelegate> delegate_;
     union {
         float default_values_[3];

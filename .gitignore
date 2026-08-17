@@ -16,7 +16,6 @@ build/*
 bedrock_server/*
 bedrock_server_preview/*
 wheelhouse/*
-stubs/*
 .cache/*
 dist/*
 endstone/_version.py

@@ -14,14 +14,23 @@
 
 #pragma once
 
+#include <vector>
+
 #include "bedrock/core/resource/resource_helper.h"
+#include "bedrock/network/packet.h"
+#include "bedrock/resources/base_game_version.h"
+
+struct ResourcePackStackPacketPayload {
+    std::vector<PackInstanceId> texture_pack_ids_and_versions;
+    BaseGameVersion base_game_version;
+    bool texture_pack_required;
+    // ...
+};
 
 class ResourcePackStackPacket : public Packet {
 public:
     ResourcePackStackPacket();
 
-    std::vector<PackInstanceId> texture_pack_ids_and_versions;
-    BaseGameVersion base_game_version;
-    bool texture_pack_required;
+    ResourcePackStackPacketPayload payload;  // +48
     // ...
 };

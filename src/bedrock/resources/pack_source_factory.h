@@ -46,5 +46,5 @@ private:
     RealmsUnknownPackSources realms_unknown_pack_sources_;
     std::shared_ptr<IInPackagePacks> in_package_packs_provider_;
     const std::unique_ptr<IPackIOProvider> io;
-    Bedrock::NonOwnerPointer<PackCommand::IPackCommandPipeline> commands_;
+    Bedrock::NotNullNonOwnerPtr<PackCommand::IPackCommandPipeline> commands_;
 };

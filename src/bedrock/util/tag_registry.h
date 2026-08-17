@@ -22,7 +22,7 @@
 template <typename TagID, typename TagSetID>
 class TagRegistry {
 public:
-    std::vector<std::string> getTagsInSet(TagSetID tag_set_id)
+    [[nodiscard]] std::vector<std::string> getTagsInSet(TagSetID tag_set_id) const
     {
         std::vector<std::string> tags;
         auto index_set = sets_[tag_set_id.id.value()];
@@ -100,5 +100,5 @@ private:
     std::unordered_map<HashedString, std::uint64_t> tag_index_map_;  // +0
     std::vector<std::string> tags_;                                  // +64
     std::vector<IndexSet> sets_;                                     // +88
-    TagSetID empty_tag_set_;                                         // +136
+    TagSetID empty_tag_set_;                                         // +112
 };

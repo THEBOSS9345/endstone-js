@@ -66,7 +66,10 @@ bool handleEvent(::ActorBeforeHurtEvent &event)
     if (e.isCancelled()) {
         return false;
     }
-    event.damage = e.getDamage();
+    if (e.getDamage() != event.damage) {
+        event.damage = e.getDamage();
+        event.was_modified = true;
+    }
     return true;
 }
 }  // namespace

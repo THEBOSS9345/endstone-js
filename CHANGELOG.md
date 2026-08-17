@@ -7,9 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.9] - 2026-08-17
+
+### Added
+
+- Added support for BDS version 1.26.44. The network protocol version is unchanged at 2168, so clients that could join a 1.26.40 server can still join.
+
+- `PlayerInteractEvent` is now fired with the `LEFT_CLICK_AIR` action when a player swings at neither a block nor an actor. The action existed since the event was introduced but was never fired. Cancelling the event suppresses the swing, including its attack sound (#316).
+
+- `endstone.block.BlockType` is now importable from Python.
+
+### Changed
+
+- **BREAKING**: The concrete registry classes are no longer importable from `endstone` (Python). `EnchantmentRegistry` and `ItemRegistry` are gone; obtain a registry through `Server.get_registry()` and annotate it as `Registry[T]`.
+
 ### Fixed
 
-- Fixed the server list entry losing its last two fields whenever a plugin listened for `ServerListPingEvent`, or the ping was otherwise answered by Endstone. The reply was rebuilt from a fixed list of fields, so anything the server had added beyond it, currently whether the world is an editor world and whether it is hardcore, was dropped. Any field Endstone does not itself expose is now passed through untouched.
+- Fixed services outliving the plugin that registered them. Disabling a plugin left its services in the service manager, so after a `/reload` another plugin could still look one up and call into a plugin that is no longer running. For C++ plugins the provider's library has been unloaded by that point, so the call would crash the server. A plugin's services are now unregistered when it is disabled, as the Java edition does.
+
+- Fixed unreadable archives in `logs/`. Sessions that never logged anything are no longer archived, and archives are now written as a single clean gzip stream.
+
+- Fixed the last lines of a session going missing from `logs/`. Roughly a quarter of archives ended mid-line, usually part-way through the plugin shutdown messages. Every message is now flushed as it is written.
+
+- Fixed `Metrics` reporting the emulated architecture instead of the host's (Python), so a plugin running in an emulated container sent the wrong architecture to bStats.
+
+- Fixed ARM servers being reported to bStats as `arm64` on Windows but `aarch64` on Linux, splitting the same hardware across two entries. Both now report `aarch64`.
+
+- Fixed `from endstone import ItemRegistry` raising `AttributeError` (Python). The class bound by the server is `ItemTypeRegistry`.
+
+- Fixed scoreboard score removals being misread by clients older than 1.26.44. Those clients negotiate the same network protocol version as 1.26.44 but expect the older form, which they are now sent.
+
+- Fixed truncated or corrupt NBT being accepted as valid, and well-formed empty lists being rejected as corrupt.
+
+- Fixed `server.properties` never gaining the entries a Bedrock Dedicated Server update adds, such as `transport`, unless you deleted the file and let the server write a fresh one. New entries are now appended along with the comments documenting them, and everything already in the file is left untouched.
+
+- Fixed `Player.address` being unreadable once a player's connection has closed, so a handler that asked during disconnect got nothing back.
+
+- Fixed the server list entry losing its last two fields, currently whether the world is an editor world and whether it is hardcore, whenever a plugin listened for `ServerListPingEvent`. Any field Endstone does not itself expose is now passed through untouched.
 
 ## [0.11.8] - 2026-08-07
 
@@ -1132,7 +1166,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic plugin loader for C++ and Python plugins.
 - Basic command system that allows plugins to register custom commands.
 
-[Unreleased]: https://github.com/EndstoneMC/endstone/compare/v0.11.8...HEAD
+[Unreleased]: https://github.com/EndstoneMC/endstone/compare/v0.11.9...HEAD
+[0.11.9]: https://github.com/EndstoneMC/endstone/compare/v0.11.8...v0.11.9
 [0.11.8]: https://github.com/EndstoneMC/endstone/compare/v0.11.7...v0.11.8
 [0.11.7]: https://github.com/EndstoneMC/endstone/compare/v0.11.6...v0.11.7
 [0.11.6]: https://github.com/EndstoneMC/endstone/compare/v0.11.5...v0.11.6

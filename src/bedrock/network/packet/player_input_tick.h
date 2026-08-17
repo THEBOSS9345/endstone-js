@@ -14,6 +14,8 @@
 
 #pragma once
 
+#include <cstdint>
+
 struct PlayerInputTick {
     PlayerInputTick() = default;
     PlayerInputTick(uint64_t value) : value(value) {};

@@ -29,7 +29,8 @@ std::string_view DataPacket::getName() const
 
 void DataPacket::write(BinaryStream &stream) const
 {
-    stream.writeRawBytes(payload_);
+    const auto *bytes = reinterpret_cast<const unsigned char *>(payload_.data());
+    stream.writeRawBytes({bytes, bytes + payload_.size()}, nullptr, nullptr);
 }
 
 int DataPacket::getPacketId() const

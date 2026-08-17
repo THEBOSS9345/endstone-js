@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include "bedrock/bedrock.h"
 #include "bedrock/deps/json/value.h"
 
 class WebToken {
@@ -29,3 +30,4 @@ private:
     Json::Value data_info_;    // +80
     std::string signature_;    // +96
 };
+BEDROCK_STATIC_ASSERT_SIZE(WebToken, 128, 104);

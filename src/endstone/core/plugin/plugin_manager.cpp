@@ -476,6 +476,7 @@ void EndstonePluginManager::disablePlugin(Plugin &plugin)
     if (plugin.isEnabled()) {
         plugin.getPluginLoader().disablePlugin(plugin);
         server_.getScheduler().cancelTasks(plugin);
+        server_.getServiceManager().unregisterAll(plugin);
         for (auto &[name, handler] : event_handlers_) {
             handler.unregister(plugin);
         }

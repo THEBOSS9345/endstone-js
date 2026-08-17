@@ -23,6 +23,8 @@ enum class ObjectiveRenderType : std::uint8_t {
 
 class ObjectiveCriteria {
 public:
+    ObjectiveCriteria(const std::string &name, bool read_only, ObjectiveRenderType render_type);
+
     [[nodiscard]] const std::string &getName() const { return name_; }
 
     [[nodiscard]] bool isReadOnly() const { return is_read_only_; }
@@ -30,7 +32,7 @@ public:
     [[nodiscard]] ObjectiveRenderType getRenderType() const { return render_type_; }
 
 private:
-    std::string name_;
-    bool is_read_only_;
-    ObjectiveRenderType render_type_;
+    const std::string name_;
+    const bool is_read_only_;
+    const ObjectiveRenderType render_type_;
 };

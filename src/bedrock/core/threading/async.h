@@ -14,12 +14,13 @@
 
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <system_error>
 
 namespace Bedrock::Threading {
 
-class AsyncBase : std::enable_shared_from_this<AsyncBase> {};
+class AsyncBase : public std::enable_shared_from_this<AsyncBase> {};
 
 enum AsyncStatus : unsigned int {
     Started = 0x0,
@@ -37,7 +38,7 @@ public:
 };
 
 template <typename T>
-class IAsyncGetResult : IAsyncInfo {  // size=0x8
+class IAsyncGetResult : public IAsyncInfo {  // size=0x8
 public:
     virtual T getResult() const = 0;
 };
@@ -46,7 +47,7 @@ template <typename T>
 class IAsyncResult : public AsyncBase, public IAsyncGetResult<T> {
 public:
     using Handle = std::shared_ptr<IAsyncResult>;
-    using CompletionHandler = int;
+    using CompletionHandler = std::function<void(const IAsyncResult &)>;
 
     virtual void addOnComplete(CompletionHandler) = 0;
 };

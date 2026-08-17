@@ -5,7 +5,11 @@ Classes relevant to attributes.
 import enum
 import uuid
 
-__all__ = ["Attribute", "AttributeInstance", "AttributeModifier"]
+__all__ = [
+    "Attribute",
+    "AttributeInstance",
+    "AttributeModifier",
+]
 
 class Attribute:
     """
@@ -34,6 +38,7 @@ class AttributeModifier:
     Represents an attribute modifier.
     """
     def __init__(self, name: str, amount: float, operation: Operation) -> None: ...
+
     class Operation(enum.Enum):
         """
         Operation to be applied.
@@ -43,42 +48,55 @@ class AttributeModifier:
         """
         Adds (or subtracts) the specified amount to the base value.
         """
+
         MULTIPLY_BASE = 1
         """
         Multiplies the current value of the attribute by (1 + x), where x is the sum of the modifiers' amounts.
         """
+
         MULTIPLY = 2
         """
         For every modifier, multiplies the current value of the attribute by (1 + x), where x is the amount of the particular modifier.
         """
 
     ADD = Operation.ADD
+    """
+    Adds (or subtracts) the specified amount to the base value.
+    """
+
     MULTIPLY_BASE = Operation.MULTIPLY_BASE
+    """
+    Multiplies the current value of the attribute by (1 + x), where x is the sum of the modifiers' amounts.
+    """
+
     MULTIPLY = Operation.MULTIPLY
+    """
+    For every modifier, multiplies the current value of the attribute by (1 + x), where x is the amount of the particular modifier.
+    """
+
     @property
     def unique_id(self) -> uuid.UUID:
         """
         Get the unique ID for this modifier.
         """
-        ...
+
     @property
     def name(self) -> str:
         """
         Get the name of this modifier.
         """
-        ...
+
     @property
     def amount(self) -> float:
         """
         Get the amount by which this modifier will apply the operation.
         """
-        ...
+
     @property
     def operation(self) -> Operation:
         """
         Get the operation this modifier will apply.
         """
-        ...
 
 class AttributeInstance:
     """
@@ -89,13 +107,13 @@ class AttributeInstance:
         """
         The attribute type pertaining to this instance.
         """
-        ...
+
     @property
     def base_value(self) -> float:
         """
         Base value of this instance before modifiers are applied.
         """
-        ...
+
     @base_value.setter
     def base_value(self, arg1: float) -> None: ...
     @property
@@ -103,20 +121,19 @@ class AttributeInstance:
         """
         Get the value of this instance after all associated modifiers have been applied.
         """
-        ...
+
     @property
     def modifiers(self) -> list[AttributeModifier]:
         """
         Get all modifiers present on this instance.
         """
-        ...
+
     def add_modifier(self, modifier: AttributeModifier) -> None:
         """
         Add a modifier to this instance.
         """
-        ...
+
     def remove_modifier(self, modifier: AttributeModifier) -> None:
         """
         Remove a modifier from this instance.
         """
-        ...

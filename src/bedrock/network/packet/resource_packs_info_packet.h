@@ -15,13 +15,14 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "bedrock/core/resource/content_identity.h"
 #include "bedrock/core/resource/pack_id_version.h"
 #include "bedrock/network/packet.h"
 
 struct PackInfoData {
-    PackIdVersion m_pack_id_version;
+    PackIdVersion pack_id_version;
     std::uint64_t pack_size;
     std::string content_key;
     std::string subpack_name;
@@ -41,11 +42,21 @@ struct PacksInfoData {
     PackIdVersion world_template_id_and_version;
     std::vector<PackInfoData> resource_packs;
 };
-static_assert(sizeof(PacksInfoData) == 80);
+BEDROCK_STATIC_ASSERT_SIZE(PacksInfoData, 80, 80);
+
+struct ResourcePacksInfoPacketPayload {
+    bool resource_pack_required;
+    bool has_addon_packs;
+    bool has_scripts;
+    bool force_disable_vibrant_visuals;
+    PackIdVersion world_template_id_and_version;
+    std::vector<PackInfoData> resource_packs;
+};
+BEDROCK_STATIC_ASSERT_SIZE(ResourcePacksInfoPacketPayload, 80, 80);
 
 class ResourcePacksInfoPacket : public Packet {
 public:
-    PacksInfoData data;                                                   // +48
+    ResourcePacksInfoPacketPayload payload;                               // +48
     SerializationMode serialization_mode{SerializationMode::CerealOnly};  // +128
 };
 BEDROCK_STATIC_ASSERT_SIZE(ResourcePacksInfoPacket, 136, 136);

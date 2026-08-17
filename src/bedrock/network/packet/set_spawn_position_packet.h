@@ -19,6 +19,7 @@
 #include "bedrock/network/network_block_position.h"
 #include "bedrock/network/packet.h"
 #include "bedrock/network/packet/cerealize/core/serialization_mode.h"
+#include "bedrock/world/level/dimension/dimension_type.h"
 
 enum class SpawnPositionType : int {
     PlayerRespawn = 0,

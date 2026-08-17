@@ -253,7 +253,7 @@ void init_event(py::module_ &m, py::class_<Event> &event)
         .def_property_readonly("new_game_mode", &PlayerGameModeChangeEvent::getNewGameMode,
                                "Gets the GameMode the player is switched to.");
     auto player_interact_event = py::class_<PlayerInteractEvent, PlayerEvent, ICancellable>(
-        m, "PlayerInteractEvent", "Represents an event that is called when a player right-clicks a block.");
+        m, "PlayerInteractEvent", "Represents an event that is called when a player interacts with an object or air.");
     py::native_enum<PlayerInteractEvent::Action>(player_interact_event, "Action", "enum.Enum")
         .value("LEFT_CLICK_BLOCK", PlayerInteractEvent::Action::LeftClickBlock)
         .value("RIGHT_CLICK_BLOCK", PlayerInteractEvent::Action::RightClickBlock)

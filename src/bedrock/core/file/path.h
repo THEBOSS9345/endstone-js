@@ -15,56 +15,27 @@
 #pragma once
 
 #include <string>
+#include <string_view>
+#include <utility>
 
 #include <gsl/gsl>
 
 namespace Core {
-
-class PathPart {
-public:
-    PathPart() = default;
-    explicit PathPart(std::string &&str);
-    explicit PathPart(std::string const &str);
-    explicit PathPart(gsl::not_null<const char *> c_str);
-    PathPart(gsl::not_null<const char *> c_str, std::size_t size);
-
-    [[nodiscard]] char const *getUtf8CString() const;
-    [[nodiscard]] std::string const &getUtf8StdString() const;
-    [[nodiscard]] std::size_t size() const;
-    [[nodiscard]] bool empty() const;
-
-private:
-    std::string utf8_std_string_;
-};
-
-class Path {
-public:
-    Path() = default;
-    explicit Path(std::string &&str);
-    explicit Path(std::string const &str);
-    explicit Path(const char *c_str);
-    Path(const char *c_str, std::size_t size);
-
-    [[nodiscard]] char const *getUtf8CString() const;
-    [[nodiscard]] std::string_view getUtf8StringView() const;
-    [[nodiscard]] std::string const &getUtf8StdString() const;
-    [[nodiscard]] std::size_t size() const;
-    [[nodiscard]] bool empty() const;
-
-    static Path const EMPTY;
-
-private:
-    PathPart path_part_;
-};
 
 template <typename T>
 class PathBuffer {
 public:
     PathBuffer() = default;
     explicit PathBuffer(T const &container) : container_(container) {}
+    explicit PathBuffer(T &&container) : container_(std::move(container)) {}
     explicit PathBuffer(const char *c_str) : container_(c_str) {}
-    explicit PathBuffer(Path const &path) : container_(path.getUtf8StdString()) {}
+    explicit PathBuffer(const char *c_str, std::size_t size) : container_(c_str, size) {}
 
+    [[nodiscard]] char const *getUtf8CString() const { return container_.c_str(); }
+    [[nodiscard]] std::string_view getUtf8StringView() const { return container_; }
+    [[nodiscard]] std::string const &getUtf8StdString() const { return container_; }
+    [[nodiscard]] std::size_t size() const { return container_.size(); }
+    [[nodiscard]] bool empty() const { return container_.empty(); }
     T const &getContainer() const { return container_; };
 
 private:
@@ -72,5 +43,12 @@ private:
 };
 
 using HeapPathBuffer = PathBuffer<std::string>;
+
+class Path : public HeapPathBuffer {
+public:
+    using HeapPathBuffer::HeapPathBuffer;
+
+    static Path const EMPTY;
+};
 
 }  // namespace Core

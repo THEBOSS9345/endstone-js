@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <optional>
 #include <string>
 
@@ -24,15 +25,17 @@
 
 struct PlaySoundPacketPayload {
     PlaySoundPacketPayload();
-    PlaySoundPacketPayload(std::string name, const Vec3 &pos, float volume, float pitch,
+    PlaySoundPacketPayload(std::string name, const Vec3 &pos, float volume, float pitch, std::int32_t loop_count,
                            std::optional<ServerSoundHandle> server_sound_handle);
 
     std::string name;
     NetworkBlockPosition pos;
     float volume;
     float pitch;
+    std::int32_t loop_count;
     std::optional<ServerSoundHandle> server_sound_handle;
 };
+BEDROCK_STATIC_ASSERT_SIZE(PlaySoundPacketPayload, 72, 64);
 
 class PlaySoundPacket : public Packet {
 public:

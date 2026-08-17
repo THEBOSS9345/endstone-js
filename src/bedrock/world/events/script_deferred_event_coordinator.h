@@ -21,8 +21,9 @@
 #include "bedrock/world/events/event_coordinator.h"
 #include "bedrock/world/events/script_deferred_event_listener.h"
 
-class ScriptDeferredEventCoordinator : public EventCoordinatorPimpl<ScriptDeferredEventListener> {
-    std::unique_ptr<
-        Bedrock::PubSub::Publisher<void(ScriptDeferredFlushTracker &), Bedrock::PubSub::ThreadModel::MultiThreaded>>
+class ScriptDeferredEventCoordinator : public EventCoordinatorNoTracking<ScriptDeferredEventListener> {
+    std::unique_ptr<Bedrock::PubSub::Publisher<void(ScriptDeferredFlushTracker &),
+                                               Bedrock::PubSub::ThreadModel::MultiThreaded,
+                                               Bedrock::PubSub::ReturnPolicyType::Aggregate>>
         flush_coroutine_publisher_;
 };

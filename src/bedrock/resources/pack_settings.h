@@ -30,9 +30,9 @@ class PackSettings {
 public:
 private:
     const mce::UUID pack_id_;
-    std::weak_ptr<Bedrock::PubSub::Publisher<void(const mce::UUID &, const std::string &,
-                                                  const std::variant<float, bool, std::string> &),
-                                             Bedrock::PubSub::ThreadModel::MultiThreaded>>
+    std::weak_ptr<Bedrock::PubSub::Publisher<
+        void(const mce::UUID &, const std::string &, const std::variant<float, bool, std::string> &),
+        Bedrock::PubSub::ThreadModel::MultiThreaded, Bedrock::PubSub::ReturnPolicyType::Aggregate>>
         on_change_publisher_;
     PackSettingsNameValueMap name_value_map_;
     uint64_t last_used_;

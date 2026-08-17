@@ -30,14 +30,14 @@ public:
     [[nodiscard]] size_t getID() const;
     [[nodiscard]] size_t getVariationCount() const;
     [[nodiscard]] const HashedString &getName() const;
-    virtual void toNBT(CompoundTag &, int) const = 0;
-    virtual bool fromNBT(const CompoundTag &, int &) const = 0;
+    void toNBT(CompoundTag &, int) const;
+    [[nodiscard]] std::optional<int> fromNBT(const CompoundTag &) const;
     static void forEachState(std::function<bool(const BlockState &)> callback)
     {
         static StateListNode *head = *BEDROCK_VAR(StateListNode **, "BlockState::StateListNode::mHead");
         auto *node = head;
         while (node != nullptr) {
-            if (!callback(*node->stat)) {
+            if (!callback(*node->state)) {
                 break;
             }
             node = node->next;
@@ -45,6 +45,8 @@ public:
     }
 
 protected:
+    [[nodiscard]] virtual std::unique_ptr<Tag> _toNBT(int) const = 0;
+    [[nodiscard]] virtual std::optional<int> _fromNBT(const Tag &) const = 0;
     const size_t id_;
     const size_t variation_count_;
     const HashedString name_;
@@ -52,7 +54,7 @@ protected:
         // static StateListNode *head;
         StateListNode *next;
         StateListNode *prev;
-        BlockState *stat;
+        const BlockState *state;
     };
     static_assert(sizeof(StateListNode) == 24);
     StateListNode node_;
@@ -66,8 +68,10 @@ class BlockStateVariant<bool> : public BlockState {
 public:
     BlockStateVariant(size_t, const HashedString &, size_t);
     BlockStateVariant(size_t, const HashedString &, std::initializer_list<bool>);
-    void toNBT(CompoundTag &, int) const override;
-    [[nodiscard]] bool fromNBT(const CompoundTag &, int &) const override;
+
+private:
+    [[nodiscard]] std::unique_ptr<Tag> _toNBT(int) const override;
+    [[nodiscard]] std::optional<int> _fromNBT(const Tag &) const override;
 };
 
 template <>
@@ -75,8 +79,10 @@ class BlockStateVariant<int> : public BlockState {
 public:
     BlockStateVariant(size_t, const HashedString &, size_t);
     BlockStateVariant(size_t, const HashedString &, std::initializer_list<int>);
-    void toNBT(CompoundTag &, int) const override;
-    [[nodiscard]] bool fromNBT(const CompoundTag &, int &) const override;
+
+private:
+    [[nodiscard]] std::unique_ptr<Tag> _toNBT(int) const override;
+    [[nodiscard]] std::optional<int> _fromNBT(const Tag &) const override;
 };
 
 class Block;

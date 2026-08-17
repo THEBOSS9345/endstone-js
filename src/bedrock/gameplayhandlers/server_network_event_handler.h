@@ -20,7 +20,6 @@
 
 class ServerNetworkEventHandler : public GameplayHandler {
 public:
-    ~ServerNetworkEventHandler() override = default;
     virtual GameplayHandlerResult<CoordinatorResult> handleEvent(
         MutableServerNetworkGameplayEvent<CoordinatorResult> &event) = 0;
 };

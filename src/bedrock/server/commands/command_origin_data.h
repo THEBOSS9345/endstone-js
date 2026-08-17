@@ -18,7 +18,7 @@
 
 #include "bedrock/platform/uuid.h"
 
-enum class CommandOriginType : char {
+enum class CommandOriginType : std::uint8_t {
     Player = 0,
     CommandBlock = 1,
     MinecartCommandBlock = 2,
@@ -33,7 +33,7 @@ enum class CommandOriginType : char {
     EntityServer = 11,
     Precompiled = 12,
     GameDirectorEntityServer = 13,
-    Script = 14,
+    Scripting = 14,
     ExecuteContext = 15,
 };
 
@@ -41,5 +41,5 @@ struct CommandOriginData {
     CommandOriginType type;   // +0
     mce::UUID uuid;           // +8
     std::string request_id;   // +24
-    std::uint64_t player_id;  // +56 (+48)
+    std::int64_t player_id;   // +56 (+48)
 };

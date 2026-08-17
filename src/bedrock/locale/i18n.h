@@ -36,7 +36,7 @@ public:
     virtual std::vector<std::string> findAvailableLanguages(ResourcePackManager &) = 0;
     virtual std::unordered_map<std::string, std::string> findAvailableLanguageNames(ResourcePackManager &) = 0;
     virtual Bedrock::Threading::Async<void> loadLanguages(ResourcePackManager &,
-                                                          gsl::not_null<Bedrock::NonOwnerPointer<ResourceLoadManager>>,
+                                                          Bedrock::NotNullNonOwnerPtr<ResourceLoadManager>,
                                                           std::string const &) = 0;
     virtual void loadAllLanguages(ResourcePackManager &) = 0;
     virtual std::vector<std::string> getLanguageCodesFromPack(PackAccessStrategy const &) = 0;
@@ -48,7 +48,7 @@ public:
         PackManifest const &, std::multimap<std::string, std::pair<std::string, std::string>> const &) = 0;
     virtual std::unordered_map<std::string, std::string> getLanguageKeywordsFromPack(PackManifest const &,
                                                                                      std::string const &) = 0;
-    virtual void loadLanguagesByLocale(
+    virtual void loadLangaugesByLocale(
         std::unordered_multimap<std::string, std::pair<std::string, std::string>> const &) = 0;
     virtual void appendAdditionalTranslations(std::unordered_map<std::string, std::string> const &,
                                               std::string const &) = 0;
@@ -61,7 +61,7 @@ public:
     virtual std::string getPackKeywordValue(PackManifest const &, std::string const &) = 0;
     virtual std::string getPackKeywordValueForTelemetry(PackManifest const &, std::string const &) = 0;
     virtual bool hasPackKeyEntry(PackManifest const &, std::string const &) = 0;
-    [[nodiscard]] virtual std::string const &getSupportedLanguageCodes() const = 0;
+    virtual const std::vector<std::string> &getSupportedLanguageCodes() = 0;
     virtual std::string const &getLanguageName(std::string const &) = 0;
     virtual std::shared_ptr<const Localization> getLocaleFor(std::string const &) = 0;
     virtual std::string const &getLocaleCodeFor(std::string const &) = 0;

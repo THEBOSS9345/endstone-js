@@ -25,8 +25,8 @@ struct ConnectionDefinition {
     std::uint16_t ipv4_port;                  // +0
     std::uint16_t ipv6_port;                  // +2
     PortBusyFallbackPolicy fallback;          // +4
-    std::uint32_t max_num_players;            // +8
-    std::uint32_t max_num_connections;        // +12
+    int max_num_players;                      // +8
+    int max_num_connections;                  // +12
     bool is_server_visible_to_lan_discovery;  // +16
     bool allow_unconnected_pongs;             // +17
     bool disable_trickle_ice;

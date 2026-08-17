@@ -14,7 +14,6 @@
 
 #pragma once
 
-#include <optional>
 #include <vector>
 
 #include "bedrock/bedrock.h"
@@ -30,7 +29,7 @@ public:
     };
 
 private:
-    UnlockingContext context_;                                 // +0
-    std::optional<std::vector<RecipeIngredient>> ingredients_;  // +8
+    UnlockingContext context_;                   // +0
+    std::vector<RecipeIngredient> ingredients_;  // +8
 };
-BEDROCK_STATIC_ASSERT_SIZE(RecipeUnlockingRequirement, 40, 40);
+BEDROCK_STATIC_ASSERT_SIZE(RecipeUnlockingRequirement, 32, 32);

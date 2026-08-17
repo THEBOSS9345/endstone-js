@@ -44,7 +44,7 @@ dependencies = [
 dynamic = ["version"]
 
 [project.optional-dependencies]
-dev = ["endstone-stubgen", "pytest"]
+dev = ["pytest"]
 
 [project.urls]
 Changelog = "https://endstone.dev/latest/changelog"
@@ -86,6 +86,8 @@ lint.extend-select = ["I", "E", "F"]
 
 [tool.cibuildwheel]
 skip = ["pp*"]
+# uv runs the stub generator; without it the build falls back to the target interpreter.
+before-build = "pip install uv"
 test-command = "pytest {package}/tests --ignore={package}/tests/endstone_test"
 test-requires = "pytest"
 repair-wheel-command = [
@@ -97,7 +99,7 @@ repair-wheel-command = [
 manylinux-x86_64-image = "ghcr.io/endstonemc/manylinux_2_31_x86_64"
 environment = { LLVM_VERSION = 20, CC = "/usr/bin/clang", CXX = "/usr/bin/clang++" }
 # The runner's ninja is outside the container, and the conan profile needs one on PATH.
-before-build = "pip install ninja"
+before-build = "pip install ninja uv"
 before-all = [
     "apt-get update -y -q && apt-get install -y -q build-essential lsb-release wget software-properties-common gnupg",
     "wget https://apt.llvm.org/llvm.sh && chmod +x llvm.sh && ./llvm.sh ${LLVM_VERSION}",

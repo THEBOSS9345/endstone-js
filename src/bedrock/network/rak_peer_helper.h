@@ -42,8 +42,8 @@ public:
 
     enum class PeerPurpose : int {
         Gameplay = 0,
-        LanDiscovery = 1,
-        Count = 2
+        LAN_Discovery = 1,
+        Count = 2,
     };
 
     ENDSTONE_HOOK RakNet::StartupResult peerStartup(RakNet::RakPeerInterface *, ConnectionDefinition const &,

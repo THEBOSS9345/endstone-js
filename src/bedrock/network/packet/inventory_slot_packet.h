@@ -27,8 +27,8 @@
 
 struct InventorySlotPacketPayload {
     InventorySlotPacketPayload();
-    InventorySlotPacketPayload(ContainerID id, std::uint32_t slot, const ItemStack &item);
-    InventorySlotPacketPayload(ContainerID id, std::uint32_t slot, const ItemStack &item,
+    InventorySlotPacketPayload(ContainerID id, int slot, const ItemStack &item);
+    InventorySlotPacketPayload(ContainerID id, int slot, const ItemStack &item,
                                const FullContainerName &full_container_name, const ItemStack &storage_item);
     ContainerID inventory_id;
     std::uint32_t slot;

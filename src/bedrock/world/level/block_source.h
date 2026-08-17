@@ -62,7 +62,7 @@ public:
     [[nodiscard]] virtual bool hasChunksAt(BlockPos const &, int, bool) const = 0;
     [[nodiscard]] virtual bool hasChunksAt(AABB const &, bool) const = 0;
     [[nodiscard]] virtual DimensionType getDimensionId() const = 0;
-    virtual bool shouldFireEvents(const LevelChunk &) = 0;
+    [[nodiscard]] virtual bool shouldFireEvents(const LevelChunk &) const = 0;
     virtual void fetchAABBs(std::vector<AABB> &, AABB const &, bool) const = 0;
     virtual void fetchCollisionShapes(std::vector<AABB> &, AABB const &, bool,
                                       optional_ref<GetCollisionShapeInterface const>, std::vector<AABB> *) const = 0;

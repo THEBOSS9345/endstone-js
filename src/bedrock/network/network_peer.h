@@ -26,7 +26,7 @@ enum class DevConnectionQuality : int {
     VERY_SLOW = 5,
 };
 
-enum class Compressibility {
+enum class Compressibility : int {
     Compressible = 0,
     Incompressible = 1,
 };
@@ -56,7 +56,7 @@ public:
     using PacketRecvTimepoint = std::chrono::steady_clock::time_point;
     using PacketRecvTimepointPtr = std::shared_ptr<PacketRecvTimepoint>;
 
-    enum class Reliability {
+    enum class Reliability : int {
         Reliable = 0,
         ReliableOrdered = 1,
         Unreliable = 2,
@@ -67,7 +67,25 @@ public:
         NoData = 1,
         BrokenData = 2,
     };
-    struct NetworkStatus {};
+    enum class NetworkLoad : int {
+        Unrestricted = 0,
+        Low = 1,
+        Medium = 2,
+        High = 3,
+    };
+    struct NetworkStatus {
+        NetworkLoad load;
+        std::chrono::milliseconds current_ping;
+        std::chrono::milliseconds average_ping;
+        int approximate_max_bps;
+        float current_packet_loss;
+        float average_packet_loss;
+        std::uint64_t total_bytes_received;
+        std::uint64_t total_bytes_sent;
+        std::uint64_t current_bytes_send_buffer;
+        int ice_state;
+        bool using_relays;
+    };
 
     virtual ~NetworkPeer() = default;
     virtual void sendPacket(const std::string &, Reliability, Compressibility) = 0;

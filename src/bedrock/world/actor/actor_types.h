@@ -23,7 +23,7 @@ enum class ActorType : int {
     Animal = 0x00001000 | PathfinderMob,
     TamableAnimal = 0x00004000 | Animal,
     Ambient = 0x00008000 | Mob,
-    Undead = 0x00010000,
+    Undead = 0x00010000 | Mob,
     UndeadMonster = Undead | Monster,
     ZombieMonster = 0x00020000 | UndeadMonster,
     Arthropod = 0x00040000 | Monster,
@@ -173,7 +173,9 @@ enum class ActorType : int {
     Nautilus = 149 | WaterAnimal,
     ZombieNautilus = 150 | WaterAnimal | Undead,
     Parched = 151 | SkeletonMonster,
-    CamelHusk = 152 | Undead,
+    CamelHusk = 152 | Undead | Animal,
+    SulfurCube = 153 | PathfinderMob,
+    Cushion = 154,
 };
 
 constexpr ActorType operator&(const ActorType lhs, const ActorType rhs)

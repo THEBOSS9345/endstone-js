@@ -337,7 +337,7 @@ std::vector<std::string> Actor::getTags() const
     if (!component) {
         return {};
     }
-    return getLevel().getTagRegistry().getTagsInSet(component->tag_set_id);
+    return const_cast<Level &>(getLevel()).getTagRegistry().getTagsInSet(component->tag_set_id);
 }
 
 bool Actor::addTag(const std::string &tag)

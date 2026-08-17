@@ -14,11 +14,16 @@
 
 #pragma once
 
+#include <cstdint>
+
 class SaveContext {
     enum class SaveUseCase : std::uint8_t {
         SaveToDisk = 0,
         SendOverNetwork = 1,
         Clone = 2,
+        Move = 3,
+        // TODO(fixme): check the name
+        BlockActorToItemUserData = 4,
     };
     enum class SaveOperation : std::uint8_t {
         DeepCopy = 0,

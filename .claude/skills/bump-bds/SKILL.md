@@ -154,6 +154,16 @@ iteratively; never batch many unverified ABI edits.**
   used across many headers goes in `src/bedrock/forward.h` (alphabetical); for a
   heavy include chain, forward-declare and use the type incomplete (fine for
   pointers, references, and container value types).
+- **Every header must be self-contained.** A sweep that adds one `#include` to
+  an events/shard header can re-order the whole chain and expose headers that
+  were silently borrowing a transitive include - the symptom is `no template
+  named 'X'` plus a cascade of `static_assert` size failures in a file the sweep
+  never touched. Include what you use, in the file that uses it. Verify with a
+  one-line TU (`#include "<the header>"`) compiled `/Zs` (`-fsyntax-only`) using
+  flags lifted from the **build log**, not from the repo-root
+  `compile_commands.json`, which goes stale and can miss defines (`-DNOMINMAX`,
+  `-DWIN32_LEAN_AND_MEAN`). Sweep the whole sibling directory at once - latent
+  cases cluster.
 - **Structural refactors** - when BDS introduces a base class, mirror it (add
   the base header, re-parent, move shared members down). When BDS removes a
   class, `git rm` once `grep` confirms nothing references it. Follow BDS
@@ -587,6 +597,17 @@ check can ever detect.
   divergence to the end moved by exactly the same delta, there is exactly ONE
   change and nothing before it moved. A mixed band (some +8, some 0, some +16)
   means multiple changes - keep going.
+- **Index-align the two dtors' displacement LISTS, don't set-difference them.**
+  Collect the distinct `this`-relative displacements each version's D1 touches,
+  sort both, and pair them up by index. When the two lists are the same length
+  the pairing is exact and every shift boundary falls out in one read - a run of
+  `d -> d`, then a run of `d -> d-8`, then `d -> d-16` says there are two
+  independent 8-byte shrinks and tells you the offset each one starts at. A set
+  difference of the same two lists just yields two unaligned piles that look
+  like seven unrelated changes. `ResourcePackManager @ 1.26.44`: unchanged
+  through 144, -8 from 160, -16 from 360, which located both shrinks without
+  decompiling anything. Cross-check the count first - if the lists differ in
+  length, a member was added or removed and index pairing is invalid.
 - **Base-class removal is visible in the typeinfo kind.** Itanium
   `__vmi_class_type_info` (multiple bases, with the secondary vtable groups) ->
   `__si_class_type_info` (single base) is a removed base, and the removed base's
@@ -705,6 +726,23 @@ Two things that make the guard weaker than it looks:
   `ResourcePacksInfoPacket` asserted 128 against a 136-byte object,
   `ClientboundMapItemDataPacket` 200 against 208; both packets are read and
   mutated by hooks).
+- **Sweep the asserts mechanically, but trust the DIFFERENTIAL, not the absolute.**
+  Parse every `BEDROCK_STATIC_ASSERT_SIZE` for its class name, mangle it to
+  `_ZTS<len><Class>` (nested -> `N..E`), and run the Itanium-D0 `sizeof` oracle
+  against **both** the old and the new binary. Comparing new-vs-old is reliable
+  because the same picker runs on both; comparing the oracle's absolute answer
+  against the asserted literal is **not** - a heuristic that takes the first
+  early slot tail-calling sized `operator delete` mis-fires on abstract bases
+  and on classes whose dtor pair is not at slots 0/1, and reports nonsense like
+  `Packet` = 8 or `PlayerAuthInputPacket` = 72. Validate the method per class by
+  requiring it to reproduce the *old* asserted number first; where it does, a
+  changed new number is real. 1.26.44's only genuine hit was
+  `ResourcePackManager` 416 -> 400 (Linux), and the method reproduced 416
+  exactly on 1.26.40, which is what made 400 trustworthy.
+- **Non-polymorphic classes are invisible to this sweep** (no vtable, no D0) -
+  in practice ~half the asserted list, including most `*Payload` structs. Report
+  them as unresolved rather than as "unchanged"; they need the cereal-manager or
+  factory oracles instead.
 - **No `// ...` marker does not mean the class is complete.** `ServerInstance`
   carries no marker yet declares 936 of 1080 bytes. So "add asserts to every
   unmarked class" is not a mechanical sweep: derive the real size first, and
@@ -928,6 +966,55 @@ the `SerializationMode` accessors.
    its declaration order (teardown offsets map 1:1 onto the 1.26.32 order) even
    though `settings` is the *sixth* field on the wire, because registration order
    is chosen independently of declaration order.
+22. **`cerealizer<T>::bind` is the exact wire field list, and it tells a variant
+   TAG from a real member by how each is bound.** Reach it by grepping the binary
+   for the type-name literal (`"RemoveScore"`) and taking the lone data xref. A
+   genuine data member goes through `cereal::BasicFactory<T>::_bindInternalCommon`
+   and carries a `meta_setter_<T>_&T::m<Field>_`; the discriminant is instead bound
+   straight through `basic_meta_factory::data` + `custom(MemberDescriptor)` with
+   `traits = is_static|is_const` and a *constant-returning* getter named
+   `meta_getter_<T>_<N>_`, `<N>` being that case's tag value. Each entry also
+   installs a `TypeSchema<...>` vftable that spells the member's type outright
+   (`TypeSchema<std::optional<std::string>>`).
+   - **A registered `is_static|is_const` member IS still written to the wire** -
+     as cereal's name-coded string. It is a constant, not a stored field, and it
+     is absent from the C++ struct, but the serializer emits it all the same. So
+     a cerealised variant entry carries the discriminant **TWICE**: first the
+     `uvarint32` case index, then that constant again as a length-prefixed name.
+     `SetScorePacket @ 1.26.44` on the wire is
+     `01 | 00 | 06 "remove" | e0 02 | 01 | 01 | 04 "demo"` =
+     count, index 0, name `"remove"`, scoreboard id, the new keyed bool, the
+     optional's presence bool, the objective name.
+   - **Do not read "the struct has no member" as "the wire has no field".**
+     bedrock-headers shows `RemoveScore` as just `mScoreboardId` +
+     `mObjectiveName`, and protocol-docs prints the constant twice (packet-level
+     `switch` plus a per-case `"Action"` of the enum's string type). Both are
+     accurate; neither means one tag. `bedrock-protocol`'s
+     `action: SomeEnum = field(type=str)` was the model that had it right, and
+     `field(type=str)` generating a name-coded serializer is the *point*, not an
+     artifact.
+   - **The name-coded string is not the C++ enumerator spelling.** The binary
+     carries `"ChangeFakePlayer"` as a literal, but the wire writes lowercase
+     `"remove"`. Casing is per enum ([[project_bds_cereal_enum_wire_names]]), so
+     never derive it - and when only transforming a payload, read the case from
+     the index and copy the name through verbatim rather than interpreting it.
+   - This one is only settleable by **capturing a live packet**. The cerealizer
+     binding, protocol-docs and bedrock-headers were each individually
+     consistent with a single one-byte tag, and all three readings were wrong.
+     A 4-case variant plus a short name string still looks plausible at a glance,
+     so budget for a capture before shipping a byte-level rewrite.
+   - **In a CEREALISED packet a variant tag is always a `uvarint32`**, whatever
+     the enum's underlying type says. This is a cereal rule, not a universal one:
+     a hand-written `write` picks its own width and often spells the same
+     discriminant as a plain `uint8`. So establish which kind of packet it is
+     before encoding anything - **presence in `protocol-docs` IS the test: if a
+     packet is not documented there, it is not cerealised**, and its tag width
+     comes from reading its manual `write`. Everything from protocol 2168 onward
+     is cerealised; earlier releases are a mix.
+   - The trap is that it is invisible: a 4-case variant's tag fits in one byte,
+     so reading a cerealised tag as `uint8` is byte-identical and stays correct
+     until a variant grows past 128 cases. Encode to the packet's actual kind
+     rather than to what the bytes happen to look like today.
 
 Worked example: **BossEventPacket @ 1.26.32** - migrated to cereal-only;
 `color`/`overlay` narrowed 4B->1B, both `darken`/`fog` bools removed, a
@@ -1102,6 +1189,22 @@ any pattern-only table however the version was resolved.
      qword instead (points into `.text` / into `.rdata` / zero / plain data) and
      compare the **total count of code pointers**. Equal counts across versions
      = no vtable slot added or removed binary-wide.
+   - **When the counts DON'T match, the global number proves nothing - diff
+     per class by RTTI before believing it.** Key every vtable by its Itanium
+     typeinfo name (`_ZTS...` -> typeinfo -> address points with a
+     non-relocated `offset_to_top == 0`), record each class's slot-run lengths,
+     and compare the two name-keyed maps. That turns "18 code pointers
+     disappeared, something moved" into a named set difference. 1.26.44 read
+     -18 on Linux / -7 on Windows and the per-class diff over ~45k classes
+     showed **zero** classes changed shape: the delta was three whole classes
+     going away (a cereal constraint helper plus its and one other
+     `__shared_ptr_emplace<T>` control-block vtable). Template instantiations
+     appearing and vanishing is routine churn and moves the global count
+     without any class changing - only the per-class diff separates the two.
+   - A vanished `__shared_ptr_emplace<T>` is also a **free lead**: it means
+     nothing calls `make_shared<T>` any more, which usually pairs with a member
+     somewhere changing `shared_ptr<T>` -> `unique_ptr<T>`. Go looking for it
+     rather than waiting for the crash.
 4. **Protocol version, statically.** `SharedConstants::NetworkProtocolVersion`
    is compared directly inside
    `ServerNetworkHandler::_validateLoginPacket`, whose offset the table already
@@ -1365,6 +1468,31 @@ only a tiny `.dynsym`), so every Linux entry is pattern-resolved too.
   only some files of a stage (e.g. some `network/packet/*` but not all) and left
   `.cpp` files referencing the pre-refactor shape. Build early; the first compile
   pass surfaces these gaps.
+
+### Adding a pure virtual makes every embedder abstract
+
+- A pure virtual added to a base class propagates: `field type '...' is an
+  abstract class` at every by-value member, far from the edit. A pure virtual
+  *destructor* never does this - the implicitly-declared derived destructor
+  overrides it. Any other pure virtual needs an explicit override somewhere down
+  the chain.
+- Declare the override where the headers put it, not where it is convenient. The
+  DWARF dump for a class defined inside a `.cpp` lands in
+  `bedrock-headers/src/.../<Name>.cpp`, not the matching `.h` - grep both.
+- A declared-but-undefined virtual is a link error only if the vtable is emitted,
+  which for these class templates needs a constructor or destructor to be
+  odr-used. Two ways to check before paying for a build:
+  - `llvm-nm` the object files a previous build already left in the build tree
+    and grep for the mangled type name. No symbol in any `.obj` means nothing
+    forces emission.
+  - Write a probe `.cpp` that constructs the type, compile it with `-c`, and
+    `llvm-nm -u` it. This proves the check is sensitive, and it lists the other
+    declaration-only symbols the same vtable already needs. If those already
+    exist in a tree that links, the new declaration adds no risk.
+- To compile a single TU without touching the build tree, lift the flags from a
+  `FAILED:` line in the build log (**not** the repo-root `compile_commands.json`,
+  which can be stale) and use clang-cl `/Zs`; add `-ferror-limit=0` so unrelated
+  breakage does not hide your error.
 
 ## Record findings here
 

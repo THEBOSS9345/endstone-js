@@ -20,8 +20,13 @@
 #include "bedrock/util/data_io.h"
 
 namespace NbtIo {
-Bedrock::Result<std::unique_ptr<Tag>> readNamedTag(IDataInput &dis, std::string &name);
+constexpr int MAX_NESTING_DEPTH = 512;
+
+Bedrock::Result<void> loadTagPayload(Tag &tag, IDataInput &dis, int depth);
+Bedrock::Result<std::unique_ptr<Tag>> readNamedTag(IDataInput &dis, std::string &name, int depth);
 Bedrock::Result<std::unique_ptr<CompoundTag>> readNamedCompoundTag(IDataInput &dis, std::string &name);
 void writeNamedTag(const std::string &name, const Tag &tag, IDataOutput &output);
+void writeTagPayload(const Tag &tag, IDataOutput &output, int depth);
+void writeNamedTag(const std::string &name, const Tag &tag, IDataOutput &output, int depth);
 std::unique_ptr<CompoundTag> readOrGetEmpty(IDataInput &dis);
 }  // namespace NbtIo

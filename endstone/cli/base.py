@@ -20,6 +20,13 @@ from packaging.version import Version
 from rich.progress import BarColumn, DownloadColumn, Progress, TextColumn, TimeRemainingColumn
 
 from endstone import __minecraft_version__
+from endstone.cli import _properties
+
+# server.properties entries where Endstone's default differs from Mojang's.
+_SERVER_PROPERTY_OVERRIDES = {
+    "server-name": "Endstone Server",
+    "client-side-chunk-generation-enabled": False,
+}
 
 
 class Bootstrap:
@@ -89,7 +96,7 @@ class Bootstrap:
         if version != metadata["version"]:
             raise ValueError(f"Version mismatch, expect: {version}, actual: {metadata['version']}")
 
-        should_modify_server_properties = True
+        default_properties: Union[str, None] = None
 
         with tempfile.TemporaryFile(dir=dst) as f:
             url = metadata["binary"][self.target_system.lower()]["url"]
@@ -131,32 +138,70 @@ class Bootstrap:
                     dest_path = dst / file
                     if dest_path.exists():
                         if not any(fnmatch.fnmatch(file, pattern) for pattern in override_patterns):
-                            should_modify_server_properties = False
+                            if file == "server.properties":
+                                default_properties = zip_ref.read(file).decode("utf-8")
                             self._logger.info(f"{dest_path} already exists, skipping.")
                             continue
 
                     zip_ref.extract(file, dst)
 
-        if should_modify_server_properties:
-            properties = dst / "server.properties"
-            with properties.open("r", encoding="utf-8") as file:
-                in_lines = file.readlines()
-
-            out_lines = []
-            for line in in_lines:
-                if line.strip() == "server-name=Dedicated Server":
-                    out_lines.append("server-name=Endstone Server\n")
-                elif line.strip() == "client-side-chunk-generation-enabled=true":
-                    out_lines.append("client-side-chunk-generation-enabled=false\n")
-                else:
-                    out_lines.append(line)
-
-            with properties.open("w", encoding="utf-8") as file:
-                file.writelines(out_lines)
+        self._update_server_properties(dst / "server.properties", default_properties)
 
         version_file = dst / "version.txt"
         with version_file.open("w", encoding="utf-8") as file:
             file.writelines(str(self.minecraft_version))
+
+    def _update_server_properties(self, path: Path, defaults: Union[str, None]) -> None:
+        """
+        Applies the Endstone defaults to a freshly extracted server.properties, or, when the server already had one,
+        appends the entries this version of the Bedrock Dedicated Server added, leaving the user's values alone.
+        """
+        if not path.exists():
+            return
+
+        with path.open("r", encoding="utf-8", newline="") as file:
+            props = _properties.load(file)
+
+        if defaults is None:
+            for key, value in _SERVER_PROPERTY_OVERRIDES.items():
+                if key in props:
+                    props[key] = value
+        else:
+            added = self._merge_server_properties(_properties.loads(defaults), props)
+            if not added:
+                return
+            self._logger.info(f"Added {len(added)} new entries to server.properties: {', '.join(added)}")
+
+        with path.open("w", encoding="utf-8", newline="") as file:
+            _properties.dump(props, file)
+
+    @staticmethod
+    def _merge_server_properties(defaults: _properties.Properties, props: _properties.Properties) -> list[str]:
+        """
+        Appends every property in defaults that props lacks, along with the comments documenting it, which the Bedrock
+        Dedicated Server writes below the property rather than above it.
+        """
+        added = []
+        body = defaults.body
+        for i, item in enumerate(body):
+            if not isinstance(item, _properties.Property) or item.key in props:
+                continue
+
+            if item.key in _SERVER_PROPERTY_OVERRIDES:
+                item.value = _SERVER_PROPERTY_OVERRIDES[item.key]
+
+            if props.body and not isinstance(props.body[-1], _properties.Whitespace):
+                props.add_blank()
+
+            props.append(item)
+            for trailing in body[i + 1 :]:
+                if not isinstance(trailing, _properties.Comment):
+                    break
+                props.append(trailing)
+
+            added.append(item.key)
+
+        return added
 
     def _prepare(self) -> None:
         # ensure the plugin folder exists

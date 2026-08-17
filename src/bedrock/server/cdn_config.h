@@ -23,7 +23,7 @@ public:
     std::vector<std::pair<std::string, std::string>> getCDNUrls() { return pack_cdn_urls_; }
 
 private:
-    void _readConfigFile(const Core::Path &);
+    void _readConfigFile();
     std::vector<std::pair<std::string, std::string>> pack_cdn_urls_;
     Core::Path path_;
 };

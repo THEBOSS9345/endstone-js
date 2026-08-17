@@ -22,6 +22,7 @@
 #include "bedrock/gamerefs/weak_ref.h"
 #include "bedrock/input/input_mode.h"
 #include "bedrock/input/scripting_input_button.h"
+#include "bedrock/network/packet/set_title_packet.h"
 #include "bedrock/world/actor/actor_damage_source.h"
 #include "bedrock/world/actor/actor_swing_source.h"
 #include "bedrock/world/actor/armor_slot.h"
@@ -60,10 +61,39 @@ struct PlayerDestroyBlockEvent {
     FacingID face;
     gsl::not_null<const Block *> block;
 };
+struct PlayerMeCommandEvent {
+    std::string sender;
+    std::string message;
+    std::optional<std::string> filtered_message;
+};
 struct PlayerSayCommandEvent {
     std::string sender;
     std::string message;
     std::optional<std::string> filtered_message;
+};
+struct PlayerTellCommandEvent {
+    std::string sender;
+    std::vector<WeakRef<EntityContext>> targets;
+    std::string message;
+    std::optional<std::string> filtered_message;
+};
+struct PlayerTellRawCommandEvent {
+    std::string sender;
+    std::vector<WeakRef<EntityContext>> targets;
+    std::string message;
+};
+struct PlayerTitleCommandEvent {
+    std::string sender;
+    std::vector<WeakRef<EntityContext>> targets;
+    std::string title;
+    std::optional<std::string> filtered_title;
+    SetTitlePacketPayload::TitleType title_type;
+};
+struct PlayerTitleRawCommandEvent {
+    std::string sender;
+    std::vector<WeakRef<EntityContext>> targets;
+    std::string message;
+    SetTitlePacketPayload::TitleType title_type;
 };
 struct PlayerUseNameTagEvent {
     WeakRef<EntityContext> player;
@@ -212,9 +242,9 @@ enum class DataDrivenScreenClosedReason : uint8_t {
     InvalidForm = 4,
 };
 struct PlayerDataDrivenScreenClosedEvent {
-    WeakRef<EntityContext> mPlayer;
-    uint32_t mFormId;
-    DataDrivenScreenClosedReason mCloseReason;
+    WeakRef<EntityContext> player;
+    uint32_t form_id;
+    DataDrivenScreenClosedReason close_reason;
 };
 struct PlayerDisconnectEvent {
     WeakEntityRef player;
@@ -277,17 +307,9 @@ struct PlayerGameplayEvent<void>
           PlayerInputPermissionCategoryChangeEvent> {};
 static_assert(sizeof(PlayerGameplayEvent<void>) == 384);
 
-struct PlayerTellCommandEvent {};
-struct PlayerTellRawCommandEvent {};
-struct PlayerTitleCommandEvent {};
-struct PlayerTitleRawCommandEvent {};
-
-// TODO(fixme): check the name
-struct UnknownPlayerEvent0 {};  // added in 1.26.40 at index 0; 104 bytes, same shape as PlayerSayCommandEvent
-
 template <>
 struct PlayerGameplayEvent<CoordinatorResult>
-    : ConstEventVariant<UnknownPlayerEvent0, PlayerSayCommandEvent, PlayerTellCommandEvent, PlayerTellRawCommandEvent,
+    : ConstEventVariant<PlayerMeCommandEvent, PlayerSayCommandEvent, PlayerTellCommandEvent, PlayerTellRawCommandEvent,
                         PlayerTitleCommandEvent, PlayerTitleRawCommandEvent, PlayerGetExperienceOrbEvent,
                         PlayerInteractEvent, PlayerInteractWithEntityBeforeEvent, PlayerInteractWithBlockBeforeEvent> {
 };

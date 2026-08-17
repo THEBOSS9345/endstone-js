@@ -14,9 +14,16 @@
 
 #pragma once
 
+#include <vector>
+
+#include "bedrock/core/resource/pack_id_version.h"
 #include "bedrock/core/utility/enable_non_owner_references.h"
 
 namespace PackCommand {
+
+struct UpgradeLegacyDependencies {
+    std::vector<PackIdVersion> new_dependencies;
+};
 
 class IPackCommandPipeline : public Bedrock::EnableNonOwnerReferences {
 public:

@@ -16,7 +16,7 @@
 
 #include "bedrock/symbol.h"
 
-CraftingDataPacketPayload CraftingDataPacket::prepareFromRecipes(const Recipes &recipe, bool only_crafting_recipes)
+CraftingDataPacketPayload CraftingDataPacketPayload::fromRecipes(const Recipes &recipe, bool only_crafting_recipes)
 {
-    return BEDROCK_CALL(&CraftingDataPacket::prepareFromRecipes, recipe, only_crafting_recipes);
+    return BEDROCK_CALL(&CraftingDataPacketPayload::fromRecipes, recipe, only_crafting_recipes);
 }

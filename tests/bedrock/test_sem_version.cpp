@@ -102,3 +102,117 @@ TEST(SemVersionTest, InequalityOperator)
     EXPECT_TRUE(SemVersion(1, 0, 0, "beta.11") < SemVersion(1, 0, 0, "rc.1"));
     EXPECT_TRUE(SemVersion(1, 0, 0, "rc.1") < SemVersion(1, 0, 0));
 }
+
+TEST(SemVersionTest, RelationalOperators)
+{
+    const SemVersion older(1, 26, 40);
+    const SemVersion newer(1, 26, 44);
+    const SemVersion same(1, 26, 44);
+
+    EXPECT_TRUE(older < newer);
+    EXPECT_TRUE(older <= newer);
+    EXPECT_TRUE(newer > older);
+    EXPECT_TRUE(newer >= older);
+
+    EXPECT_FALSE(newer < older);
+    EXPECT_FALSE(newer <= older);
+    EXPECT_FALSE(older > newer);
+    EXPECT_FALSE(older >= newer);
+
+    EXPECT_FALSE(newer > same);
+    EXPECT_TRUE(newer >= same);
+    EXPECT_TRUE(newer <= same);
+}
+
+TEST(SemVersionFromStringTest, FullVersion)
+{
+    SemVersion version;
+    EXPECT_EQ(SemVersion::fromString("1.26.44", version, SemVersion::ParseOption::NoWildcards),
+              SemVersion::MatchType::Full);
+    EXPECT_TRUE(version.isValid());
+    EXPECT_FALSE(version.isAnyVersion());
+    EXPECT_EQ(version.getMajor(), 1);
+    EXPECT_EQ(version.getMinor(), 26);
+    EXPECT_EQ(version.getPatch(), 44);
+    EXPECT_EQ(version.asString(), "1.26.44");
+}
+
+TEST(SemVersionFromStringTest, PreReleaseAndBuildMeta)
+{
+    SemVersion version;
+    EXPECT_EQ(SemVersion::fromString("1.2.3-alpha.1+build.456", version, SemVersion::ParseOption::NoWildcards),
+              SemVersion::MatchType::Full);
+    // STREQ, not EQ: StaticOptimizedString decays to const char *, so EQ compares pointers.
+    EXPECT_STREQ(version.getPreRelease(), "alpha.1");
+    EXPECT_STREQ(version.getBuildMeta(), "build.456");
+    EXPECT_EQ(version.asString(), "1.2.3-alpha.1+build.456");
+}
+
+// A missing minor or patch still parses, but only as a partial match.
+TEST(SemVersionFromStringTest, PartialVersion)
+{
+    SemVersion version;
+    EXPECT_EQ(SemVersion::fromString("1.26", version, SemVersion::ParseOption::NoWildcards),
+              SemVersion::MatchType::Partial);
+    EXPECT_EQ(version.getMajor(), 1);
+    EXPECT_EQ(version.getMinor(), 26);
+    EXPECT_EQ(version.getPatch(), 0);
+
+    EXPECT_EQ(SemVersion::fromString("1", version, SemVersion::ParseOption::NoWildcards),
+              SemVersion::MatchType::Partial);
+    EXPECT_EQ(version.getMajor(), 1);
+    EXPECT_EQ(version.getMinor(), 0);
+    EXPECT_EQ(version.getPatch(), 0);
+}
+
+TEST(SemVersionFromStringTest, WildcardDependsOnParseOption)
+{
+    SemVersion version;
+    EXPECT_EQ(SemVersion::fromString("*", version, SemVersion::ParseOption::AllowWildcards),
+              SemVersion::MatchType::Full);
+    EXPECT_TRUE(version.isValid());
+    EXPECT_TRUE(version.isAnyVersion());
+    EXPECT_EQ(version.asString(), "*");
+
+    SemVersion rejected;
+    EXPECT_EQ(SemVersion::fromString("*", rejected, SemVersion::ParseOption::NoWildcards),
+              SemVersion::MatchType::None);
+    EXPECT_FALSE(rejected.isValid());
+    EXPECT_FALSE(rejected.isAnyVersion());
+}
+
+TEST(SemVersionFromStringTest, BetaTag)
+{
+    SemVersion version;
+    EXPECT_EQ(SemVersion::fromString("beta", version, SemVersion::ParseOption::NoWildcards),
+              SemVersion::MatchType::Full);
+    EXPECT_TRUE(version.isValid());
+    EXPECT_EQ(version.getMajor(), SemVersion::BetaVersionNumber);
+    EXPECT_EQ(version.getMinor(), SemVersion::BetaVersionNumber);
+    EXPECT_EQ(version.getPatch(), SemVersion::BetaVersionNumber);
+    EXPECT_STREQ(version.getPreRelease(), "beta");
+}
+
+TEST(SemVersionFromStringTest, RejectsMalformed)
+{
+    SemVersion version;
+    for (const auto *src : {"", "abc", "1.2.3.4", "01", "1.", "1.2.3-", ".1.2", "1.2.3 "}) {
+        EXPECT_EQ(SemVersion::fromString(src, version, SemVersion::ParseOption::NoWildcards),
+                  SemVersion::MatchType::None)
+            << "expected \"" << src << "\" to be rejected";
+    }
+}
+
+// The whole point of the SetScorePacket gate: an older client must compare less.
+TEST(SemVersionFromStringTest, OrdersParsedVersions)
+{
+    SemVersion older;
+    SemVersion newer;
+    ASSERT_NE(SemVersion::fromString("1.26.40", older, SemVersion::ParseOption::NoWildcards),
+              SemVersion::MatchType::None);
+    ASSERT_NE(SemVersion::fromString("1.26.44", newer, SemVersion::ParseOption::NoWildcards),
+              SemVersion::MatchType::None);
+    EXPECT_TRUE(older < newer);
+    EXPECT_FALSE(newer < older);
+    EXPECT_FALSE(newer < SemVersion(1, 26, 44));
+}

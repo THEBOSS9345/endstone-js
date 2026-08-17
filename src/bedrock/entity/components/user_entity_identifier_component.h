@@ -24,8 +24,8 @@
 
 class UserEntityIdentifierComponent {
 public:
-    UserEntityIdentifierComponent(const NetworkIdentifier &, SubClientId, mce::UUID, const std::string &,
-                                  PlayerAuthenticationType, const PlayerAuthenticationInfo &);
+    UserEntityIdentifierComponent(const NetworkIdentifier &, SubClientId, mce::UUID, PlayerAuthenticationType,
+                                  const PlayerAuthenticationInfo &);
 
     static UserEntityIdentifierComponent *tryGetFromEntity(EntityContext &);
     static const UserEntityIdentifierComponent *tryGetFromEntity(const EntityContext &);
@@ -34,7 +34,7 @@ public:
     [[nodiscard]] bool isLoggedIntoXboxLive() const;
     [[nodiscard]] const NetworkIdentifier &getNetworkId() const { return network_id_; }
     [[nodiscard]] SubClientId getSubClientId() const { return client_sub_id_; }
-    [[nodiscard]] std::string getUnverifiedPlayFabId() const;
+    [[nodiscard]] std::string getPlayFabId() const;
     [[nodiscard]] mce::UUID getClientUUID() const { return client_uuid_; }
     [[nodiscard]] std::string getIdentityName() const;
     [[nodiscard]] std::string getXuid(bool trust_self_signed) const { return trusted_player_info_.xuid; }

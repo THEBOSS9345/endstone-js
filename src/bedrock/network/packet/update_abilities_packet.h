@@ -18,9 +18,14 @@
 #include "bedrock/network/packet/cerealize/core/serialization_mode.h"
 #include "bedrock/network/packet/types/world/actor/serialized_abilities_data.h"
 
+struct UpdateAbilitiesPacketPayload {
+    SerializedAbilitiesData data;  // +0
+};
+BEDROCK_STATIC_ASSERT_SIZE(UpdateAbilitiesPacketPayload, 40, 40);
+
 class UpdateAbilitiesPacket : public Packet {
 public:
-    SerializedAbilitiesData data;                                                      // +48
+    UpdateAbilitiesPacketPayload payload;                                               // +48
     SerializationMode serialization_mode{SerializationMode::SideBySide_LogOnMismatch};  // +88
 };
 BEDROCK_STATIC_ASSERT_SIZE(UpdateAbilitiesPacket, 96, 96);

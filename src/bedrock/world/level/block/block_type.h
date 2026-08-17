@@ -34,6 +34,7 @@
 #include "bedrock/world/flip.h"
 #include "bedrock/world/item/item_category.h"
 #include "bedrock/world/level/block/actor/block_actor_type.h"
+#include "bedrock/world/level/block/block_client_prediction_overrides.h"
 #include "bedrock/world/level/block/components/block_component_storage.h"
 #include "bedrock/world/level/block/resource_drops_context.h"
 #include "bedrock/world/level/block/states/block_state.h"
@@ -64,47 +65,37 @@ enum class BlockProperty : std::uint64_t {
     TopSnow = 0x8,
     FenceGate = 0x10,
     Leaves = 0x20,
-    ThinConnects2D = 0x40,
-    Connects2D = 0x80,
-    Carpet = 0x100,
-    Button = 0x200,
-    Door = 0x400,
-    Portal = 0x800,
-    CanFall = 0x1000,
-    Snow = 0x2000,
-    Trap = 0x4000,
-    Sign = 0x8000,
-    Walkable = 0x10000,
-    PressurePlate = 0x20000,
-    // PistonBlockGrabber = 0x40000,
-    TopSolidBlocking = 0x80000,
-    CubeShaped = 0x200000,
-    Power_NO = 0x400000,
-    Power_BlockDown = 0x800000,
-    Immovable = 0x1000000,
-    // BreakOnPush = 0x2000000,
-    Piston = 0x4000000,
-    InfiniBurn = 0x8000000,
-    RequiresWorldBuilder = 0x10000000,
-    CausesDamage = 0x20000000,
-    BreaksWhenFallenOnByFallingBlock = 0x40000000,
-    // OnlyPistonPush = 0x80000000,
-    Liquid = 0x100000000,
-    // CanBeBuiltOver = 0x200000000,
-    // SnowRecoverable = 0x400000000,
-    Scaffolding = 0x800000000,
-    CanSupportCenterHangingBlock = 0x1000000000,
-    BreaksWhenHitByArrow_DEPRECATED = 0x2000000000,
-    Unwalkable = 0x4000000000,
-    Hollow = 0x10000000000,
-    OperatorBlock = 0x20000000000,
-    SupportedByFlowerPot = 0x40000000000,
-    PreventsJumping = 0x80000000000,
-    ContainsHoney = 0x100000000000,
-    Slime = 0x200000000000,
-    SculkReplaceable_DEPRECATED = 0x400000000000,
-    Climbable = 0x800000000000,
-    CanHaltWhenClimbing = 0x1000000000000,
+    Connects2D = 0x40,
+    Carpet = 0x80,
+    Button = 0x100,
+    Door = 0x200,
+    Portal = 0x400,
+    CanFall = 0x800,
+    Snow = 0x1000,
+    Trapdoor = 0x2000,
+    Sign = 0x4000,
+    Walkable = 0x8000,
+    PressurePlate = 0x10000,
+    TopSolidBlocking = 0x20000,
+    CubeShaped = 0x40000,
+    Piston = 0x80000,
+    InfiniBurn = 0x100000,
+    RequiresWorldBuilder = 0x200000,
+    CausesDamage = 0x400000,
+    BreaksWhenFallenOnByFallingBlock = 0x800000,
+    Liquid = 0x1000000,
+    Scaffolding = 0x2000000,
+    CanSupportCenterHangingBlock = 0x4000000,
+    Unwalkable = 0x8000000,
+    Hollow = 0x10000000,
+    OperatorBlock = 0x20000000,
+    PreventsJumping = 0x40000000,
+    ContainsHoney = 0x80000000,
+    Slime = 0x100000000,
+    Climbable = 0x200000000,
+    CanHaltWhenClimbing = 0x400000000,
+    CanDamperVibrations = 0x800000000,
+    CanOccludeVibrations = 0x1000000000,
     _entt_enum_as_bitmask
 };
 
@@ -236,9 +227,9 @@ public:
     [[nodiscard]] virtual bool isAttachedTo(BlockSource &, BlockPos const &, BlockPos &) const = 0;
     [[nodiscard]] virtual bool attack(Player *player, BlockPos const &) const = 0;
     [[nodiscard]] virtual bool shouldTriggerEntityInside(BlockSource &, BlockPos const &, Actor &) const = 0;
-    [[nodiscard]] virtual bool canBeBuiltOver(const Block &, BlockSource &, BlockPos const &,
+    [[nodiscard]] virtual bool canBeBuiltOver(const Block &, BlockSource const &, BlockPos const &,
                                               BlockType const &) const = 0;
-    [[nodiscard]] virtual bool canBeBuiltOver(const Block &, BlockSource &, BlockPos const &) const = 0;
+    [[nodiscard]] virtual bool canBeBuiltOver(const Block &, BlockSource const &, BlockPos const &) const = 0;
     virtual void triggerEvent(BlockSource &, BlockPos const &, int b0, int b1) const = 0;
     // virtual void executeEvent(BlockSource &, BlockPos const &, Block const &, std::string const &, Actor &) const =
     // 0;
@@ -265,8 +256,8 @@ public:
     [[nodiscard]] virtual Block const &getRenderBlock() const = 0;
     [[nodiscard]] virtual FacingID getMappedFace(FacingID, Block const &) const = 0;
     [[nodiscard]] virtual Flip getFaceFlip(FacingID, Block const &) const = 0;
-    virtual void animateTickBedrockLegacy(BlockSource &, BlockPos const &, Random &) const = 0;
-    virtual void animateTick(BlockSource &, BlockPos const &, Random &) const = 0;
+    virtual void animateTickBedrockLegacy(BlockAnimateTickData const &) const = 0;
+    virtual void animateTick(BlockAnimateTickData const &) const = 0;
     // [[nodiscard]] virtual BlockType &init() = 0;
     [[nodiscard]] virtual Block const *tryLegacyUpgrade(DataID) const = 0;
     [[nodiscard]] virtual bool dealsContactDamage(Actor const &, Block const &, bool) const = 0;
@@ -292,8 +283,7 @@ public:
     [[nodiscard]] virtual Brightness getLightEmission(Block const &) const = 0;
     [[nodiscard]] virtual Brightness getEmissiveBrightness(Block const &) const = 0;
     [[nodiscard]] virtual mce::Color getMapColor(BlockSource &, BlockPos const &, Block const &) const = 0;
-    // TODO(fixme): check the name
-    virtual void unknown130() = 0;  // added in 1.26.40
+    [[nodiscard]] virtual Block const &getInitialDefaultState() = 0;
     virtual void _onHitByActivatingAttack(BlockSource &, BlockPos const &, Actor *) const = 0;
     virtual void entityInside(BlockSource &, BlockPos const &, Actor &) const = 0;
 
@@ -384,26 +374,24 @@ private:
     bool solid_ : 1;
     bool pushes_out_items_ : 1;
     bool ignore_block_for_inside_cube_renderer_ : 1;
-    bool is_trapdoor_ : 1;
-    bool is_door_ : 1;
     bool is_opaque_full_block_ : 1;
     bool should_random_tick_extra_layer_ : 1;
     bool is_mob_piece_ : 1;
     bool can_be_extra_block_ : 1;
-    bool can_propagate_brightness_ : 1;
     bool is_vanilla_ : 1;
     bool data_driven_vanilla_blocks_and_items_enabled_ : 1;
     bool requires_correct_tool_for_drops_ : 1;
 
 protected:
-    Brightness light_block_;                                 // +358
-    Brightness light_emission_;                              // +359
-    Color map_color_;                                        // +360
-    float friction_;                                         // +376
-    TintMethod tint_method_;                                 // +380
-    bool return_default_block_on_unidentified_block_state_;  // +381
+    bool return_default_block_on_unidentified_block_state_ : 1;
+    Brightness light_block_;     // +358
+    Brightness light_emission_;  // +359
+    Color map_color_;            // +360
+    float friction_;             // +376
+    TintMethod tint_method_;     // +380
 
 private:
+    BlockClientPredictionOverridesSet client_prediction_overrides_;       // +381
     NewBlockID id_;                                                       // +382
     BaseGameVersion min_required_game_version_;                           // +384
     std::vector<HashedString> tags_;                                      // +416

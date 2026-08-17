@@ -57,10 +57,13 @@ protected:
 private:
     void _processPendingRegistrations();
     void _checkThreadId();
-    std::thread::id thread_id_;        // +84
-    bool thread_id_initialized_;       //
-    std::int32_t thread_check_index_;  //
+    std::thread::id thread_id_;         // +84
+    bool thread_id_initialized_;        //
+    std::uint32_t thread_check_index_;  //
 };
 
 template <typename ListenerType>
 class EventCoordinator : public EventCoordinatorPimpl<ListenerType> {};
+
+template <typename ListenerType>
+class EventCoordinatorNoTracking : public EventCoordinatorPimpl<ListenerType> {};

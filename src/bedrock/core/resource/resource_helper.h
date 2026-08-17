@@ -68,7 +68,9 @@ enum class PackOrigin : std::uint8_t {
     TempCache = 7,
     PremiumCache = 8,
     PremiumTempCache = 9,
-    Test = 10,
+    RealmsService = 10,
+    Test = 11,
+    System = 12,
 };
 
 enum class PackCategory : std::int32_t {
@@ -83,9 +85,8 @@ enum class PackCategory : std::int32_t {
 
 enum class ResourcePackStackType : std::int32_t {
     LEVEL = 0,
-    ADDON = 1,
-    GLOBAL = 2,
-    TREATMENT = 3,
-    BASE_GAME = 4,
-    SIZE = 5,
+    GLOBAL = 1,
+    TREATMENT = 2,
+    BASE_GAME = 3,
+    SIZE = 4,
 };

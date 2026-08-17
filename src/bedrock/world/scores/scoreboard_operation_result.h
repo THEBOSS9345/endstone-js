@@ -14,9 +14,9 @@
 
 #pragma once
 
-#include <string>
+#include <cstdint>
 
-enum class ScoreboardOperationResult : uint8_t {
+enum class ScoreboardOperationResult : std::uint8_t {
     Success = 0,
     IntegerOverflow = 1,
     ReadOnlyCriteria = 2,

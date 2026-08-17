@@ -14,13 +14,21 @@
 
 #pragma once
 
+#include <set>
 #include <unordered_map>
 
+#include "bedrock/core/string/string_hash.h"
+#include "bedrock/entity/weak_entity_ref.h"
 #include "bedrock/world/events/scoreboard_event_listener.h"
 #include "bedrock/world/scores/scoreboard_id.h"
 
-class PlayerScoreboardEventListener : public ScoreboardEventListener {
-public:
+class SubscribedObjectives {
 private:
-    std::unordered_map<ScoreboardId, void *> subscribed_objectives_;  // void* = SubscribedObjectives
+    WeakEntityRef player_;
+    std::set<HashedString> objectives_;
+};
+
+class PlayerScoreboardEventListener : public ScoreboardEventListener {
+private:
+    std::unordered_map<ScoreboardId, SubscribedObjectives> subscribed_objectives_;
 };

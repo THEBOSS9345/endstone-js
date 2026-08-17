@@ -20,12 +20,14 @@
 #include "bedrock/server/commands/command_output.h"
 #include "bedrock/server/commands/command_registry.h"
 
+class ILevel;
 class Minecraft;
+struct MinecraftCommandsArguments;
 
 class ICommandsContextProvider {
 public:
     virtual ~ICommandsContextProvider();
-    virtual Level *getLevel() = 0;
+    virtual ILevel *getLevel() = 0;
     [[nodiscard]] virtual NetworkIdentifier getLocalNetworkId() const = 0;
     virtual void onCommandExecuted(MCRESULT, CommandOriginType, const std::string &, const std::string &) = 0;
 };
@@ -40,7 +42,7 @@ private:
 
 class MinecraftCommands {
 public:
-    MinecraftCommands(ICommandsContextProvider &, std::unique_ptr<CommandRegistry> &&);
+    explicit MinecraftCommands(MinecraftCommandsArguments &&);
 
     virtual ~MinecraftCommands() = default;
 

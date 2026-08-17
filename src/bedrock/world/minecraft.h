@@ -44,6 +44,8 @@ public:
     [[nodiscard]] Level *getLevel() const;
 
 private:
+    struct Impl;
+
     GameCallbacks &game_callbacks_;
     IMinecraftEventing &eventing_;
     std::unique_ptr<ResourcePackManager> resource_loader_;
@@ -72,8 +74,7 @@ private:
     ClientOrServerNetworkSystemRef network_;
     PacketSender *packet_sender_;
     SubClientId client_sub_id_;
-    // TODO(fixme): check the name
-    void *unknown_264_;  // win +264, linux +256; a unique_ptr to a 1-byte trivially-destructible object
+    std::unique_ptr<Impl> impl_;
     OwnerPtr<EntityRegistry> entity_registry_;
     std::unique_ptr<ITickingSystem> add_movement_tick_for_catchup_;
     Bedrock::PubSub::PublisherPtr<void(Level *), Bedrock::PubSub::ThreadModel::SingleThreaded> level_subscribers_;

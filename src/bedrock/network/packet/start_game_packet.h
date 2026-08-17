@@ -19,9 +19,14 @@
 #include "bedrock/network/packet.h"
 #include "bedrock/world/level/level_settings.h"
 
+struct StartGamePacketPayload {
+    LevelSettings settings;  // +0
+    // ...
+};
+
 class StartGamePacket : public Packet {
 public:
     StartGamePacket();
-    LevelSettings settings;  // +48
+    StartGamePacketPayload payload;  // +48
     // ...
 };

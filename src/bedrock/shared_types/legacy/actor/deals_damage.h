@@ -14,10 +14,13 @@
 
 #pragma once
 
+#include <cstdint>
+
 namespace SharedTypes::Legacy {
 enum class DealsDamage : std::uint8_t {
     Yes = 0,
     No = 1,
     NoButSidesEffectsApply = 2,
+    NoButEntityEffectsApply = 3,
 };
 }  // namespace SharedTypes::Legacy

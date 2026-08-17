@@ -15,6 +15,8 @@
 
 #pragma once
 
+#include <cstdint>
+
 using CommandFlagSize = std::uint16_t;
 
 enum class CommandUsageFlag : CommandFlagSize {
@@ -61,6 +63,11 @@ enum class CommandEditorFlag : CommandFlagSize {
     NotEditor = 512,
 };
 
+enum class CommandTeacherFlag : CommandFlagSize {
+    TeacherRegularPermissions = 0,
+    TeacherAlwaysAllowed = 1024,
+};
+
 struct CommandFlag {
     // NOLINTBEGIN(*-explicit-constructor)
     CommandFlag(CommandUsageFlag flag) : flag(static_cast<CommandFlagSize>(flag)) {}
@@ -71,6 +78,7 @@ struct CommandFlag {
     CommandFlag(CommandCheatFlag flag) : flag(static_cast<CommandFlagSize>(flag)) {}
     CommandFlag(CommandAsyncFlag flag) : flag(static_cast<CommandFlagSize>(flag)) {}
     CommandFlag(CommandEditorFlag flag) : flag(static_cast<CommandFlagSize>(flag)) {}
+    CommandFlag(CommandTeacherFlag flag) : flag(static_cast<CommandFlagSize>(flag)) {}
     // NOLINTEND(*-explicit-constructor)
     explicit CommandFlag(CommandFlagSize flag) : flag(flag) {}
     CommandFlag() = default;

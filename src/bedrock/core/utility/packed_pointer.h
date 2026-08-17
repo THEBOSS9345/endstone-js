@@ -13,6 +13,9 @@
 // limitations under the License.
 
 #pragma once
+#include <cstddef>
+#include <cstdint>
+
 #include <entt/entity/storage.hpp>
 
 namespace Bedrock::PackedPointer {

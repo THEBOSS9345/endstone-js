@@ -20,7 +20,7 @@
 #include "bedrock/world/events/scripting_event_listener.h"
 #include "bedrock/world/events/scripting_events.h"
 
-class ScriptingEventCoordinator : public EventCoordinatorPimpl<ScriptingEventListener> {
+class ScriptingEventCoordinator : public EventCoordinator<ScriptingEventListener> {
 public:
     std::unique_ptr<ScriptingEventHandler> scripting_event_handler;  // Endstone: private -> public
 };

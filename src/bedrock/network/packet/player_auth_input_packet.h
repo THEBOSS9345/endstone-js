@@ -14,6 +14,8 @@
 
 #pragma once
 
+#include <bitset>
+
 #include "bedrock/core/math/vec2.h"
 #include "bedrock/core/math/vec3.h"
 #include "bedrock/entity/components/player_block_actions.h"
@@ -23,7 +25,7 @@
 #include "bedrock/world/actor/actor_unique_id.h"
 
 struct PlayerAuthInputPacketPayload {
-    enum InputData : unsigned int {
+    enum InputData : int {
         Ascend = 0,
         Descend = 1,
         NorthJump_DEPRECATED = 2,
@@ -78,8 +80,8 @@ struct PlayerAuthInputPacketPayload {
         DownLeft = 51,
         DownRight = 52,
         StartUsingItem = 53,
-        IsCameraRelativeMovementEnabled = 54,
-        IsRotControlledByMoveDirection = 55,
+        IsCameraRelativeMovementEnabled_DEPRECATED = 54,
+        IsRotControlledByMoveDirection_DEPRECATED = 55,
         StartSpinAttack = 56,
         StopSpinAttack = 57,
         IsHotbarOnlyTouch = 58,
@@ -126,6 +128,7 @@ public:
     Bedrock::Result<void> _read(ReadOnlyBinaryStream &stream) override { throw std::logic_error("Not implemented"); }
 
     [[nodiscard]] bool getInput(InputData input) const { return payload.input_data.test(input); }
+    void setInput(InputData input, bool value) { payload.input_data.set(input, value); }
 
     PlayerAuthInputPacketPayload payload;                                 // +48
     SerializationMode serialization_mode{SerializationMode::CerealOnly};  // +224

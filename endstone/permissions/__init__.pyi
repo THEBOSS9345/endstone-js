@@ -2,7 +2,7 @@
 Classes relating to permissions of players.
 """
 
-import collections
+import collections.abc
 import enum
 import typing
 
@@ -42,59 +42,54 @@ class Permissible:
         """
         Gets the permission level of this object
         """
-        ...
+
     @typing.overload
     def is_permission_set(self, name: str) -> bool:
         """
         Checks if a permissions is set by name.
         """
-        ...
+
     @typing.overload
     def is_permission_set(self, perm: Permission) -> bool:
         """
         Checks if a permissions is set by permission.
         """
-        ...
+
     @typing.overload
     def has_permission(self, name: str) -> bool:
         """
         Checks if a permissions is available by name.
         """
-        ...
+
     @typing.overload
     def has_permission(self, perm: Permission) -> bool:
         """
         Checks if a permissions is available by permission.
         """
-        ...
+
     @typing.overload
-    def add_attachment(self, plugin: Plugin, name: str, value: bool) -> PermissionAttachment:
-        """
-        Adds a new PermissionAttachment.
-        """
-        ...
+    def add_attachment(self, plugin: Plugin, name: str, value: bool) -> PermissionAttachment: ...
     @typing.overload
     def add_attachment(self, plugin: Plugin) -> PermissionAttachment:
         """
         Adds a new PermissionAttachment.
         """
-        ...
+
     def remove_attachment(self, attachment: PermissionAttachment) -> bool:
         """
         Removes a given PermissionAttachment.
         """
-        ...
+
     def recalculate_permissions(self) -> None:
         """
         Recalculates the permissions.
         """
-        ...
+
     @property
     def effective_permissions(self) -> set[PermissionAttachmentInfo]:
         """
         Gets effective permissions.
         """
-        ...
 
 class Permission:
     """
@@ -114,19 +109,19 @@ class Permission:
         """
         Gets the unique fully qualified name of this Permission.
         """
-        ...
+
     @property
     def children(self) -> dict[str, bool]:
         """
         Gets the children of this permission.
         """
-        ...
+
     @property
     def default(self) -> PermissionDefault:
         """
         The default value of this permission.
         """
-        ...
+
     @default.setter
     def default(self, arg1: PermissionDefault) -> None: ...
     @property
@@ -134,7 +129,7 @@ class Permission:
         """
         The brief description of this permission
         """
-        ...
+
     @description.setter
     def description(self, arg1: str) -> None: ...
     @property
@@ -142,24 +137,19 @@ class Permission:
         """
         Gets a set containing every Permissible that has this permission.
         """
-        ...
+
     def recalculate_permissibles(self) -> None:
         """
         Recalculates all Permissibles that contain this permission.
         """
-        ...
+
     @typing.overload
-    def add_parent(self, name: str, value: bool) -> Permission:
-        """
-        Adds this permission to the specified parent permission.
-        """
-        ...
+    def add_parent(self, name: str, value: bool) -> Permission: ...
     @typing.overload
     def add_parent(self, perm: Permission, value: bool) -> None:
         """
         Adds this permission to the specified parent permission.
         """
-        ...
 
 class PermissionAttachment:
     """
@@ -171,54 +161,54 @@ class PermissionAttachment:
         """
         Gets the plugin responsible for this attachment.
         """
-        ...
+
     def remove(self) -> bool:
         """
         Removes this attachment from its registered Permissible.
         """
-        ...
+
     @property
     def permissible(self) -> Permissible:
         """
         Gets the Permissible that this is attached to.
         """
-        ...
+
     @property
     def permissions(self) -> dict[str, bool]:
         """
         Gets a copy of all set permissions and values contained within this attachment.
         """
-        ...
+
     @typing.overload
     def set_permission(self, name: str, value: bool) -> None:
         """
         Sets a permission to the given value, by its fully qualified name.
         """
-        ...
+
     @typing.overload
     def set_permission(self, perm: Permission, value: bool) -> None:
         """
         Sets a permission to the given value.
         """
-        ...
+
     @typing.overload
     def unset_permission(self, name: str) -> None:
         """
         Removes the specified permission from this attachment by name.
         """
-        ...
+
     @typing.overload
     def unset_permission(self, perm: Permission) -> None:
         """
         Removes the specified permission from this attachment.
         """
-        ...
+
     @property
     def removal_callback(self) -> collections.abc.Callable[[PermissionAttachment], None]:
         """
         The callback to be called when this attachment is removed.
         """
-        ...
+
     @removal_callback.setter
     def removal_callback(self, arg1: collections.abc.Callable[[PermissionAttachment], None]) -> None: ...
 
@@ -234,22 +224,21 @@ class PermissionAttachmentInfo:
         """
         Get the permissible this is attached to
         """
-        ...
+
     @property
     def permission(self) -> str:
         """
         Gets the permission being set
         """
-        ...
+
     @property
     def attachment(self) -> PermissionAttachment:
         """
         Gets the attachment providing this permission.
         """
-        ...
+
     @property
     def value(self) -> bool:
         """
         Gets the value of this permission
         """
-        ...

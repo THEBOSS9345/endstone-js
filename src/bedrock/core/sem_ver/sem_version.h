@@ -14,9 +14,11 @@
 
 #pragma once
 
+#include <cstdint>
 #include <format>
 #include <ranges>
 #include <string>
+#include <string_view>
 
 #include "bedrock/core/string/static_optimized_string.h"
 
@@ -137,10 +139,24 @@ bool operator<=(const SemVersionBase<StringTypeLhs> &lhs, const SemVersionBase<S
     return lhs == rhs || lhs < rhs;
 }
 
+template <typename StringTypeLhs, typename StringTypeRhs>
+bool operator>(const SemVersionBase<StringTypeLhs> &lhs, const SemVersionBase<StringTypeRhs> &rhs)
+{
+    return !(lhs <= rhs);
+}
+
+template <typename StringTypeLhs, typename StringTypeRhs>
+bool operator>=(const SemVersionBase<StringTypeLhs> &lhs, const SemVersionBase<StringTypeRhs> &rhs)
+{
+    return !(lhs < rhs);
+}
+
 template <typename StringType>
 class SemVersionBase {
 public:
     inline static const SemVersionAnyVersionType AnyVersionConstructor;
+    static constexpr std::uint16_t BetaVersionNumber = 9999;
+    static constexpr std::string_view BetaPreReleaseTag = "beta";
     SemVersionBase() = default;
     explicit SemVersionBase(SemVersionAnyVersionType) : valid_version_(true), any_version_(true) {}
     explicit SemVersionBase(const std::uint16_t major, const std::uint16_t minor, const std::uint16_t patch,
@@ -194,6 +210,19 @@ private:
 
 class SemVersion : public SemVersionBase<Bedrock::StaticOptimizedString> {
 public:
+    enum class ParseOption : int {
+        AllowWildcards = 0,
+        NoWildcards = 1,
+    };
+
+    enum class MatchType : int {
+        Full = 0,
+        Partial = 1,
+        None = 2,
+    };
+
     using SemVersionBase::SemVersionBase;
+
+    static MatchType fromString(const std::string &src, SemVersion &output, ParseOption parse_option);
 };
 static_assert(sizeof(SemVersion) == 24);

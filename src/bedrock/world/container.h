@@ -154,7 +154,7 @@ public:
     [[nodiscard]] virtual bool canPullOutItem(int, int, ItemStack const &) const;
     virtual void setContainerChanged(int slot);
     virtual void setContainerMoved();
-    virtual void setCustomName(std::string const &name);
+    virtual void setCustomName(const Bedrock::Safety::RedactableString &name);
     [[nodiscard]] virtual bool hasCustomName() const;
     virtual void readAdditionalSaveData(CompoundTag const &tag);
     virtual void addAdditionalSaveData(CompoundTag &tag);

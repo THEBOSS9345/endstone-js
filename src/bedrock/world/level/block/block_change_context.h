@@ -14,7 +14,13 @@
 
 #pragma once
 
+#include <cstdint>
+#include <optional>
 #include <variant>
+
+#include "bedrock/world/level/block_pos.h"
+
+class Actor;
 
 struct EnvironmentChangeContext {
     EnvironmentChangeContext() = default;
@@ -28,24 +34,32 @@ struct ActorChangeContext {
     Actor *actor_context = nullptr;
 };
 
-struct ScriptOrCommandChangeContext {
-    ScriptOrCommandChangeContext() = default;
+enum class StatelessBlockChangeContext : std::uint8_t {
+    Scripts = 0,
+    ScriptsPermutation = 1,
+    Commands = 2,
+    Structure = 3,
+    MultiBlock = 4,
+    ExtraBlock = 5,
+    DelayedMultiBlock = 6,
+    Count = 7,
 };
 
 using BlockChangeContextSource =
-    std::variant<std::monostate, EnvironmentChangeContext, ActorChangeContext, ScriptOrCommandChangeContext>;
+    std::variant<std::monostate, EnvironmentChangeContext, ActorChangeContext, StatelessBlockChangeContext>;
 
 class BlockChangeContext {
 public:
     BlockChangeContext() = default;
-    BlockChangeContext(const bool);
     BlockChangeContext(const BlockPos &pos) : context_source_(pos) {}
     BlockChangeContext(Actor *actor) : context_source_(actor) {}
-    Actor *getActorSource();
-    const std::optional<BlockPos> getBlockPos();
-    const bool isScriptOrCommandContext();
-    const bool hasValue();
+    [[nodiscard]] Actor *getActorSource() const;
+    [[nodiscard]] const std::optional<BlockPos> getBlockPos() const;
+    [[nodiscard]] const bool hasValue() const;
+    [[nodiscard]] const bool isStatelessChangeContext(StatelessBlockChangeContext type) const;
+    [[nodiscard]] bool isTickSchedulingEnabled() const;
 
 private:
     BlockChangeContextSource context_source_;
+    bool tick_scheduling_enabled_ = true;
 };

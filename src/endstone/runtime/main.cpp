@@ -12,13 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <chrono>
 #include <cstdlib>
 #include <exception>
 #include <thread>
 
 #include <pybind11/embed.h>
-#include <spdlog/spdlog.h>
 
 #include "bedrock/core/debug/debug_utils.h"
 #include "endstone/core/devtools/devtools.h"
@@ -35,7 +33,6 @@ int init()
     endstone::core::EndstoneServer::setMainThread(std::this_thread::get_id());
 
     try {
-        spdlog::flush_every(std::chrono::seconds(5));
         endstone::runtime::hook::install();
         return 0;
     }

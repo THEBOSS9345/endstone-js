@@ -23,6 +23,7 @@
 #include "bedrock/bedrock.h"
 #include "bedrock/core/resource/pack_id_version.h"
 #include "bedrock/core/threading/enable_queue_for_main_thread.h"
+#include "bedrock/deps/json/value.h"
 #include "bedrock/forward.h"
 #include "bedrock/minecraft_app_interface.h"
 #include "bedrock/network/connection_request.h"
@@ -51,13 +52,15 @@ class ServerNetworkHandler : public Bedrock::Threading::EnableQueueForMainThread
                              public Social::MultiplayerServiceObserver,
                              public Social::XboxLiveUserObserver {
 public:
-    ServerNetworkHandler(GameCallbacks &, const Bedrock::NonOwnerPointer<ILevel> &, ServerNetworkSystem &,
-                         PrivateKeyManager &, ServerLocator &, PacketSender &, AllowList &, PermissionsFile *,
-                         const mce::UUID &, int, int, MinecraftCommands &, IMinecraftApp &,
-                         const std::unordered_map<PackIdVersion, std::string> &, Scheduler &,
-                         Bedrock::NonOwnerPointer<TextFilteringProcessor>, optional_ref<MinecraftGameTest>,
-                         ServiceReference<AppConfigs>, ServiceReference<Social::MultiplayerServiceManager>,
-                         NetworkServerConfig);
+    ServerNetworkHandler(GameCallbacks &, const Bedrock::NonOwnerPointer<ILevel> &,
+                         const std::optional<ServerConfiguration::ServerConfigurationJoinInfo> &,
+                         const Social::Events::ServerTelemetryData &, ServerNetworkSystem &, PrivateKeyManager &,
+                         Bedrock::NotNullNonOwnerPtr<MinecraftServiceKeyManager>, ServerLocator &, PacketSender &,
+                         AllowList &, EditorAllowList &, PermissionsFile *, const KeyManager &, int, int,
+                         MinecraftCommands &, IMinecraftApp &, const std::unordered_map<PackIdVersion, std::string> &,
+                         Scheduler &, Bedrock::NonOwnerPointer<TextFilteringProcessor>, optional_ref<MinecraftGameTest>,
+                         ServiceReference<AppConfigs>, NetworkServerConfig, std::shared_ptr<ScriptPackSettingsCache>,
+                         ServerNetworkHandlerDependencies &&);
 
     ~ServerNetworkHandler() override = 0;
 
@@ -91,6 +94,12 @@ private:
 
 protected:
     class Client {
+        enum class LoginState : std::uint8_t {
+            AwaitingHandshake = 0,
+            AwaitingPlayerSpawn = 1,
+            PlayerSpawned = 2,
+        };
+
     public:
         [[nodiscard]] ConnectionRequest const &getPrimaryRequest() const;
         PlayerAuthenticationInfo getPrimaryPlayerInfo() const;
@@ -103,6 +112,7 @@ protected:
         PlayerAuthenticationInfo primary_player_info_;
         std::string client_info_party_id_;
         std::unordered_map<SubClientId, PlayerAuthenticationInfo> sub_client_player_info_;
+        LoginState login_state_;
     };
     std::unordered_map<NetworkIdentifier, std::unique_ptr<Client>> clients_;  // +80
 
@@ -113,12 +123,10 @@ private:
     ServerNetworkSystem &network_;      // +200
     PrivateKeyManager &server_keys_;
     ServerLocator &server_locator_;
-    gsl::not_null<PacketSender *> packet_sender_;  // +200
-    // bool use_allow_list_;
+    gsl::not_null<PacketSender *> packet_sender_;  // +224
     AllowList &allow_list_;
+    EditorAllowList &editor_allow_list_;  // +240
     PermissionsFile *permissions_file_;
-    // TODO(fixme): check the name
-    void *unknown_240_;  // win +240, linux +224; added in 1.26.40
     DenyList server_deny_list_;
     NetworkServerConfig network_server_config_;
     std::shared_ptr<ScriptPackSettingsCache> pack_settings_cache_;
@@ -129,7 +137,7 @@ private:
     IMinecraftApp &app_;
     Bedrock::NonOwnerPointer<TextFilteringProcessor> text_filtering_processor_;
     std::unique_ptr<ClientBlobCache::Server::ActiveTransfersManager> client_cache_manager_;
-    std::unordered_map<std::uint64_t, std::string> server_storage_for_clients_connecting_attempt_;
+    std::unordered_map<NetworkIdentifierWithSubId, Json::Value> server_storage_for_clients_connecting_attempt_;
     std::unordered_map<std::string, Social::Nonce> player_nonces_;
     std::unique_ptr<ClassroomModeNetworkHandler> companion_handler_;
     Bedrock::Threading::Mutex validate_player_mutex_;
@@ -144,7 +152,7 @@ private:
     gsl::not_null<std::shared_ptr<Bedrock::Threading::SharedAsync<void>>> previous_upload_;
     gsl::not_null<std::unique_ptr<ResourcePackPathLifetimeHelpers::ResourcePackPathCache>> resource_pack_path_cache_;
     gsl::not_null<std::unique_ptr<ServerConnectionAuthValidator>> connection_auth_validator_;
-    gsl::not_null<std::unique_ptr<TaskGroup>> async_join_task_group_;
+    gsl::not_null<std::unique_ptr<TaskGroup>> network_task_group_;
     gsl::not_null<std::unique_ptr<AsyncJoinTaskManager>> async_join_task_manager_;
     std::unique_ptr<TaskGroup> io_task_group_;
     bool is_trial_;

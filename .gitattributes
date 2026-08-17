@@ -1,1 +1,6 @@
 .git_archival.txt  export-subst
+
+# Generated on every build by the endstone_stubs target, which writes LF.
+# Without this, a CRLF checkout flips to LF on each build and shows up as
+# phantom modifications.
+*.pyi text eol=lf

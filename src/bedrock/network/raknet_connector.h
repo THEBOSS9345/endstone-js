@@ -41,6 +41,7 @@ public:
         static PacketReliability getReliability(Reliability reliability);
         RakNet::RakPeerInterface &rak_peer_;
         NetworkIdentifier id_;
+        // ...
     };
 
     struct ConnectionCallbacks : Connector::ConnectionCallbacks {
@@ -53,8 +54,9 @@ public:
     RakNetConnector(ConnectionCallbacks &, RakPeerHelper::IPSupportInterface &,
                     const Bedrock::NonOwnerPointer<AppPlatform> &, const RakNet::RakPeerConfiguration &);
     ~RakNetConnector() override;
-    bool host(const ConnectionDefinition &) override;
-    bool connect(const Social::GameConnectionInfo &, const Social::GameConnectionInfo &) override;
+    bool host(const ConnectionDefinition &, const PrivateKeyManager &) override;
+    bool connect(const Social::GameConnectionInfo &, const Social::GameConnectionInfo &,
+                 std::shared_ptr<NetherNet::IIdentityAssertionGenerator>) override;
     void disconnect() override;
     void tick() override;
     void runEvents() override;
@@ -64,6 +66,7 @@ public:
     std::string getLocalIp() override;
     [[nodiscard]] uint16_t getPort() const override;
     [[nodiscard]] const Social::GameConnectionInfo &getConnectedGameInfo() const override;
+    void setConnectedResolvedExperienceInfo(const std::optional<Social::ResolvedExperienceInfo> &) override;
     [[nodiscard]] bool isIPv4Supported() const override;
     [[nodiscard]] bool isIPv6Supported() const override;
     [[nodiscard]] uint16_t getIPv4Port() const override;

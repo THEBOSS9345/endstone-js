@@ -1,6 +1,9 @@
 import typing
 
-__all__ = ["Language", "Translatable"]
+__all__ = [
+    "Language",
+    "Translatable",
+]
 
 class Translatable:
     """
@@ -12,13 +15,12 @@ class Translatable:
         """
         Get the text to be translated.
         """
-        ...
+
     @property
     def params(self) -> list[str]:
         """
         Get the translation parameters.
         """
-        ...
 
 class Language:
     """
@@ -29,16 +31,15 @@ class Language:
         """
         Translates a given text using a set of parameters for a specific locale.
         """
-        ...
+
     @typing.overload
     def translate(self, translatable: Translatable, locale: str | None = None) -> str:
         """
         Translates a Translatable object into a specific locale.
         """
-        ...
+
     @property
     def locale(self) -> str:
         """
         Gets the current locale.
         """
-        ...

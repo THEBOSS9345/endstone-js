@@ -27,8 +27,7 @@ class Vec3;
 
 class IVanillaMainBlockActorComponent {
 public:
-    // TODO(fixme): check the name
-    virtual void unknown0() = 0;  // added in 1.26.40, returns the BlockActor sub-object
+    virtual BlockActor &getBlockActor() = 0;
     [[nodiscard]] virtual BlockActorType getBlockActorType() const = 0;
     virtual Container *getContainer() = 0;
     [[nodiscard]] virtual const Container *getContainer() const = 0;

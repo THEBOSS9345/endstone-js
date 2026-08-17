@@ -19,6 +19,9 @@
 namespace Bedrock::PubSub::Detail {
 
 template <typename ThreadingModel>
-class ThreadingPublisherBase : public FastDispatchPublisherBase<ThreadingModel> {};
+class ThreadingPublisherBase : public FastDispatchPublisherBase<ThreadingModel> {
+protected:
+    void _disconnect(SubscriptionBodyBase &) override;
+};
 
 }  // namespace Bedrock::PubSub::Detail

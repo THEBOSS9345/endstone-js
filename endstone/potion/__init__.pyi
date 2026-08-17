@@ -2,7 +2,9 @@
 Classes relating to potion effects.
 """
 
-__all__ = ["PotionType"]
+__all__ = [
+    "PotionType",
+]
 
 class PotionType:
     """

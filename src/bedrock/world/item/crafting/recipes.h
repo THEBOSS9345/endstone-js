@@ -31,7 +31,7 @@ private:
     BlockReducer *block_reducer_ = nullptr;
 };
 
-class Level;
+class ILevel;
 class Recipes {
 public:
     static constexpr int RECIPE_MAXIMUM_WIDTH = 3;
@@ -40,7 +40,7 @@ public:
     static constexpr int DEFAULT_PRIORITY = 50;
 
     Recipes();
-    Recipes(Level *);
+    Recipes(ILevel *);
     [[nodiscard]] ItemInstance getFurnaceRecipeResult(const ItemStackBase &, const HashedString &) const;
 
 private:
@@ -56,5 +56,5 @@ private:
     std::unordered_set<std::string> unique_unlockable_recipe_ids_;
     std::unordered_map<int, std::unordered_map<int, ItemInstance>> furnace_results_;
     RecipeListenerList listeners_;
-    Level *level_;
+    ILevel *level_;
 };

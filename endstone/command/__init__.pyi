@@ -2,7 +2,7 @@
 Classes relating to handling specialized non-chat player input.
 """
 
-import collections
+import collections.abc
 
 from endstone import Server
 from endstone.block import Block
@@ -26,24 +26,23 @@ class CommandSender(Permissible):
         """
         Sends this sender a message
         """
-        ...
+
     def send_error_message(self, message: str | Translatable) -> None:
         """
         Sends this sender an error message
         """
-        ...
+
     @property
     def server(self) -> Server:
         """
         Returns the server instance that this command is running on
         """
-        ...
+
     @property
     def name(self) -> str:
         """
         Gets the name of this command sender
         """
-        ...
 
 class BlockCommandSender(CommandSender):
     """
@@ -54,7 +53,6 @@ class BlockCommandSender(CommandSender):
         """
         Returns the block this command sender belongs to
         """
-        ...
 
 class CommandSenderWrapper(CommandSender):
     """
@@ -90,23 +88,23 @@ class Command:
         """
         Executes the command, returning its success
         """
-        ...
+
     def test_permission(self, target: CommandSender) -> bool:
         """
         Tests the given CommandSender to see if they can perform this command.
         """
-        ...
+
     def test_permission_silently(self, target: CommandSender) -> bool:
         """
         Tests the given CommandSender to see if they can perform this command. No error is sent to the sender.
         """
-        ...
+
     @property
     def name(self) -> str:
         """
         Name of this command.
         """
-        ...
+
     @name.setter
     def name(self, arg1: str) -> None: ...
     @property
@@ -114,7 +112,7 @@ class Command:
         """
         Brief description of this command
         """
-        ...
+
     @description.setter
     def description(self, arg1: str) -> None: ...
     @property
@@ -122,7 +120,7 @@ class Command:
         """
         List of aliases of this command
         """
-        ...
+
     @aliases.setter
     def aliases(self, arg1: list[str]) -> None: ...
     @property
@@ -130,7 +128,7 @@ class Command:
         """
         List of usages of this command
         """
-        ...
+
     @usages.setter
     def usages(self, arg1: list[str]) -> None: ...
     @property
@@ -138,7 +136,7 @@ class Command:
         """
         The permissions required by users to be able to perform this command
         """
-        ...
+
     @permissions.setter
     def permissions(self, arg1: list[str]) -> None: ...
     @property
@@ -146,7 +144,6 @@ class Command:
         """
         Returns the current registered state of this command
         """
-        ...
 
 class CommandExecutor:
     """
@@ -157,4 +154,3 @@ class CommandExecutor:
         """
         Executes the given command, returning its success.
         """
-        ...

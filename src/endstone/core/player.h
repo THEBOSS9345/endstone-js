@@ -142,6 +142,7 @@ private:
 
     UUID uuid_;
     std::string xuid_;
+    SocketAddress address_;  // Cached, the connection is gone by the time we disconnect
     std::shared_ptr<PermissibleBase> perm_;
     std::unique_ptr<EndstonePlayerInventory> inventory_;
     std::unique_ptr<EndstoneInventory> ender_chest_;

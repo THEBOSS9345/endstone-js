@@ -43,15 +43,21 @@ class ActorDefinition;
 class ActorDefinitionDescriptor;
 class ActorDefinitionDiffList;
 class ActorDefinitionGroup;
+class ActorDimensionTransferManager;
 class ActorEvent;
+class ActorEventBroadcaster;
+class ActorFetcher;
+class ActorInfoRegistry;
 class ActorInteraction;
 class ActorRotationComponent;
+class ActorRuntimeIDManager;
 class ActorSpawnRuleGroup;
 class ActorUnloadedChunkTransferEntry;
 class AllowList;
 class AnimationComponent;
 class AppConfigs;
 class AppPlatform;
+class ArmorTrimUnloader;
 class AsyncJoinTaskManager {};
 class AutoCompleteInformation;
 class AutomationBehaviorTreeGroup;
@@ -59,10 +65,10 @@ class BaseLightTextureImageBuilder;
 class BasicTimer {};
 class BehaviorFactory;
 class BiomeComponentFactory;
+struct BiomeJsonDocumentGlueResolvedBiomeData;
 class BiomeManager;
 class BlendingDataProvider;
-class BlockActorDynamicPropertiesComponent {};
-class BlockComponentFactory;
+struct BlockAnimateTickData;
 class BlockDefinitionGroup;
 class BlockEventDispatcher;
 class BlockGraphicsModeChangeContext;
@@ -72,14 +78,19 @@ class BodyControl;
 class BossEventSubscriptionManager;
 class BoundingBox;
 class Bounds;
+struct BreakingItemParticleData;
 class CameraPresets;
+class CameraRegistry;
 class ChalkboardBlockActor;
 class ChangeDimensionPacket;
 class ChestBlockActor;
+class ChunkGenerationManager;
 class ChunkKey;
+class ChunkTickOffsetManager;
 class ChunkTickRangeManager;
 class ChunkViewSource;
 class ClassroomModeNetworkHandler;
+class ClientLevel;
 class ClientNetworkSystem;
 class CommandOriginSystem;
 class CompactionStatus;
@@ -94,9 +105,14 @@ class DataLoadHelper;
 class DeathTickingComponent;
 class DimensionBrightnessRamp;
 class DimensionConversionData;
+class DisplayActorManager;
 class DynamicContainerTracker;
+class DynamicPropertiesBlockActorComponent {};
+class EditorAllowList;
 class EducationLevelSettings;
 class EducationOptions;
+class EducationSettingsManager;
+class EDUSystems;
 class EntitySystems;
 class EquipmentSlot;
 class Experiments;
@@ -110,7 +126,9 @@ class GameMode;
 class GameModuleServer;
 class GameTestLevelListener {};
 class GetCollisionShapeInterface;
+class HitResultWrapper;
 class HudContainerManagerModel;
+class I18n;
 class I18nObserver;
 class IAddActorEntityProxy;
 class IContainerRegistryAccess;
@@ -131,9 +149,9 @@ class InternalComponentRegistry;
 class InvalidPacks {};
 class IOptionsReader;
 class IServerNetworkController;
+class ISparseContainerSetListener;
 class ISubChunkLighter {};
 class ItemComponent;
-struct ItemComprehensiveLoadResult;
 class ItemData;
 struct ItemIconInfoFactory;
 class ItemStackNetManagerBase;
@@ -142,9 +160,14 @@ class ITickingSystem;
 class IUnknownBlockTypeRegistry;
 class IWorldRegistriesProvider;
 class JigsawStructureRegistry;
+class KeyManager;
+struct LegacyEventItemComponentData;
+class LevelBlockDestroyer;
 class LevelChunkBuilderData;
 class LevelChunkMetaData;
 class LevelChunkMetaDataDictionary;
+class LevelChunkMetaDataManager;
+class LevelChunkPerformanceTelemetry;
 class LevelChunkVolumeData;
 class LevelEventManager;
 class LevelSoundManager;
@@ -164,9 +187,9 @@ class NavigationComponent;
 class NetworkChunkPublisher;
 class NetworkSessionOwner;
 class NetworkStatistics {};
+class OptionRegistry;
 class Options;
 class PackedItemUseLegacyInventoryTransaction {};
-class PackLoadContext;
 class PackManifestFactory;
 class PackMetadata;
 class PackSettingsFactory;
@@ -174,7 +197,9 @@ class Particle;
 class Path;
 class PauseManager;
 class PermissionsFile;
+class PhotoManager;
 class PhotoStorage;
+class Player;
 class PlayerAbilitiesManager;
 class PlayerContainerRefresher;
 class PlayerDestroyProgressCacheComponent;
@@ -182,10 +207,14 @@ class PlayerLimboActorManager;
 class PlayerListener;
 class PlayerListEntries;
 class PlayerListEntry;
+class PlayerListManager;
 class PlayerLocationReceiver;
-class PlayerMovementSettings;
-class PlayerPermissionsManager;
+struct PlayerMovementSettings;
+class PlayerMovementSettingsManager;
+class PlayerPermissionsManagerImpl;
 class PlayerPermissionsSynchroniser;
+class PlayerSleepManager;
+struct PlaySoundOptions;
 class PortalForcer;
 class PositionTrackingDBClient;
 class PositionTrackingDBServer;
@@ -193,6 +222,7 @@ class PostprocessingManager;
 class PrivateKeyManager;
 class ProjectileFactory;
 class PropertyGroupManager;
+class RandomizableContainerBlockActorComponent {};
 class RenderParams;
 class RepositoryPacks;
 class ResolvedItemIconInfo;
@@ -215,28 +245,40 @@ class ServerConnectionAuthValidator;
 class ServerInstanceEventHandler;
 class ServerLocator;
 class ServerMetrics;
+struct ServerNetworkHandlerDependencies;
+class ServerParticleManager;
 class ServerPlayer;
+class ServerPlayerSleepManager;
 class SnapshotFilenameAndLength;
+struct SoundEventIdentifier;
 class SoundPlayerInterface;
 class SpawnConditions;
 class SpawnGroupRegistry;
 class SpawnSettings;
 class StructureManager;
+class StructureSpawnRegistry;
 class SubChunkInterlocker;
+class SubChunkManager;
 class SubChunkPacket;
 class SubChunkPos;
+class SubChunkRequestManager;
 class SubpackInfoCollection;
 class SurfaceBuilderRegistry;
 struct SyncedClientOptionsComponent;
+class TagCacheManager;
 class TaskGroup {};
+class TempEPtrManager;
 class TextFilteringProcessor;
+class TickDeltaTimeManager;
 class TickingAreaList;
 class TickingAreasManager;
 class TickTimeManager;
 class TintMapColor;
 class TrackedUniqueChunkPtr;
+class TradeTables;
 class TrimMaterialRegistry;
 class TrimPatternRegistry;
+class TrustedSkinHelper;
 class VolumeEntityManagerServer;
 class WorldClockRegistry;
 class WorldGenerator;
@@ -297,6 +339,7 @@ namespace cg {
 class ImageBuffer;
 }
 namespace Core {
+class FileHandlePool;
 class FilePathManager;
 class FileStorageArea;
 class FileSystem;
@@ -315,12 +358,21 @@ enum Type : int32_t;
 namespace Editor {
 class IEditorManager {};
 }  // namespace Editor
+namespace NetherNet {
+class IIdentityAssertionGenerator;
+}  // namespace NetherNet
+namespace ServerConfiguration {
+struct ServerConfigurationJoinInfo;
+}  // namespace ServerConfiguration
 namespace Social {
 class GameConnectionInfo;
 class GamePublishSetting;
-class MultiplayerServiceManager;
 struct Nonce;
+struct ResolvedExperienceInfo;
 }  // namespace Social
+namespace Social::Events {
+struct ServerTelemetryData;
+}  // namespace Social::Events
 namespace Scripting {
 class LifetimeRegistryReference;
 class RegistryManager {};
@@ -328,8 +380,13 @@ template <typename T>
 class TypedObjectHandle;
 }  // namespace Scripting
 namespace ScriptModuleMinecraft {
+class CustomCommandRegistry;
+class IScriptItemCustomComponentRegistry;
 class IScriptWorldBeforeEvents;
 class ScriptBlockComponentRegistry;
+class ScriptBlockCustomComponentsRegistry;
+class ScriptCustomDimensionRegistry;
+class ScriptCustomSpawnRulesRegistry;
 class ScriptItemComponentRegistry;
 class ScriptPropertyRegistry;
 }  // namespace ScriptModuleMinecraft
@@ -349,9 +406,13 @@ struct State;
 namespace MovementDataExtractionUtility {
 class SnapshotAccessor;
 }
+namespace SharedTypes::v1_26_30 {
+struct ItemDocument;
+}
 namespace SharedTypes::Comprehensive {
 struct CameraPreset;
-}
+using ItemDocument = v1_26_30::ItemDocument;
+}  // namespace SharedTypes::Comprehensive
 
 class PacketGroupDefinition {
 public:

@@ -58,6 +58,46 @@ if (UNIX)
     endif ()
 endif ()
 
+option(ENDSTONE_GENERATE_STUBS "Regenerate endstone/**/__init__.pyi from the built _python extension" ON)
+if (ENDSTONE_GENERATE_STUBS)
+    set(STUBGEN_DRIVER "${CMAKE_SOURCE_DIR}/scripts/stubgen.py")
+    set(STUBGEN_ENGINE "${CMAKE_CURRENT_SOURCE_DIR}/stubgen.py")
+    set(STUBGEN_PATTERNS "${CMAKE_CURRENT_SOURCE_DIR}/stubgen.pat")
+
+    # griffe imports the extension, so it must run under the very interpreter
+    # pybind11 built against.
+    find_program(UV_EXECUTABLE uv)
+    if (UV_EXECUTABLE)
+        set(STUBGEN_COMMAND "${UV_EXECUTABLE}" run --python "${Python_EXECUTABLE}" --script "${STUBGEN_DRIVER}")
+    else ()
+        execute_process(COMMAND "${Python_EXECUTABLE}" -c "import griffe, lazy_loader, ruff"
+                RESULT_VARIABLE STUBGEN_IMPORT_RESULT ERROR_VARIABLE STUBGEN_IMPORT_ERROR OUTPUT_QUIET)
+        if (NOT STUBGEN_IMPORT_RESULT EQUAL 0)
+            message(FATAL_ERROR
+                "Endstone: stub generation needs 'uv' on PATH, or griffe, lazy-loader and ruff importable from\n"
+                "  ${Python_EXECUTABLE}\n${STUBGEN_IMPORT_ERROR}"
+                "Install them, or reconfigure with -DENDSTONE_GENERATE_STUBS=OFF."
+            )
+        endif ()
+        set(STUBGEN_COMMAND "${Python_EXECUTABLE}" "${STUBGEN_DRIVER}")
+    endif ()
+
+    add_custom_command(
+            OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/stubgen.stamp"
+            COMMAND ${STUBGEN_COMMAND}
+            --extension "$<TARGET_FILE:_python>"
+            --engine "${STUBGEN_ENGINE}"
+            --pattern-file "${STUBGEN_PATTERNS}"
+            --source-dir "${CMAKE_SOURCE_DIR}"
+            --work-dir "${CMAKE_CURRENT_BINARY_DIR}/stubgen"
+            COMMAND "${CMAKE_COMMAND}" -E touch "${CMAKE_CURRENT_BINARY_DIR}/stubgen.stamp"
+            DEPENDS _python "$<TARGET_FILE:_python>" "${STUBGEN_DRIVER}" "${STUBGEN_ENGINE}" "${STUBGEN_PATTERNS}"
+            COMMENT "Generating Python stubs from $<TARGET_FILE:_python>"
+            VERBATIM
+    )
+    add_custom_target(endstone_stubs ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/stubgen.stamp")
+endif ()
+
 include(GNUInstallDirs)
 install(TARGETS _python DESTINATION "endstone" COMPONENT endstone_wheel OPTIONAL)
 if (WIN32)

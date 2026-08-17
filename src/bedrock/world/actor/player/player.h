@@ -30,6 +30,7 @@
 #include "bedrock/world/actor/player/layered_abilities.h"
 #include "bedrock/world/actor/player/player_inventory.h"
 #include "bedrock/world/actor/player/player_item_in_use.h"
+#include "bedrock/world/actor/player/player_party_info.h"
 #include "bedrock/world/actor/player/player_types.h"
 #include "bedrock/world/actor/player/serialized_skin.h"
 #include "bedrock/world/containers/managers/container_manager.h"
@@ -132,21 +133,18 @@ public:
     virtual void sendComplexInventoryTransaction(std::unique_ptr<ComplexInventoryTransaction>) const = 0;
     virtual void sendNetworkPacket(Packet &) const = 0;
     virtual PlayerEventCoordinator &getPlayerEventCoordinator() = 0;
-    virtual bool isSimulated() = 0;
+    [[nodiscard]] virtual bool isSimulated() const = 0;
     [[nodiscard]] virtual std::string getXuid() const = 0;
-    [[nodiscard]] virtual PlayerMovementSettings getMovementSettings() const = 0;
-    // TODO(fixme): check the name
-    virtual void unknown234() const = 0;  // returns a nested optional; zeroes engaged flags at +0 and +0x20
+    [[nodiscard]] virtual PlayerMovementSettings const &getMovementSettings() const = 0;
+    [[nodiscard]] virtual std::optional<PlayerPartyInfo> getPartyInfo_UNTRUSTED() const = 0;
     virtual void requestMissingSubChunk(SubChunkPos const &) = 0;
     [[nodiscard]] virtual std::uint8_t getMaxChunkBuildRadius() const = 0;
     virtual void setBehaviorCommandStatus(const std::string &, BehaviorStatus) = 0;
     virtual void setRemotePlayerTicked(bool) = 0;
-    // TODO(fixme): check the name
-    virtual void unknown239() = 0;  // returns a null unique_ptr
+    virtual std::unique_ptr<ISparseContainerSetListener> createSparseContainerListener() = 0;
+    virtual void addChunksToQueue(std::vector<ChunkPos> const &) = 0;
 
 protected:
-    // TODO(fixme): check the name
-    virtual void unknown240() = 0;  // added in 1.26.40; void, takes one reference
     virtual void onMovePlayerPacketNormal(Vec3 const &, Vec2 const &, float) = 0;
     virtual std::shared_ptr<ChunkViewSource> _createChunkSource(ChunkSource &) = 0;
 

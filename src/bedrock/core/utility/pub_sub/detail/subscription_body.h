@@ -24,9 +24,14 @@
 
 namespace Bedrock::PubSub::Detail {
 
+class SubscriptionBodyBase;
+
 class PublisherDisconnector {
 public:
     virtual ~PublisherDisconnector() = 0;
+
+protected:
+    virtual void _disconnect(SubscriptionBodyBase &) = 0;
 };
 
 class SubscriptionBodyBase : public Intrusive::list_base_hook<SubscriptionBodyBase> {

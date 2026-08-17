@@ -4,16 +4,14 @@ __getattr__, __dir__, __all__ = lazy.attach(
     __name__,
     submod_attrs={
         "_python": [
-            "__minecraft_version__",
             "ColorFormat",
-            "EnchantmentRegistry",
             "GameMode",
-            "ItemRegistry",
             "Logger",
             "OfflinePlayer",
             "Player",
             "Server",
             "Skin",
+            "__minecraft_version__",
             "actor",
             "attribute",
             "ban",

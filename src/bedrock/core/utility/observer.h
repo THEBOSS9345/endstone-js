@@ -14,7 +14,6 @@
 
 #pragma once
 
-#include <atomic>
 #include <cstdint>
 #include <vector>
 
@@ -22,7 +21,9 @@
 
 namespace Core {
 
-template <typename ObserverType, typename LockType>
+class SingleThreadedLock {};
+
+template <typename ObserverType, typename LockType = SingleThreadedLock>
 class Subject {
 public:
 private:
@@ -30,7 +31,7 @@ private:
     std::vector<gsl::not_null<ObserverType *>> observers_;
 };
 
-template <typename T, typename LockType>
+template <typename DerivedType, typename LockType = SingleThreadedLock>
 class Observer {
 public:
     virtual ~Observer() = 0;
@@ -38,14 +39,8 @@ public:
 private:
     virtual void _onSubjectDestroyed() = 0;
 
-    using SubjectType = Subject<T, LockType>;
+    using SubjectType = Subject<DerivedType, LockType>;
     SubjectType *subject_;
-};
-
-class SingleThreadedLock {
-public:
-private:
-    std::atomic<bool> locked_;
 };
 
 }  // namespace Core

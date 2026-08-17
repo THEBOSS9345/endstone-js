@@ -38,19 +38,19 @@ public:
     DedicatedServer();
     ~DedicatedServer() override;
     ENDSTONE_HOOK ServerExitCode start(const std::string &session_id, const Bedrock::ActivationArguments &args);
-    [[nodiscard]] virtual Bedrock::NotNullNonOwnerPtr<FileArchiver> getFileArchiver() const;
+    [[nodiscard]] Bedrock::NotNullNonOwnerPtr<FileArchiver> getFileArchiver() const override;
 
 private:
     friend class endstone::core::EndstoneServer;
-    virtual Bedrock::NotNullNonOwnerPtr<Minecraft> getPrimaryMinecraft();
+    [[nodiscard]] Bedrock::NotNullNonOwnerPtr<Minecraft> getPrimaryMinecraft() override;
     [[nodiscard]] Bedrock::NotNullNonOwnerPtr<Automation::AutomationClient> getAutomationClient() const override;
     [[nodiscard]] bool isEduMode() const override;
     [[nodiscard]] bool isDedicatedServer() const override;
     void onNetworkMaxPlayersChanged(uint32_t newMaxPlayerCount) override;
-    virtual IGameModuleShared &getGameModuleShared();
+    [[nodiscard]] IGameModuleShared &getGameModuleShared() override;
     void teardownHttp();
     void requestServerShutdown() override;
-    virtual bool requestInGamePause(const SubClientId &, bool);
+    bool requestInGamePause(const SubClientId &, bool) override;
 
     Bedrock::NonOwnerPointer<Minecraft> minecraft_;
     Bedrock::NonOwnerPointer<Core::FileSystem> file_system_;

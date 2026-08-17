@@ -122,12 +122,12 @@ protected:
     bool show_pick_up_{true};                              // +36
     bool was_picked_up_{false};                            // +37
     std::chrono::steady_clock::time_point pick_up_time_;   // +40
-    std::vector<const BlockType *> can_place_on_;          // +56
-    std::size_t can_place_on_hash_{0};                     // +80
-    std::vector<const BlockType *> can_destroy_;           // +88
-    std::size_t can_destroy_hash_{0};                      // +112
-    Tick blocking_tick_{};                                 // +120
-    std::unique_ptr<ItemInstance> charged_item_{nullptr};  // +128
+    std::vector<const BlockType *> can_place_on_;          // +48
+    std::size_t can_place_on_hash_{0};                     // +72
+    std::vector<const BlockType *> can_destroy_;           // +80
+    std::size_t can_destroy_hash_{0};                      // +104
+    Tick blocking_tick_{};                                 // +112
+    std::unique_ptr<ItemInstance> charged_item_{nullptr};  // +120
 
 private:
     friend class Item;

@@ -14,9 +14,11 @@
 
 #pragma once
 
+#include <optional>
 #include <string>
 
 #include "bedrock/network/packet.h"
+#include "bedrock/network/packet/serialize/serialized_packet.h"
 
 struct SetTitlePacketInfo {
     static constexpr auto PACKET_NAME = "SetTitlePacket";

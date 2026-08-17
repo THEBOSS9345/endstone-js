@@ -2,11 +2,14 @@
 Classes relating to letting plugins run code at specific time intervals.
 """
 
-import collections
+import collections.abc
 
 from endstone.plugin import Plugin
 
-__all__ = ["Scheduler", "Task"]
+__all__ = [
+    "Scheduler",
+    "Task",
+]
 
 class Task:
     """
@@ -17,30 +20,29 @@ class Task:
         """
         Returns the task id.
         """
-        ...
+
     @property
     def owner(self) -> Plugin:
         """
         Returns the Plugin that owns the task.
         """
-        ...
+
     @property
     def is_sync(self) -> bool:
         """
         Returns true if the task is run by server thread.
         """
-        ...
+
     @property
     def is_cancelled(self) -> bool:
         """
         Returns true if the task has been cancelled.
         """
-        ...
+
     def cancel(self) -> None:
         """
         Attempts to cancel this task.
         """
-        ...
 
 class Scheduler:
     """
@@ -52,29 +54,28 @@ class Scheduler:
         """
         Returns a task that will be executed synchronously
         """
-        ...
+
     def cancel_task(self, id: int) -> None:
         """
         Removes task from scheduler.
         """
-        ...
+
     def cancel_tasks(self, plugin: Plugin) -> None:
         """
         Removes all tasks associated with a particular plugin from the scheduler.
         """
-        ...
+
     def is_running(self, id: int) -> bool:
         """
         Check if the task currently running.
         """
-        ...
+
     def is_queued(self, id: int) -> bool:
         """
         Check if the task queued to be run later.
         """
-        ...
+
     def get_pending_tasks(self) -> list[Task]:
         """
         Returns a vector of all pending tasks.
         """
-        ...

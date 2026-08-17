@@ -24,18 +24,28 @@
 
 void CompoundTag::write(IDataOutput &output) const
 {
+    write(output, 0);
+}
+
+void CompoundTag::write(IDataOutput &output, int depth) const
+{
     for (const auto &[key, value] : tags_) {
-        NbtIo::writeNamedTag(key, *value.get(), output);
+        NbtIo::writeNamedTag(key, *value.get(), output, depth + 1);
     }
     output.writeByte(static_cast<std::uint8_t>(Type::End));
 }
 
 Bedrock::Result<void> CompoundTag::load(IDataInput &input)
 {
+    return load(input, 0);
+}
+
+Bedrock::Result<void> CompoundTag::load(IDataInput &input, int depth)
+{
     tags_.clear();
     while (input.numBytesLeft()) {
         std::string name;
-        auto tag_result = NbtIo::readNamedTag(input, name);
+        auto tag_result = NbtIo::readNamedTag(input, name, depth + 1);
         if (!tag_result.ignoreError()) {
             return BEDROCK_RETHROW(tag_result);
         }

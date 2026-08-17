@@ -16,8 +16,23 @@
 
 #include <cstdint>
 
-enum ServerAuthMovementMode : std::int8_t {
-    ClientAuthoritative = 0,
-    ServerAuthoritative = 1,
-    ServerAuthoritativeWithRewind = 2,
+enum class ReplayStateMode : std::uint8_t {
+    Off = 0,
+    Always = 1,
+    Threshold = 2,
 };
+
+struct ReplayStateConfigThresholds {
+    float position_threshold;
+    float position_acceptance;
+    float position_persuasion;
+};
+
+struct ReplayStateConfig {
+    ReplayStateConfigThresholds supported_thresholds;
+    ReplayStateMode mode;
+    std::uint8_t min_correction_delay;
+    std::uint8_t max_correction_delay;
+    std::uint16_t history_size;
+};
+static_assert(sizeof(ReplayStateConfig) == 20);

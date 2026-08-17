@@ -18,12 +18,13 @@
 
 class ActorHurtResult {
 public:
-    static ActorHurtResult createHurt();
+    static ActorHurtResult createHurt(std::optional<float> damage_dealt);
+    static ActorHurtResult createHurtNoDamage();
     static ActorHurtResult createNotHurt();
-    static ActorHurtResult createDamaged(float damage);
     ActorHurtResult &setHurt(bool was_hurt);
     ActorHurtResult &setShouldAllowKnockback(bool should_do_knockback);
     bool wasHurt() const;
+    bool wasDealtDamage() const;
     std::optional<float> getDamage() const;
     bool shouldAllowKnockback() const;
 
