@@ -44,13 +44,21 @@ def main() -> int:
             print(f"{args.source}: not valid JavaScript\n{result.stderr}", file=sys.stderr)
             return 1
 
+    # MSVC limits a single string literal to 65535 bytes. Split conservatively at 60 000
+    # characters (always ≤ 60 000 bytes for ASCII / Latin-1, well under the limit).
+    MAX_CHARS = 60_000
+    total_bytes = len(js.encode("utf-8"))
+    if total_bytes <= 65535:
+        parts = [js]
+    else:
+        parts = [js[i : i + MAX_CHARS] for i in range(0, len(js), MAX_CHARS)]
+
+    concat_parts = " ".join(f'R\"{DELIMITER}(\n{p}){DELIMITER}\"' for p in parts)
     header = (
         f"// Generated from {args.source.name} by scripts/embed_js.py. Do not edit; edit the .js instead.\n"
         "#pragma once\n"
         "\n"
-        f"constexpr const char *{args.symbol} = R\"{DELIMITER}(\n"
-        f"{js}"
-        f"){DELIMITER}\";\n"
+        f"constexpr const char *{args.symbol} =\n    {concat_parts};\n"
     )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
