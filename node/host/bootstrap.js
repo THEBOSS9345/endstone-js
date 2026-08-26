@@ -109,6 +109,20 @@ function readBlockStates(joined) {
   return out;
 }
 
+// The inverse of readBlockStates. The tag travels with each value because BlockStates is a variant:
+// `upside_down_bit` is a boolean, `facing_direction` an integer, `wall_connection_type_east` a string,
+// and Bedrock treats "true" the string and true the boolean as different states.
+function writeBlockStates(states) {
+  if (states === null || typeof states !== 'object') {
+    throw new TypeError('blockStates must be an object of state names to values');
+  }
+  return Object.entries(states).map(([key, value]) => {
+    if (typeof value === 'boolean') return `${key}${UNIT_SEPARATOR}b${UNIT_SEPARATOR}${value ? '1' : '0'}`;
+    if (typeof value === 'number') return `${key}${UNIT_SEPARATOR}i${UNIT_SEPARATOR}${Math.round(value)}`;
+    return `${key}${UNIT_SEPARATOR}s${UNIT_SEPARATOR}${String(value)}`;
+  }).join(NEWLINE);
+}
+
 const serverBase = {
   get name() { return binding.serverName(); },
   get version() { return binding.serverVersion(); },
@@ -786,6 +800,10 @@ function wrap(handle) {
         // The `rotation` field is two numbers behind one object; route it through the same
         // dispatch as a method so the host reads yaw, pitch.
         binding.invoke(handle, 'setRotation', ...flattenRotation(value));
+      } else if (prop === 'blockStates') {
+        // Only the states named are changed; the rest of the block's palette entry is kept, so
+        // turning a stair round does not reset whether it is upside down.
+        binding.set(handle, 'blockStatesList', writeBlockStates(value));
       } else if (prop === 'from' || prop === 'to') {
         // A Location is six numbers plus a dimension, so it routes through a method like `rotation`.
         // Facing and dimension are optional and default to whatever the event already had.

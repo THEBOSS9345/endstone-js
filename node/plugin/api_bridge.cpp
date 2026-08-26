@@ -1110,6 +1110,43 @@ std::string blockStatesRecord(const BlockData &data)
     return out;
 }
 
+/**
+ * @brief Reads the "key\x1ftype\x1fvalue" records the runtime sends back, onto `states`.
+ *
+ * Overlaid rather than replacing: a plugin that sets one state means "change this one", so the rest
+ * of the block's palette entry has to survive. The tag decides the variant arm, which is why it
+ * travels with the value in both directions - "true" the string and true the boolean are different
+ * states and Bedrock cares.
+ */
+void parseBlockStates(const std::string_view text, BlockStates &states)
+{
+    if (text.empty()) {
+        return;
+    }
+    for (const auto &line : splitOn(text, '\n')) {
+        const auto fields = splitOn(line, kUnitSeparator);
+        if (fields.size() < 3 || fields[0].empty()) {
+            continue;
+        }
+        const auto &key = fields[0];
+        const auto &value = fields[2];
+        if (fields[1] == "b") {
+            states[key] = value == "1";
+        }
+        else if (fields[1] == "i") {
+            try {
+                states[key] = std::stoi(value);
+            }
+            catch (...) {
+                continue;
+            }
+        }
+        else {
+            states[key] = value;
+        }
+    }
+}
+
 /** name, uuid, xuid, reason, source, created, expiration - empty field for anything absent. */
 template <typename Entry>
 std::string banRecord(const Entry &entry)
@@ -3195,11 +3232,33 @@ esn_status ApiBridge::setString(const esn_handle target, const std::string_view 
     }
     if (auto *block = static_cast<Block *>(resolve(target, Kind::Block))) {
         if (name == "type") { (void)block->setType(std::string{value}); return ESN_OK; }
+        if (name == "blockStatesList") {
+            const auto current = block->getData();
+            BlockStates states = current ? current->getBlockStates() : BlockStates{};
+            parseBlockStates(value, states);
+            const auto data = plugin_.getServer().createBlockData(block->getType(), states);
+            if (!data) {
+                return ESN_ERR_BAD_ARGUMENT;
+            }
+            block->setData(*data);
+            return ESN_OK;
+        }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *state = static_cast<BlockState *>(resolve(target, Kind::BlockState))) {
         // Only changes the snapshot; update() is what writes it to the world.
         if (name == "type") { state->setType(std::string{value}); return ESN_OK; }
+        if (name == "blockStatesList") {
+            const auto current = state->getData();
+            BlockStates states = current ? current->getBlockStates() : BlockStates{};
+            parseBlockStates(value, states);
+            const auto data = plugin_.getServer().createBlockData(state->getType(), states);
+            if (!data) {
+                return ESN_ERR_BAD_ARGUMENT;
+            }
+            state->setData(*data);
+            return ESN_OK;
+        }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     return find(target) ? ESN_ERR_NO_SUCH_MEMBER : ESN_ERR_STALE_HANDLE;
