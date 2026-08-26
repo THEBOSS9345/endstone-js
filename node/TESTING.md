@@ -259,6 +259,17 @@ the log for the pickup line.
 | `/jssrv2` | `maxPlayers` written and restored, and `getMap(id)` returning the map from `/jsmapitem`. |
 | `/jsredirect`, then teleport | Every teleport lands you back where you stood. `/jsredirect` again to stop. This is `event.to` — before it, a teleport could only be cancelled outright, never redirected. |
 
+### Identity, registries and the remaining gaps
+
+| Do | Expect |
+| --- | --- |
+| `/jsids` | `id` and `runtimeId` as two different numbers, plus `address:port`. `id` is the one that survives a restart; storing `runtimeId` loses the reference on the next boot. |
+| Hold a sword, `/jsdura` | `maxDurability=1561` and a durability percentage, then the same figures looked up **by id** for items you are not holding, and enchantment level caps. An unknown id reports `-1`, which is not the same answer as `0`. |
+| `/jsboard`, then `/jsslot` | The sort order changes **without** the objective leaving the sidebar, then it moves to `belowName`, then off the board entirely while staying registered. `setDisplay` could only ever do all of it at once. |
+| `/jssender` | `console=false block=false` in game. Put the same command in a **command block** and run it: `block=true` with the block's coordinates. Before this, a command block reached a handler with no way to know where it was. |
+| `/jschunks`, then walk somewhere new | Five chunk loads, each naming its dimension and level, then it stops itself. Without the dimension the coordinates are ambiguous — an overworld chunk and a nether one look identical. |
+| Change your skin in the client | The log reports the new skin id, cape id and broadcast message. |
+
 ### Drawing on a map
 
 `/jsdraw` — creates a map, attaches a JavaScript renderer, and puts it in your hand. You should see a

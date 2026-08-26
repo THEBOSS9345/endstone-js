@@ -277,7 +277,8 @@ const METHODS_BY_TYPE = {
   ],
   BossBar: ['addPlayer', 'removePlayer', 'removeAll', 'addFlag', 'removeFlag', 'remove'],
   Scoreboard: [
-    'addObjective', 'removeObjective', 'setDisplayName', 'setDisplay', 'clearSlot',
+    'addObjective', 'removeObjective', 'setDisplayName', 'setDisplay', 'setDisplaySlot',
+    'setSortOrder', 'clearSlot',
     'setScore', 'addScore', 'resetScores',
   ],
   Inventory: ['getItem', 'setItem', 'addItem', 'removeItem', 'clear', 'remove', 'removeStack'],
@@ -618,6 +619,20 @@ function wrap(handle) {
       }
       if (prop === 'isPermissionSet') {
         return (node) => binding.get(handle, 'permissionSet:' + String(node)) === true;
+      }
+      // Registry lookups keyed by id, so a plugin can ask about a type before it holds one - what a
+      // level cap or a durability bar needs. -1 means the id is not registered, which is not 0.
+      if (prop === 'getEnchantmentMaxLevel') {
+        return (id) => binding.get(handle, 'enchantMaxLevel:' + String(id));
+      }
+      if (prop === 'getEnchantmentStartLevel') {
+        return (id) => binding.get(handle, 'enchantStartLevel:' + String(id));
+      }
+      if (prop === 'getItemMaxDurability') {
+        return (id) => binding.get(handle, 'itemMaxDurability:' + String(id));
+      }
+      if (prop === 'getItemMaxStackSize') {
+        return (id) => binding.get(handle, 'itemMaxStackSize:' + String(id));
       }
       if (prop === 'getTag') {
         return (key) => binding.get(handle, 'tag:' + String(key));

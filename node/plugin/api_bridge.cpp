@@ -31,6 +31,7 @@
 #include <endstone/command/command_sender.h>
 #include <endstone/command/console_command_sender.h>
 #include <endstone/damage/damage_source.h>
+#include <endstone/command/block_command_sender.h>
 #include <endstone/enchantments/enchantment.h>
 #include <endstone/event/actor/actor_damage_event.h>
 #include <endstone/event/actor/actor_death_event.h>
@@ -96,6 +97,7 @@
 #include <endstone/inventory/equipment_slot.h>
 #include <endstone/inventory/inventory.h>
 #include <endstone/inventory/item_stack.h>
+#include <endstone/inventory/item_type.h>
 #include <endstone/inventory/meta/book_meta.h>
 #include <endstone/inventory/meta/crossbow_meta.h>
 #include <endstone/inventory/meta/item_meta.h>
@@ -1111,6 +1113,39 @@ esn_status ApiBridge::scoreboardInvoke(Scoreboard &board, const std::string_view
         objective->setDisplay(*slot, order);
         return ESN_OK;
     }
+    // setDisplaySlot(objective, slot) - an empty slot takes it off the board without unregistering it,
+    // which is what Objective::setDisplaySlot(nullopt) does.
+    if (name == "setDisplaySlot") {
+        const auto objective = board.getObjective(str(0));
+        if (!objective) {
+            return ESN_ERR_BAD_ARGUMENT;
+        }
+        const auto slot_name = str(1);
+        if (slot_name.empty()) {
+            objective->setDisplaySlot(std::nullopt);
+            return ESN_OK;
+        }
+        const auto slot = displaySlotFromName(slot_name);
+        if (!slot) {
+            return ESN_ERR_BAD_ARGUMENT;
+        }
+        objective->setDisplaySlot(*slot);
+        return ESN_OK;
+    }
+    // setSortOrder(objective, order) - changes the ordering without disturbing where it is shown.
+    if (name == "setSortOrder") {
+        const auto objective = board.getObjective(str(0));
+        if (!objective) {
+            return ESN_ERR_BAD_ARGUMENT;
+        }
+        const auto requested = str(1);
+        if (requested != "ascending" && requested != "descending") {
+            return ESN_ERR_BAD_ARGUMENT;
+        }
+        objective->setSortOrder(requested == "ascending" ? ObjectiveSortOrder::Ascending
+                                                         : ObjectiveSortOrder::Descending);
+        return ESN_OK;
+    }
     if (name == "clearSlot") {
         const auto slot = displaySlotFromName(str(0));
         if (!slot) {
@@ -1671,6 +1706,8 @@ esn_status actorGetInt(Actor &actor, const std::string_view name, std::int64_t *
     // Runtime ids exceed what a double represents exactly, so this is the one id exposed as a number
     // only because Bedrock keeps them small in practice; prefer uniqueId for anything persistent.
     if (name == "runtimeId") { *out = static_cast<std::int64_t>(actor.getRuntimeId()); return ESN_OK; }
+    // The persistent id, the one that survives a reload - this is what a saved reference should key on.
+    if (name == "id") { *out = actor.getId(); return ESN_OK; }
     (void)actor;
     (void)name;
     (void)out;
@@ -1958,6 +1995,7 @@ esn_status ApiBridge::getBool(const esn_handle target, const std::string_view na
             return ESN_OK;
         }
         if (name == "isConsole") { *out = sender->asConsole() != nullptr; return ESN_OK; }
+        if (name == "isBlock") { *out = sender->asBlock() != nullptr; return ESN_OK; }
         return permissibleGetBool(*sender, name, out);
     }
     if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
@@ -2007,6 +2045,9 @@ esn_status ApiBridge::getInt(const esn_handle target, const std::string_view nam
         if (name == "health") { *out = player->getHealth(); return ESN_OK; }
         if (name == "maxHealth") { *out = player->getMaxHealth(); return ESN_OK; }
         if (name == "ping") { *out = player->getPing().count(); return ESN_OK; }
+        // The remote port. address gives the hostname alone, which is not enough to tell two players
+        // behind one NAT apart.
+        if (name == "port") { *out = player->getAddress().getPort(); return ESN_OK; }
         if (name == "expLevel") { *out = player->getExpLevel(); return ESN_OK; }
         if (name == "totalExp") { *out = player->getTotalExp(); return ESN_OK; }
         return actorGetInt(*player, name, out);
@@ -2051,6 +2092,29 @@ esn_status ApiBridge::getInt(const esn_handle target, const std::string_view nam
             return ESN_OK;
         }
         if (name == "maxPlayers") { *out = server->getMaxPlayers(); return ESN_OK; }
+        // Registry lookups keyed by id, so a plugin can ask about a type it does not hold an instance
+        // of - what a level cap or a durability bar needs before the item exists. -1 means unknown id,
+        // which is not the same answer as 0.
+        if (const auto id = suffixOf(name, "enchantMaxLevel:")) {
+            const auto *enchantment = server->getRegistry<Enchantment>().get(EnchantmentId{*id});
+            *out = enchantment ? enchantment->getMaxLevel() : -1;
+            return ESN_OK;
+        }
+        if (const auto id = suffixOf(name, "enchantStartLevel:")) {
+            const auto *enchantment = server->getRegistry<Enchantment>().get(EnchantmentId{*id});
+            *out = enchantment ? enchantment->getStartLevel() : -1;
+            return ESN_OK;
+        }
+        if (const auto id = suffixOf(name, "itemMaxDurability:")) {
+            const auto *type = server->getRegistry<ItemType>().get(ItemTypeId{*id});
+            *out = type ? type->getMaxDurability() : -1;
+            return ESN_OK;
+        }
+        if (const auto id = suffixOf(name, "itemMaxStackSize:")) {
+            const auto *type = server->getRegistry<ItemType>().get(ItemTypeId{*id});
+            *out = type ? type->getMaxStackSize() : -1;
+            return ESN_OK;
+        }
         // Epoch milliseconds, which is what `new Date(n)` takes.
         if (name == "startTime") {
             *out = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -2088,6 +2152,8 @@ esn_status ApiBridge::getInt(const esn_handle target, const std::string_view nam
         if (name == "amount") { *out = stack->getAmount(); return ESN_OK; }
         if (name == "data") { *out = stack->getData(); return ESN_OK; }
         if (name == "maxStackSize") { *out = stack->getMaxStackSize(); return ESN_OK; }
+        // 0 for anything that does not wear out. Paired with damage, this is a durability bar.
+        if (name == "maxDurability") { *out = stack->getType().getMaxDurability(); return ESN_OK; }
         // Metadata that reads as a number. All three are 0 on an item with no metadata at all.
         if (name == "damage" || name == "repairCost") {
             const auto meta = stack->getItemMeta();
@@ -2820,6 +2886,20 @@ esn_status ApiBridge::getString(const esn_handle target, const std::string_view 
             if (name == "minecraftVersion") { return emitString(ping->getMinecraftVersionNetwork(), buf, cap, needed); }
             if (name == "address") { return emitString(ping->getAddress().getHostname(), buf, cap, needed); }
         }
+        if (event->getEventName() == "PlayerSkinChangeEvent") {
+            // The skin itself is an Image and stays on the C++ side, but the ids identify it, and the
+            // broadcast message is the part a plugin usually wants to suppress or reword.
+            auto *change = static_cast<PlayerSkinChangeEvent *>(event);
+            if (name == "skinId") { return emitString(change->getNewSkin().getId(), buf, cap, needed); }
+            if (name == "capeId") {
+                const auto &cape = change->getNewSkin().getCapeId();
+                return emitString(cape.value_or(std::string{}), buf, cap, needed);
+            }
+            if (name == "skinChangeMessage") {
+                const auto message = change->getSkinChangeMessage();
+                return emitString(message ? messageToString(*message) : std::string{}, buf, cap, needed);
+            }
+        }
         if (name == "deathMessage" && event->getEventName() == "PlayerDeathEvent") {
             const auto message = static_cast<PlayerDeathEvent *>(event)->getDeathMessage();
             return emitString(message ? messageToString(*message) : std::string{}, buf, cap, needed);
@@ -3090,6 +3170,18 @@ esn_status ApiBridge::getHandle(const esn_handle target, const std::string_view 
             });
             return ESN_OK;
         }
+        // ChunkEvent derives from DimensionEvent, so a chunk load knows its dimension - without this a
+        // multi-world plugin cannot tell an overworld load from a nether one.
+        if (name == "dimension" || name == "level") {
+            const auto event_name = event->getEventName();
+            if (event_name == "ChunkLoadEvent" || event_name == "ChunkUnloadEvent") {
+                auto &dimension = static_cast<ChunkEvent *>(event)->getDimension();
+                *out = name == "dimension" ? track(&dimension, Kind::Dimension, true)
+                                           : track(&dimension.getLevel(), Kind::Level, true);
+                return ESN_OK;
+            }
+            return ESN_ERR_NO_SUCH_MEMBER;
+        }
         if (name == "map" && event->getEventName() == "MapInitializeEvent") {
             *out = track(&static_cast<MapInitializeEvent *>(event)->getMap(), Kind::MapView);
             return ESN_OK;
@@ -3250,6 +3342,24 @@ esn_status ApiBridge::getHandle(const esn_handle target, const std::string_view 
             }
         }
         (void)inventory;
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *sender = static_cast<CommandSender *>(resolve(target, Kind::CommandSender))) {
+        // A command block reaches a handler with nothing to say where it is. This is that position.
+        if (name == "block") {
+            auto *as_block = sender->asBlock();
+            if (!as_block) {
+                return ESN_ERR_WRONG_TYPE;
+            }
+            auto block = as_block->getBlock();
+            if (!block) {
+                return ESN_ERR_INTERNAL;
+            }
+            auto *raw = block.get();
+            owned_blocks_.push_back(std::move(block));
+            *out = track(raw, Kind::Block);
+            return ESN_OK;
+        }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *location = static_cast<Location *>(resolve(target, Kind::Location))) {
@@ -3620,6 +3730,12 @@ esn_status ApiBridge::setString(const esn_handle target, const std::string_view 
                 ping->setGameMode(*mode);
                 return ESN_OK;
             }
+        }
+        if (name == "skinChangeMessage" && event->getEventName() == "PlayerSkinChangeEvent") {
+            // An empty string suppresses the announcement, matching join and quit messages.
+            auto *change = static_cast<PlayerSkinChangeEvent *>(event);
+            change->setSkinChangeMessage(value.empty() ? std::optional<Message>{} : Message{std::string{value}});
+            return ESN_OK;
         }
         if (name == "deathMessage" && event->getEventName() == "PlayerDeathEvent") {
             // An empty string suppresses the announcement, matching join and quit messages.

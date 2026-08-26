@@ -645,6 +645,121 @@ commands.register("jsdropped", (sender) => {
 }, { description: "Drops an item and reads it back as an Item actor.", op: true });
 
 // --- scoreboard display readback ----------------------------------------------------------------------
+// --- identity, address, registries -------------------------------------------------------------------
+commands.register("jsids", (sender) => {
+    if (!needPlayer(sender)) return;
+    // runtimeId is per-session; id survives a restart. They are different numbers, and a plugin that
+    // stores the wrong one silently loses its reference on the next boot.
+    say(sender, `§7you: id=${sender.id} runtimeId=${sender.runtimeId} uniqueId=${sender.uniqueId}`);
+    say(sender, `§7from ${sender.address}:${sender.port} ping=${sender.ping}ms`);
+    if (typeof sender.id !== "number") say(sender, "§cACTOR ID MISSING");
+    if (typeof sender.port !== "number") say(sender, "§cPORT MISSING");
+    if (sender.port === 0) say(sender, "§ePORT IS 0 - suspicious, but not impossible");
+}, { description: "Reports actor id, runtime id and the remote address and port." });
+
+commands.register("jsdura", (sender) => {
+    if (!needPlayer(sender)) return;
+    const item = sender.inventory.itemInMainHand;
+    if (!item) return say(sender, "§7hold something first");
+    const max = item.maxDurability;
+    say(sender, `§7${item.type}: maxStackSize=${item.maxStackSize} maxDurability=${max}`);
+    if (max > 0) {
+        const damage = item.hasItemMeta ? (item.itemMeta.damage ?? 0) : 0;
+        say(sender, `§7durability ${max - damage}/${max} (${Math.round((1 - damage / max) * 100)}%)`);
+    } else {
+        say(sender, "§7this item does not wear out");
+    }
+    // The same numbers by id, without holding the item - what a plugin needs before the stack exists.
+    for (const id of ["minecraft:diamond_sword", "minecraft:stone", "minecraft:not_a_real_item"]) {
+        say(sender, `§7${id}: durability=${server.getItemMaxDurability(id)} ` +
+                    `stack=${server.getItemMaxStackSize(id)}`);
+    }
+    for (const id of ["minecraft:sharpness", "minecraft:mending", "minecraft:not_a_real_enchant"]) {
+        say(sender, `§7${id}: start=${server.getEnchantmentStartLevel(id)} ` +
+                    `max=${server.getEnchantmentMaxLevel(id)}`);
+    }
+    if (server.getItemMaxDurability("minecraft:not_a_real_item") !== -1) {
+        say(sender, "§cUNKNOWN ITEM ID SHOULD REPORT -1");
+    }
+    if (server.getEnchantmentMaxLevel("minecraft:sharpness") <= 0) {
+        say(sender, "§cENCHANTMENT REGISTRY LOOKUP FAILED");
+    }
+}, { description: "Reads item durability and looks types and enchantments up by id." });
+
+// --- moving an objective without rebuilding it -----------------------------------------------------------
+commands.register("jsslot", (sender) => {
+    const board = server.scoreboard;
+    if (!board.objectives.some((o) => o.name === "testkit")) {
+        return say(sender, "§7no testkit objective - run /jsboard first");
+    }
+    const read = () => board.objectives.find((o) => o.name === "testkit");
+    say(sender, `§7before: slot=${read().displaySlot ?? "none"} order=${read().sortOrder ?? "none"}`);
+
+    board.setSortOrder("testkit", "ascending");
+    const ascending = read();
+    say(sender, `§7after setSortOrder: slot=${ascending.displaySlot ?? "none"} ` +
+                `order=${ascending.sortOrder ?? "none"}`);
+    // The point of the individual setters: changing the order must not move it off the sidebar.
+    if (ascending.sortOrder !== "ascending") say(sender, "§cSORT ORDER NOT APPLIED");
+    if (ascending.displaySlot !== "sidebar") say(sender, "§cSORT ORDER CHANGE DISTURBED THE SLOT");
+
+    board.setDisplaySlot("testkit", "belowName");
+    say(sender, `§7after setDisplaySlot: slot=${read().displaySlot ?? "none"}`);
+    if (read().displaySlot !== "belowName") say(sender, "§cDISPLAY SLOT NOT APPLIED");
+
+    // No slot at all takes it off the board without unregistering it - the scores must survive.
+    board.setDisplaySlot("testkit");
+    const hidden = read();
+    say(sender, `§7after clearing: slot=${hidden?.displaySlot ?? "none"} ` +
+                `stillRegistered=${hidden !== undefined}`);
+    if (!hidden) say(sender, "§cCLEARING THE SLOT UNREGISTERED THE OBJECTIVE");
+
+    scheduler.runLater(() => {
+        board.setDisplay("testkit", "sidebar", "descending");
+        say(sender, "§7restored to the sidebar");
+    }, 40);
+}, { description: "Moves an objective's slot and sort order independently.", op: true });
+
+// --- who ran this ------------------------------------------------------------------------------------------
+commands.register("jssender", (sender) => {
+    // Worth running from a command block: that is the branch that had no position until now.
+    say(sender, `§7name="${sender.name}" console=${sender.isConsole === true} ` +
+                `block=${sender.isBlock === true} op=${sender.isOp}`);
+    if (sender.isBlock) {
+        const block = sender.block;
+        say(sender, `§7command block at ${block.x},${block.y},${block.z} in ${block.dimension} ` +
+                    `type=${block.type}`);
+        if (!block) say(sender, "§cBLOCK SENDER HAS NO BLOCK");
+    } else if (!sender.isConsole) {
+        say(sender, "§7run this from a command block to see the block branch");
+    }
+}, { description: "Reports which kind of sender ran the command, and where a block sits." });
+
+// --- chunk events know their dimension --------------------------------------------------------------------
+let chunkTap = null;
+commands.register("jschunks", (sender) => {
+    if (chunkTap) {
+        chunkTap.unsubscribe();
+        chunkTap = null;
+        return say(sender, "§7chunk logging off");
+    }
+    let seen = 0;
+    // Very high volume, so this stops itself rather than relying on you to turn it off.
+    chunkTap = events.chunkLoad((event) => {
+        if (seen >= 5) return;
+        seen += 1;
+        say(sender, `§7chunk ${event.chunkX},${event.chunkZ} in ${event.dimension.name} ` +
+                    `of level "${event.level.name}"`);
+        if (!event.dimension) say(sender, "§cCHUNK EVENT HAS NO DIMENSION");
+        if (seen >= 5) {
+            say(sender, "§7five chunks logged - stopping");
+            chunkTap.unsubscribe();
+            chunkTap = null;
+        }
+    });
+    say(sender, "§7chunk logging on - walk somewhere new");
+}, { description: "Logs which dimension the next few chunk loads belong to.", op: true });
+
 commands.register("jsobj", (sender) => {
     const objectives = server.scoreboard.objectives;
     if (objectives.length === 0) return say(sender, "§7no objectives - run /jsboard first");
@@ -780,6 +895,11 @@ export default {
                         `delay=${event.item.pickupDelay}`);
         });
 
+        events.playerSkinChange((event) => {
+            logger.info(`[testkit] ${event.player.name} skin -> ${event.skinId} ` +
+                        `cape="${event.capeId}" message="${event.skinChangeMessage}"`);
+        });
+
         events.playerItemHeld((event) => {
             logger.info(`[testkit] held slot ${event.previousSlot} -> ${event.newSlot}`);
         });
@@ -789,6 +909,7 @@ export default {
 
     onDisable() {
         if (redirect) redirect.unsubscribe();
+        if (chunkTap) chunkTap.unsubscribe();
         if (sidebarTask) sidebarTask.cancel();
         if (packetTap) packetTap.unsubscribe();
         if (barTask) barTask.cancel();
