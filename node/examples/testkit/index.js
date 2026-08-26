@@ -744,15 +744,15 @@ commands.register("jschunks", (sender) => {
         return say(sender, "§7chunk logging off");
     }
     let seen = 0;
+    const name = sender.name;
     // Very high volume, so this stops itself rather than relying on you to turn it off.
     chunkTap = events.chunkLoad((event) => {
         if (seen >= 5) return;
         seen += 1;
-        say(sender, `§7chunk ${event.chunkX},${event.chunkZ} in ${event.dimension.name} ` +
+        say(name, `§7chunk ${event.chunkX},${event.chunkZ} in ${event.dimension.name} ` +
                     `of level "${event.level.name}"`);
-        if (!event.dimension) say(sender, "§cCHUNK EVENT HAS NO DIMENSION");
         if (seen >= 5) {
-            say(sender, "§7five chunks logged - stopping");
+            say(name, "§7five chunks logged - stopping");
             chunkTap.unsubscribe();
             chunkTap = null;
         }

@@ -90,4 +90,4 @@ echo " package.json, or a single .js file - then /jsreload."
 echo "==============================================================="
 echo
 
-exec endstone -s "$SERVER" -y --no-interactive
+exec endstone -s "$SERVER" -y
