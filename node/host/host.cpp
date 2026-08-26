@@ -486,15 +486,26 @@ napi_value fetchMember(napi_env env, esn_handle handle, const char *name, int ki
         if (!acc->get_string) {
             return nullptr;
         }
+        // Asked for straight into a stack buffer rather than sized first: names, types and dimension
+        // names are all far shorter than this, so the usual read is one call instead of two. A value
+        // that does not fit reports the size it needs and is fetched again, as the convention allows.
+        char inline_buffer[256];
         std::size_t needed = 0;
-        const auto status = acc->get_string(context, handle, name, nullptr, 0, &needed);
+        const auto status =
+            acc->get_string(context, handle, name, inline_buffer, sizeof(inline_buffer), &needed);
         if (status == ESN_ERR_STALE_HANDLE) {
             return fail(env, status, name);
         }
         if (status != ESN_OK) {
             return nullptr;
         }
-        std::vector<char> buffer(needed + 1, '\0');
+        if (needed < sizeof(inline_buffer)) {
+            if (napi_create_string_utf8(env, inline_buffer, needed, &result) != napi_ok) {
+                return nullptr;
+            }
+            break;
+        }
+        std::vector<char> buffer(needed + 1, 0);
         (void)acc->get_string(context, handle, name, buffer.data(), buffer.size(), &needed);
         if (napi_create_string_utf8(env, buffer.data(), needed, &result) != napi_ok) {
             return nullptr;

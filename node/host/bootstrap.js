@@ -454,8 +454,22 @@ const flatten = (args) => {
 const flattenRotation = (value) =>
   ['yaw', 'pitch'].filter((key) => Number.isFinite(readNumber(value, key))).map((key) => value[key]);
 
+// Proxies by handle.
+//
+// A handle id is never reused - the bridge counts up and never hands the same one out twice - so a
+// cached proxy always refers to the object it was made for, and once that goes stale using it throws
+// exactly as a fresh one would. The cache is therefore purely an optimisation and dropping an entry is
+// always safe, which is what lets it be capped rather than tied to dispatch boundaries.
+//
+// Reuse is what makes the per-proxy caches worth having: without it `event.player.name` followed by
+// `event.player.health` builds two proxies, resolves the type twice and shares no bound methods.
+const PROXY_LIMIT = 1024;
+const proxies = new Map();
+
 function wrap(handle) {
   if (!handle) return null;
+  const existing = proxies.get(handle);
+  if (existing) return existing;
   // Resolved on first use and kept: one ABI call per object, however many properties are read off it.
   let typeName = null;
   const typeOf = () => (typeName ??= binding.typeName(handle));
@@ -748,6 +762,10 @@ function wrap(handle) {
     },
     has(_t, prop) { return typeof prop === 'string'; },
   });
+  // Cleared wholesale rather than evicted one at a time: entries are equally worthless once the
+  // dispatch that made them ends, and rebuilding a proxy costs one type lookup.
+  if (proxies.size >= PROXY_LIMIT) proxies.clear();
+  proxies.set(handle, proxy);
   return proxy;
 }
 
