@@ -104,6 +104,7 @@
 #include <endstone/level/location.h>
 #include <endstone/map/map_view.h>
 #include <endstone/nbt/tag.h>
+#include <endstone/permissions/permissible.h>
 #include <endstone/permissions/permission_level.h>
 #include <endstone/player.h>
 #include <endstone/plugin/plugin_manager.h>
@@ -1590,6 +1591,32 @@ esn_handle parseHandleSuffix(const std::string_view digits)
 
 }  // namespace
 
+// Permissions live on Permissible, which CommandSender and therefore every Actor derives from, so one
+// helper serves players, actors and the console alike. The node rides the accessor name the way a
+// custom NBT key does, because the accessors carry no argument of their own.
+esn_status permissibleGetBool(Permissible &who, const std::string_view name, int *out)
+{
+    if (const auto node = suffixOf(name, "permission:")) {
+        *out = who.hasPermission(*node);
+        return ESN_OK;
+    }
+    if (const auto node = suffixOf(name, "permissionSet:")) {
+        *out = who.isPermissionSet(*node);
+        return ESN_OK;
+    }
+    return ESN_ERR_NO_SUCH_MEMBER;
+}
+
+std::string_view permissionLevelName(const PermissionLevel level)
+{
+    switch (level) {
+    case PermissionLevel::Default: return "default";
+    case PermissionLevel::Operator: return "operator";
+    case PermissionLevel::Console: return "console";
+    }
+    return "default";
+}
+
 esn_status ApiBridge::getBool(const esn_handle target, const std::string_view name, int *out)
 {
     if (!out) {
@@ -1615,9 +1642,15 @@ esn_status ApiBridge::getBool(const esn_handle target, const std::string_view na
         if (name == "isFlying") { *out = player->isFlying(); return ESN_OK; }
         if (name == "allowFlight") { *out = player->getAllowFlight(); return ESN_OK; }
         if (name == "isGliding") { *out = player->isGliding(); return ESN_OK; }
+        if (const auto status = permissibleGetBool(*player, name, out); status != ESN_ERR_NO_SUCH_MEMBER) {
+            return status;
+        }
         return actorGetBool(*player, name, out);
     }
     if (auto *actor = resolveActor(target)) {
+        if (const auto status = permissibleGetBool(*actor, name, out); status != ESN_ERR_NO_SUCH_MEMBER) {
+            return status;
+        }
         return actorGetBool(*actor, name, out);
     }
     if (auto *source = static_cast<DamageSource *>(resolve(target, Kind::DamageSource))) {
@@ -1680,7 +1713,7 @@ esn_status ApiBridge::getBool(const esn_handle target, const std::string_view na
             return ESN_OK;
         }
         if (name == "isConsole") { *out = sender->asConsole() != nullptr; return ESN_OK; }
-        return ESN_ERR_NO_SUCH_MEMBER;
+        return permissibleGetBool(*sender, name, out);
     }
     if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
         const auto ev = event->getEventName();
@@ -2178,6 +2211,9 @@ esn_status ApiBridge::getString(const esn_handle target, const std::string_view 
         if (name == "scoreTag") { return emitString(player->getScoreTag(), buf, cap, needed); }
         if (name == "dimension") { return emitString(player->getDimension().getName(), buf, cap, needed); }
         if (name == "gameMode") { return emitString(gameModeName(player->getGameMode()), buf, cap, needed); }
+        if (name == "permissionLevel") {
+            return emitString(permissionLevelName(player->getPermissionLevel()), buf, cap, needed);
+        }
         // The skin's identity, not its pixels: an Image cannot cross the ABI usefully.
         if (name == "skinId") { return emitString(player->getSkin().getId(), buf, cap, needed); }
         if (name == "capeId") {
@@ -2234,6 +2270,9 @@ esn_status ApiBridge::getString(const esn_handle target, const std::string_view 
     }
     if (auto *sender = static_cast<CommandSender *>(resolve(target, Kind::CommandSender))) {
         if (name == "name") { return emitString(sender->getName(), buf, cap, needed); }
+        if (name == "permissionLevel") {
+            return emitString(permissionLevelName(sender->getPermissionLevel()), buf, cap, needed);
+        }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
@@ -3166,6 +3205,34 @@ esn_status ApiBridge::setString(const esn_handle target, const std::string_view 
     return find(target) ? ESN_ERR_NO_SUCH_MEMBER : ESN_ERR_STALE_HANDLE;
 }
 
+/**
+ * @brief addPermission(node, value) / removePermission(node) / recalculatePermissions().
+ *
+ * A granted permission is an attachment owned by the permissible, and Endstone hands its pointer
+ * back. That pointer is not retained here: keeping one past the callback that made it is exactly the
+ * lifetime mistake handles exist to prevent, and a player who disconnects would leave it dangling.
+ * removePermission therefore overrides the node to false rather than detaching, which is what gating
+ * actually needs; the attachment itself goes when the player does.
+ */
+esn_status permissibleInvoke(Plugin &owner, Permissible &who, const std::string_view name,
+                             const std::string &text, const std::function<double(std::size_t, double)> &number)
+{
+    if (name == "addPermission" || name == "removePermission") {
+        if (text.empty()) {
+            return ESN_ERR_BAD_ARGUMENT;
+        }
+        const bool value = name == "addPermission" ? number(0, 1) != 0 : false;
+        (void)who.addAttachment(owner, text, value);
+        who.recalculatePermissions();
+        return ESN_OK;
+    }
+    if (name == "recalculatePermissions") {
+        who.recalculatePermissions();
+        return ESN_OK;
+    }
+    return ESN_ERR_NO_SUCH_MEMBER;
+}
+
 esn_status ApiBridge::invoke(const esn_handle target, const std::string_view name,
                              const char *const *strings, const std::size_t string_count, const double *numbers,
                              const std::size_t number_count, const esn_handle *handles,
@@ -3236,6 +3303,10 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
                                   string_count > 1 ? std::optional<std::string>{str(1)} : std::nullopt);
             return ESN_OK;
         }
+        if (const auto status = permissibleInvoke(plugin_, *player, name, text, number);
+            status != ESN_ERR_NO_SUCH_MEMBER) {
+            return status;
+        }
         // Everything Actor offers, so `Player extends Actor` in the types is not a lie.
         return actorInvoke(*player, name, text, str, number);
     }
@@ -3247,6 +3318,59 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
             static_cast<ActorKnockbackEvent *>(event)->setKnockback(
                 Vector{number(0), number(1), number(2)});
             return ESN_OK;
+        }
+        // setFrom / setTo - where a move, teleport or portal is coming from and going to. Routed as a
+        // method because a Location is six numbers plus a dimension and the ABI's setters carry one
+        // scalar each. Anything not supplied keeps the event's current value, so assigning a bare
+        // { x, y, z } redirects the destination without disturbing facing or dimension.
+        if (name == "setFrom" || name == "setTo") {
+            const auto place = [&](const Location &current) -> std::optional<Location> {
+                auto *dimension = &current.getDimension();
+                if (const auto requested = str(0); !requested.empty()) {
+                    dimension = current.getDimension().getLevel().getDimension(requested);
+                    if (!dimension) {
+                        return std::nullopt;
+                    }
+                }
+                return Location{*dimension,
+                                static_cast<float>(number(0, current.getX())),
+                                static_cast<float>(number(1, current.getY())),
+                                static_cast<float>(number(2, current.getZ())),
+                                static_cast<float>(number(4, current.getPitch())),
+                                static_cast<float>(number(3, current.getYaw()))};
+            };
+            // PlayerJumpEvent, PlayerTeleportEvent and PlayerPortalEvent all derive from
+            // PlayerMoveEvent, which is what the matching getters already rely on.
+            if (ev == "PlayerMoveEvent" || ev == "PlayerJumpEvent" || ev == "PlayerTeleportEvent" ||
+                ev == "PlayerPortalEvent") {
+                auto *move = static_cast<PlayerMoveEvent *>(event);
+                const auto updated = place(name == "setFrom" ? move->getFrom() : move->getTo());
+                if (!updated) {
+                    return ESN_ERR_BAD_ARGUMENT;
+                }
+                if (name == "setFrom") {
+                    move->setFrom(*updated);
+                }
+                else {
+                    move->setTo(*updated);
+                }
+                return ESN_OK;
+            }
+            if (ev == "ActorTeleportEvent") {
+                auto *teleport = static_cast<ActorTeleportEvent *>(event);
+                const auto updated = place(name == "setFrom" ? teleport->getFrom() : teleport->getTo());
+                if (!updated) {
+                    return ESN_ERR_BAD_ARGUMENT;
+                }
+                if (name == "setFrom") {
+                    teleport->setFrom(*updated);
+                }
+                else {
+                    teleport->setTo(*updated);
+                }
+                return ESN_OK;
+            }
+            return ESN_ERR_NO_SUCH_MEMBER;
         }
         // The blocks an explosion is about to destroy, by index. Removing one from the list is not
         // exposed; cancel the event instead.
@@ -3455,7 +3579,7 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
     if (auto *sender = static_cast<CommandSender *>(resolve(target, Kind::CommandSender))) {
         if (name == "sendMessage") { sender->sendMessage(Message{std::string{text}}); return ESN_OK; }
         if (name == "sendErrorMessage") { sender->sendErrorMessage(Message{std::string{text}}); return ESN_OK; }
-        return ESN_ERR_NO_SUCH_MEMBER;
+        return permissibleInvoke(plugin_, *sender, name, text, number);
     }
     if (auto *inventory = resolveInventory(target)) {
         // An item is described by a type plus optional amount and data, so nothing has to construct an
@@ -3525,6 +3649,10 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *actor = resolveActor(target)) {
+        if (const auto status = permissibleInvoke(plugin_, *actor, name, text, number);
+            status != ESN_ERR_NO_SUCH_MEMBER) {
+            return status;
+        }
         return actorInvoke(*actor, name, text, str, number);
     }
     if (auto *block = static_cast<Block *>(resolve(target, Kind::Block))) {

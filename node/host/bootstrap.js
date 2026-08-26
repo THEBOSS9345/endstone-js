@@ -243,7 +243,8 @@ const HANDLE = Symbol('endstone.handle');
 // Keep this in step with ApiBridge::invoke: each entry is one of its `resolve(target, Kind::X)`
 // branches. Adding a method to the bridge and not to the type here leaves it uncallable.
 const METHODS_BY_TYPE = {
-  CommandSender: ['sendMessage', 'sendErrorMessage'],
+  CommandSender: ['sendMessage', 'sendErrorMessage', 'addPermission', 'removePermission',
+                  'recalculatePermissions'],
   Actor: ['sendMessage', 'remove', 'addScoreboardTag', 'removeScoreboardTag', 'setRotation', 'teleport'],
   Mob: [],
   Player: [
@@ -271,7 +272,7 @@ const METHODS_BY_TYPE = {
     'setItemInMainHand', 'setItemInOffHand',
   ],
   ItemStack: ['removeTag', 'addEnchant', 'removeEnchant', 'removeEnchants', 'clone'],
-  Event: ['cancel', 'getExplodedBlock', 'setKnockback'],
+  Event: ['cancel', 'getExplodedBlock', 'setKnockback', 'setFrom', 'setTo'],
 };
 
 // Endstone's own hierarchy, so a Player answers to everything an Actor does.
@@ -466,6 +467,16 @@ const flatten = (args) => {
   return flat;
 };
 
+/** A location's dimension name, or null for a plain { x, y, z }. Reading it may throw; that is fine. */
+const readDimension = (value) => {
+  try {
+    const dimension = value.dimension;
+    return typeof dimension === 'string' && dimension !== '' ? dimension : null;
+  } catch {
+    return null;
+  }
+};
+
 // Rotation writes go through their own flattening: only yaw/pitch are picked, so assigning
 // `actor.rotation = actor.location` reads the facing off the location rather than the position.
 const flattenRotation = (value) =>
@@ -554,6 +565,14 @@ function wrap(handle) {
       // decodes as UTF-8, which replaces every byte that is not valid UTF-8 with U+FFFD.
       if (prop === 'payload') {
         return binding.getBytes(handle, 'payload');
+      }
+      // Permissions. The node rides the accessor name, so these are ordinary reads rather than calls
+      // across the method path.
+      if (prop === 'hasPermission') {
+        return (node) => binding.get(handle, 'permission:' + String(node)) === true;
+      }
+      if (prop === 'isPermissionSet') {
+        return (node) => binding.get(handle, 'permissionSet:' + String(node)) === true;
       }
       if (prop === 'getTag') {
         return (key) => binding.get(handle, 'tag:' + String(key));
@@ -767,6 +786,16 @@ function wrap(handle) {
         // The `rotation` field is two numbers behind one object; route it through the same
         // dispatch as a method so the host reads yaw, pitch.
         binding.invoke(handle, 'setRotation', ...flattenRotation(value));
+      } else if (prop === 'from' || prop === 'to') {
+        // A Location is six numbers plus a dimension, so it routes through a method like `rotation`.
+        // Facing and dimension are optional and default to whatever the event already had.
+        const position = numbersOf(value, POSITION_KEYS);
+        if (!position) throw new TypeError(`${prop} must have numeric x, y and z`);
+        const rotation = numbersOf(value, ROTATION_KEYS);
+        const args = rotation ? [...position, ...rotation] : [...position];
+        const dimension = readDimension(value);
+        if (dimension) args.push(dimension);
+        binding.invoke(handle, prop === 'from' ? 'setFrom' : 'setTo', ...args);
       } else if (prop === 'knockback') {
         // Same trick for a vector-valued field: the ABI's setters only carry scalars.
         const vector = numbersOf(value, POSITION_KEYS);
@@ -905,6 +934,11 @@ const consoleSender = {
   name: 'Console',
   isConsole: true,
   isOp: true,
+  // The console runs at Endstone's Console permission level, which is above operator: it holds
+  // every node, so a declared permission must never gate it.
+  permissionLevel: 'console',
+  hasPermission: () => true,
+  isPermissionSet: () => true,
   sendMessage(text) { binding.log(2, String(text).replace(/§./g, '')); },
   sendErrorMessage(text) { binding.log(4, String(text).replace(/§./g, '')); },
 };
@@ -932,6 +966,14 @@ function runCommand(command, sender, args, raw) {
     // Logged as well as replied to: a refusal that only appears in the player's chat is impossible
     // to tell apart from a command that never fired at all.
     binding.log(2, `refused '/${command.name}' for ${sender.name}: operators only`);
+    sender.sendMessage('§cYou do not have permission to use that command.');
+    return;
+  }
+  // A declared permission is checked here as well as being handed to Endstone, so a command
+  // registered too late to reach the registry is still gated rather than open to everyone.
+  for (const node of command.permissions) {
+    if (typeof sender.hasPermission === 'function' && sender.hasPermission(node)) continue;
+    binding.log(2, `refused '/${command.name}' for ${sender.name}: missing ${node}`);
     sender.sendMessage('§cYou do not have permission to use that command.');
     return;
   }

@@ -23,6 +23,9 @@ HELPERS = {
     "actorInvoke": "Actor",
     "bossBarInvoke": "BossBar",
     "scoreboardInvoke": "Scoreboard",
+    # Permissible sits under CommandSender, which every Actor and Player derives from, so the parent
+    # chain carries these the rest of the way.
+    "permissibleInvoke": "CommandSender",
 }
 
 # Names the runtime handles itself and never forwards under that name, so the bridge has no case for
