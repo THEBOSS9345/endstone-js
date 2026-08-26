@@ -17,7 +17,7 @@ node\scripts\test-endstone-node.ps1
 ```
 [Nodejs] Node host ABI version 15
 [Nodejs] loaded 3/3 JavaScript plugin(s)
-[Nodejs] testkit ready: 26 commands, schema r26_u4
+[Nodejs] testkit ready: 48 commands, schema r26_u4
 ```
 
 If the ABI line says anything other than 15, the plugin and host halves are out of step — rebuild.
@@ -194,6 +194,73 @@ before, which is why they are called out rather than left to the general passes.
 
 The nested-dispatch case is the one worth being deliberate about: it is a use-after-free, so the old
 behaviour was undefined rather than reliably wrong. It may have looked fine and corrupted memory anyway.
+
+## 13. Newly bound API
+
+Everything here was added after the sections above. Each command reads back what it wrote where it
+can, so a dropped write shows up as a red `§c` line rather than as nothing at all.
+
+### Players and permissions
+
+| Do | Expect |
+| --- | --- |
+| `/jsplayers` | Every online player listed, and the count matching the list length. This is the loop that was impossible to write before — `onlinePlayerCount` existed, nothing iterated. |
+| `/jsperm` | `has=false` → grant → `has=true` → deny → `has=false`. Any `§c` line means a write was dropped. |
+| `/jsgated` | Refused until you run `/jsperm testkit.gated`, then allowed. This is the **declared-permission** path, which used to be unenforced — a command registered too late for Bedrock's registry was open to everyone. |
+
+### Blocks and dimensions
+
+| Do | Expect |
+| --- | --- |
+| `/jsstates` | Places stairs, writes one state, and reports the rest. **`§cOTHER STATES WERE LOST` is the failure to watch** — only the named state should change. Restores the original block afterwards. |
+| `/jsdim2` | `type=overworld` (the enum, not the display name), and `getRelative("up")` / `getRelative("up", 2)` landing exactly 1 and 2 blocks higher. |
+
+### Item metadata
+
+| Do | Expect |
+| --- | --- |
+| `/jsmapitem` | You end up holding a `filled_map` pointing at the map the plugin made. This is the gap where `createMap()` and `sendMap()` both worked and there was no way to put a map *into an item*. |
+| `/jsbook` | A written book with title, author and generation, all read back off the inventory. |
+| `/jspages` | A writable book with `pageCount=3` — two set at once, one appended. |
+| `/jsbow` | A crossbow reporting `charged=true count=1`. |
+
+### Inventory matching
+
+`/jsmatch` — hold a tool. It compares matching by **type id** with matching the **whole stack**.
+
+The difference only appears once metadata is involved, so the real test is: put two identical items in
+your inventory, enchant one, hold the enchanted one, and run it again. The type list should then be
+**longer** than the stack list. Before this, `first("minecraft:diamond_pickaxe")` matched any pickaxe,
+so a plugin could not tell one specific item from another of the same kind.
+
+### Dropped items
+
+`/jsdropped` — drops two diamonds and reads them back as an `Item` actor: `endstoneType=Item`, its
+`itemStack`, and a `pickupDelay` and `unlimitedLifetime` that both persist. Then pick it up and watch
+the log for the pickup line.
+
+**`/jsdropped` sets `unlimitedLifetime`, so the drop will not despawn** — pick it up or it stays.
+
+### Scoreboard, chat, server
+
+| Do | Expect |
+| --- | --- |
+| `/jsboard`, then `/jsobj` | `testkit: display=sidebar order=descending`. Reading back *where* an objective is shown was previously impossible — only setting it worked. |
+| Say anything in chat | The log reports the chat `format` and recipient count, and your messages gain a `[js]` prefix — applied by rewriting the format, not by cancelling and re-broadcasting. |
+| `/jssrv2` | `maxPlayers` written and restored, and `getMap(id)` returning the map from `/jsmapitem`. |
+| `/jsredirect`, then teleport | Every teleport lands you back where you stood. `/jsredirect` again to stop. This is `event.to` — before it, a teleport could only be cancelled outright, never redirected. |
+
+### Weather
+
+Run `/weather rain` and `/weather thunder`. The log should report `weather -> raining` / `-> clear` and
+`thunder -> storm` / `-> calm`. Both events fired before this but carried none of their state, so a
+handler could not tell rain starting from rain stopping.
+
+### Stopping the server
+
+`/jsstop` warns; `/jsstop confirm` actually stops it via `server.shutdown()`. That is the only
+sanctioned way for a plugin to stop the server — `process.exit()` is neutralised deliberately, so
+before this there was no way at all.
 
 ---
 

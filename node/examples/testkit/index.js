@@ -411,6 +411,226 @@ commands.register("jsskin", (sender) => {
     if (skin.width === 0) say(sender, "§cSKIN SIZE MISSING");
 }, { description: "Reports your skin and cape ids and sizes." });
 
+// --- newly bound surface --------------------------------------------------------------------------
+// Everything below covers API added after the first pass. Each command reads back what it wrote where
+// it can, so a silently-dropped write shows up as a red line rather than as nothing at all.
+
+commands.register("jsplayers", (sender) => {
+    const players = server.onlinePlayers;
+    say(sender, `§7onlinePlayers=${players.length} count=${server.onlinePlayerCount}`);
+    for (const player of players) {
+        say(sender, `  §f${player.name} §7at ${Math.round(player.location.x)},${Math.round(player.location.z)}`);
+    }
+    if (players.length !== server.onlinePlayerCount) say(sender, "§cLIST DOES NOT MATCH COUNT");
+    if (!sender.isConsole && !players.some((p) => p.name === sender.name)) {
+        say(sender, "§cYOU ARE MISSING FROM THE LIST");
+    }
+}, { description: "Lists every online player." });
+
+commands.register("jsperm", (sender, args) => {
+    const node = args[0] ?? "testkit.demo";
+    say(sender, `§7level=${sender.permissionLevel} isOp=${sender.isOp}`);
+    say(sender, `§7before: has=${sender.hasPermission(node)} set=${sender.isPermissionSet(node)}`);
+    sender.addPermission(node);
+    if (!sender.hasPermission(node)) say(sender, "§cGRANT DID NOT TAKE");
+    say(sender, `§7after grant: has=${sender.hasPermission(node)} set=${sender.isPermissionSet(node)}`);
+    sender.removePermission(node);
+    if (sender.hasPermission(node)) say(sender, "§cDENY DID NOT TAKE");
+    say(sender, `§7after deny: has=${sender.hasPermission(node)}`);
+}, { description: "Grants and denies a permission node, reading it back.",
+     usages: ["/jsperm [node: string]"], op: true });
+
+// Gated on a declared permission rather than on op, which is the path that was never checked before.
+commands.register("jsgated", (sender) => {
+    say(sender, "§aYou hold testkit.gated - the permission gate let you through.");
+    say(sender, "§7Run /jsperm testkit.gated to grant or deny it, then try this again.");
+}, { description: "Only runs if you hold testkit.gated.", permissions: ["testkit.gated"] });
+
+commands.register("jsstates", (sender) => {
+    if (!needPlayer(sender)) return;
+    const dim = server.level.getDimension(sender.dimension.toLowerCase());
+    const at = { x: Math.round(sender.location.x), z: Math.round(sender.location.z) };
+    const y = dim.getHighestBlockYAt(at);
+    const block = dim.getBlockAt({ x: at.x, y, z: at.z });
+    const before = block.captureState();
+    block.type = "minecraft:oak_stairs";
+    say(sender, `§7placed stairs, states=${JSON.stringify(block.blockStates)}`);
+    // The write names one state; everything else in the palette entry has to survive it.
+    block.blockStates = { weirdo_direction: 2 };
+    const after = block.blockStates;
+    say(sender, `§7after write: ${JSON.stringify(after)}`);
+    if (after.weirdo_direction !== 2) say(sender, "§cBLOCK STATE WRITE FAILED");
+    if (!("upside_down_bit" in after)) say(sender, "§cOTHER STATES WERE LOST");
+    before.update(true);
+    say(sender, "§arestored the original block");
+}, { description: "Writes a block state and checks the others survive.", op: true });
+
+commands.register("jsdim2", (sender) => {
+    if (!needPlayer(sender)) return;
+    const dim = server.level.getDimension(sender.dimension.toLowerCase());
+    say(sender, `§7name=${dim.name} type=${dim.type}`);
+    const at = { x: Math.round(sender.location.x), z: Math.round(sender.location.z) };
+    const ground = dim.getBlockAt({ x: at.x, y: dim.getHighestBlockYAt(at), z: at.z });
+    // getRelative by face pairs with the face the interact event already reports.
+    const above = ground.getRelative("up");
+    const twoUp = ground.getRelative("up", 2);
+    say(sender, `§7ground=${ground.type} up=${above.type} up2=${twoUp.type}`);
+    if (above.location.y !== ground.location.y + 1) say(sender, "§cgetRelative(face) WRONG OFFSET");
+    if (twoUp.location.y !== ground.location.y + 2) say(sender, "§cgetRelative(face, 2) WRONG OFFSET");
+}, { description: "Dimension type and getRelative by block face." });
+
+// --- item metadata ---------------------------------------------------------------------------------
+let testkitMap = null;
+
+commands.register("jsmapitem", (sender) => {
+    if (!needPlayer(sender)) return;
+    if (!testkitMap) {
+        testkitMap = server.createMap();
+        testkitMap.centerX = Math.round(sender.location.x);
+        testkitMap.centerZ = Math.round(sender.location.z);
+    }
+    sender.inventory.setItemInMainHand({ type: "minecraft:filled_map" });
+    sender.inventory.itemInMainHand.setMapView(testkitMap);
+    // Read back off the inventory, not off the copy that was written.
+    const again = sender.inventory.itemInMainHand;
+    say(sender, `§7hasMapView=${again.hasMapView} hasMapId=${again.hasMapId} mapId=${again.mapId}`);
+    if (!again.hasMapView) say(sender, "§cSETMAPVIEW DID NOT PERSIST");
+    else say(sender, "§ayou are holding the map this plugin made");
+}, { description: "Puts a created map into a filled_map item.", op: true });
+
+commands.register("jsbook", (sender) => {
+    if (!needPlayer(sender)) return;
+    sender.inventory.setItemInMainHand({ type: "minecraft:written_book" });
+    const item = sender.inventory.itemInMainHand;
+    item.title = "Testkit";
+    item.author = sender.name;
+    item.generation = "copyOfOriginal";
+    const again = sender.inventory.itemInMainHand;
+    say(sender, `§7title="${again.title}" author="${again.author}" generation=${again.generation}`);
+    if (again.title !== "Testkit") say(sender, "§cBOOK TITLE NOT WRITTEN BACK");
+    if (again.author !== sender.name) say(sender, "§cBOOK AUTHOR NOT WRITTEN BACK");
+    if (again.generation !== "copyOfOriginal") say(sender, "§cBOOK GENERATION NOT WRITTEN BACK");
+}, { description: "Writes a written book's title, author and generation.", op: true });
+
+commands.register("jspages", (sender) => {
+    if (!needPlayer(sender)) return;
+    sender.inventory.setItemInMainHand({ type: "minecraft:writable_book" });
+    const item = sender.inventory.itemInMainHand;
+    item.pages = ["First page.", "Second page."];
+    sender.inventory.itemInMainHand.addPage("Third page.");
+    const again = sender.inventory.itemInMainHand;
+    say(sender, `§7pageCount=${again.pageCount} hasPages=${again.hasPages}`);
+    say(sender, `§7pages=${JSON.stringify(again.pages)}`);
+    if (again.pageCount !== 3) say(sender, "§cPAGE COUNT WRONG - addPage or pages failed");
+}, { description: "Writes and appends pages on a writable book.", op: true });
+
+commands.register("jsbow", (sender) => {
+    if (!needPlayer(sender)) return;
+    sender.inventory.setItemInMainHand({ type: "minecraft:crossbow" });
+    sender.inventory.itemInMainHand.addChargedProjectile("minecraft:arrow");
+    const again = sender.inventory.itemInMainHand;
+    say(sender, `§7charged=${again.hasChargedProjectiles} count=${again.chargedProjectileCount}`);
+    if (again.chargedProjectileCount < 1) say(sender, "§cCROSSBOW NOT LOADED");
+}, { description: "Loads a crossbow with an arrow.", op: true });
+
+// --- inventory matching -----------------------------------------------------------------------------
+commands.register("jsmatch", (sender) => {
+    if (!needPlayer(sender)) return;
+    const inv = sender.inventory;
+    const held = inv.itemInMainHand;
+    if (!held) return say(sender, "§chold something first - ideally an enchanted tool");
+    // Matching by type id against matching the whole stack. The difference only shows once a stack
+    // carries metadata, which is why this asks you to enchant one of two identical items.
+    const byType = inv.all(held.type);
+    const byStack = inv.all(held);
+    say(sender, `§7type "${held.type}" is in slots [${byType.join(", ")}]`);
+    say(sender, `§7this exact stack is in slots [${byStack.join(", ")}]`);
+    say(sender, `§7contains(type)=${inv.contains(held.type)} contains(stack)=${inv.contains(held)}`);
+    say(sender, `§7first(type)=${inv.first(held.type)} first(stack)=${inv.first(held)}`);
+    if (!inv.contains(held)) say(sender, "§cSTACK MATCH FAILED against the item you are holding");
+    if (byStack.length > byType.length) say(sender, "§cSTACK MATCH IS WIDER THAN TYPE MATCH");
+    say(sender, "§7Enchant one of two identical items and run this again: the type list should then");
+    say(sender, "§7be longer than the stack list.");
+}, { description: "Compares matching by type id with matching a whole stack." });
+
+// --- dropped items -----------------------------------------------------------------------------------
+commands.register("jsdropped", (sender) => {
+    if (!needPlayer(sender)) return;
+    const dim = server.level.getDimension(sender.dimension.toLowerCase());
+    const dropped = dim.dropItem(sender.location, { type: "minecraft:diamond", amount: 2 });
+    if (!dropped) return say(sender, "§cdropItem returned null");
+    say(sender, `§7endstoneType=${dropped.endstoneType} type=${dropped.type}`);
+    if (dropped.endstoneType !== "Item") say(sender, "§cDROPPED ITEM IS NOT AN Item HANDLE");
+    const stack = dropped.itemStack;
+    say(sender, `§7itemStack=${stack ? `${stack.amount} x ${stack.type}` : "none"}`);
+    dropped.pickupDelay = 60;
+    dropped.unlimitedLifetime = true;
+    say(sender, `§7pickupDelay=${dropped.pickupDelay} unlimitedLifetime=${dropped.unlimitedLifetime}`);
+    if (dropped.pickupDelay !== 60) say(sender, "§cPICKUP DELAY NOT WRITTEN");
+    if (dropped.unlimitedLifetime !== true) say(sender, "§cUNLIMITED LIFETIME NOT WRITTEN");
+    say(sender, "§await 3s, pick it up, and watch the log for the pickup event");
+}, { description: "Drops an item and reads it back as an Item actor.", op: true });
+
+// --- scoreboard display readback ----------------------------------------------------------------------
+commands.register("jsobj", (sender) => {
+    const objectives = server.scoreboard.objectives;
+    if (objectives.length === 0) return say(sender, "§7no objectives - run /jsboard first");
+    for (const objective of objectives) {
+        say(sender, `§7${objective.name}: display=${objective.displaySlot ?? "none"} ` +
+                    `order=${objective.sortOrder ?? "none"} modifiable=${objective.modifiable}`);
+    }
+    const shown = objectives.find((o) => o.name === "testkit");
+    if (shown && shown.displaySlot !== "sidebar") {
+        say(sender, "§cDISPLAY SLOT READBACK WRONG - /jsboard puts testkit on the sidebar");
+    }
+}, { description: "Reads back where each objective is displayed." });
+
+// --- server controls -----------------------------------------------------------------------------------
+commands.register("jssrv2", (sender) => {
+    const before = server.maxPlayers;
+    server.maxPlayers = before + 1;
+    const after = server.maxPlayers;
+    server.maxPlayers = before;
+    say(sender, `§7maxPlayers ${before} -> ${after} -> ${server.maxPlayers}`);
+    if (after !== before + 1) say(sender, "§cMAXPLAYERS NOT WRITABLE");
+    if (testkitMap) {
+        const again = server.getMap(testkitMap.id);
+        say(sender, `§7getMap(${testkitMap.id}) -> ${again ? `id ${again.id}` : "null"}`);
+        if (!again || again.id !== testkitMap.id) say(sender, "§cGETMAP FAILED");
+    } else {
+        say(sender, "§7run /jsmapitem first to test getMap(id)");
+    }
+}, { description: "Writes maxPlayers and looks a map up by id.", op: true });
+
+// Behind a literal confirm on purpose: it really does stop the server.
+commands.register("jsstop", (sender, args) => {
+    if (args[0] !== "confirm") {
+        return say(sender, "§eThis stops the server. Run §f/jsstop confirm§e if you mean it.");
+    }
+    say(sender, "§cshutting down via server.shutdown()");
+    server.shutdown();
+}, { description: "Stops the server - needs the word confirm.",
+     usages: ["/jsstop <confirm>"], op: true });
+
+// --- redirecting a move ----------------------------------------------------------------------------------
+let redirect = null;
+
+commands.register("jsredirect", (sender) => {
+    if (!needPlayer(sender)) return;
+    if (redirect) {
+        redirect.unsubscribe();
+        redirect = null;
+        return say(sender, "§7teleport redirect off");
+    }
+    const anchor = { x: sender.location.x, y: sender.location.y, z: sender.location.z };
+    redirect = events.playerTeleport((event) => {
+        // Rewriting the destination rather than cancelling is the whole point of setTo.
+        event.to = anchor;
+        logger.info(`[testkit] redirected a teleport to ${Math.round(anchor.x)},${Math.round(anchor.z)}`);
+    });
+    say(sender, "§aany teleport now lands back here - /jsredirect again to stop");
+}, { description: "Redirects teleports to where you stood, testing event.to.", op: true });
+
 // --- packets -------------------------------------------------------------------------------------
 commands.register("jspacket", (sender) => {
     say(sender, `§7schema=${packets.schemaVersion} id141=${packets.nameOf(141)}`);
@@ -466,6 +686,27 @@ export default {
                         `block=${event.block?.type ?? "-"} face=${event.blockFace} item=${event.item?.type ?? "-"}`);
         });
 
+        // Weather events carry exactly one field each, and it says which way the change is going.
+        events.weatherChange((event) => {
+            logger.info(`[testkit] weather -> ${event.raining ? "raining" : "clear"}`);
+        });
+        events.thunderChange((event) => {
+            logger.info(`[testkit] thunder -> ${event.thundering ? "storm" : "calm"}`);
+        });
+
+        // Rewriting the format rather than the message is how a rank prefix is applied.
+        events.playerChat((event) => {
+            logger.info(`[testkit] chat format="${event.format}" recipients=${event.recipients.length}`);
+            event.format = "§7[js]§r " + event.format;
+        }, { priority: "monitor" });
+
+        // The pickup event finally knows what was picked up.
+        events.playerPickupItem((event) => {
+            const stack = event.item.itemStack;
+            logger.info(`[testkit] pickup ${stack ? stack.amount + " x " + stack.type : "?"} ` +
+                        `delay=${event.item.pickupDelay}`);
+        });
+
         events.playerItemHeld((event) => {
             logger.info(`[testkit] held slot ${event.previousSlot} -> ${event.newSlot}`);
         });
@@ -474,6 +715,7 @@ export default {
     },
 
     onDisable() {
+        if (redirect) redirect.unsubscribe();
         if (sidebarTask) sidebarTask.cancel();
         if (packetTap) packetTap.unsubscribe();
         if (barTask) barTask.cancel();
