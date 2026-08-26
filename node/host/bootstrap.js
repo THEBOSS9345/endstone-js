@@ -343,6 +343,39 @@ const INVENTORY_HELPERS = {
   },
 };
 
+// Which typed accessor answers a member, keyed by type and name.
+//
+// The bridge dispatches on the property name inside each accessor, so probing all five walks the
+// type's branch up to five times before one answers - `player.health` is a failed string dispatch and
+// a failed boolean one before get_int hits. The winner never changes for a given type and name, so it
+// is remembered and asked for directly from then on. The table is module-level rather than per proxy:
+// a nested read mints a fresh proxy every time, and a per-proxy table would be thrown away unused.
+const MEMBER_KINDS = [0, 1, 2, 3, 4];  // string, bool, int, double, handle - matches MemberKind
+// Built rather than written literally: a NUL in this file would terminate the C++ raw string the
+// bootstrap is embedded in, truncating everything after it.
+const MEMBER_KEY_SEP = String.fromCharCode(0);
+const memberKinds = new Map();
+
+function readMember(handle, type, prop) {
+  const key = type + MEMBER_KEY_SEP + prop;
+  const known = memberKinds.get(key);
+  if (known !== undefined) {
+    const value = binding.getAs(handle, prop, known);
+    // undefined means that accessor did not answer, which for a known member means the type's shape
+    // changed under us; fall through and find it again rather than reporting it missing.
+    if (value !== undefined) return value;
+  }
+  for (const kind of MEMBER_KINDS) {
+    if (kind === known) continue;
+    const value = binding.getAs(handle, prop, kind);
+    if (value !== undefined) {
+      memberKinds.set(key, kind);
+      return value;
+    }
+  }
+  return undefined;
+}
+
 // The separator every list-valued accessor is joined on. Spelled as a char code out of habit from when
 // this file lived inside a C++ raw string literal; harmless, and it stays unambiguous next to the 0x1f
 // record separator below.
@@ -674,7 +707,7 @@ function wrap(handle) {
         boundMethods.set(prop, cached);
         return cached;
       }
-      const value = binding.get(handle, prop);
+      const value = readMember(handle, typeOf(), prop);
       const nested = asHandle(value);
       return nested === null ? value : wrap(nested);
     },
@@ -736,7 +769,7 @@ const server = new Proxy(serverBase, {
         return nested === null ? result : wrap(nested);
       };
     }
-    const value = binding.get(serverHandle, prop);
+    const value = readMember(serverHandle, 'Server', prop);
     const nested = asHandle(value);
     return nested === null ? value : wrap(nested);
   },

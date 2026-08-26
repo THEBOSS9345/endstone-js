@@ -35,6 +35,17 @@ def main() -> int:
         print(f"{args.source}: contains the raw-string delimiter ){DELIMITER}\" - rename it", file=sys.stderr)
         return 1
 
+    # The embedded source is read back as a const char*, so a NUL byte truncates everything after
+    # it - silently, and only at runtime. node --check accepts one inside a string literal, so the
+    # build is the only place this can be caught. Build the character instead, as bootstrap.js does
+    # for its other separators: String.fromCharCode(0).
+    nul = chr(0)
+    if nul in js:
+        line = js.count(chr(10), 0, js.index(nul)) + 1
+        print(f"{args.source}:{line}: contains a NUL byte, which would truncate the embedded "
+              f"source. Use String.fromCharCode(0) instead.", file=sys.stderr)
+        return 1
+
     # A syntax error would otherwise surface as a runtime failure at server start-up, long after the
     # build said everything was fine. Skipped silently when node is unavailable: this must not be the
     # thing that stops someone building.

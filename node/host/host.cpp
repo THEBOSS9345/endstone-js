@@ -462,66 +462,168 @@ const esn_accessors *accessors()
     return g_host && g_host->api ? &g_host->api->accessors : nullptr;
 }
 
-napi_value jsGet(napi_env env, napi_callback_info info)
+// Which typed accessor answers a member. The runtime remembers the winner per (type, name) and asks
+// for it directly, so a read costs one accessor call instead of probing until one answers.
+enum MemberKind { kMemberString = 0, kMemberBool, kMemberInt, kMemberDouble, kMemberHandle, kMemberCount };
+
+/**
+ * One typed probe. `*answered` is set when that accessor produced a value; a stale handle throws,
+ * because reaching through an object that has outlived its callback is a plugin bug rather than an
+ * absent member.
+ */
+napi_value fetchMember(napi_env env, esn_handle handle, const char *name, int kind, bool *answered)
 {
-    esn_handle handle = 0;
-    std::string name;
+    *answered = false;
     const auto *acc = accessors();
-    if (!acc || !readTargetAndName(env, info, &handle, name)) {
+    if (!acc) {
         return nullptr;
     }
     void *context = g_host->api->context;
     napi_value result = nullptr;
 
-    // Probe in order of cheapness. ESN_ERR_WRONG_TYPE means "exists, different type", so keep going;
-    // ESN_ERR_NO_SUCH_MEMBER from every probe means it genuinely is not there.
-    std::size_t needed = 0;
-    if (acc->get_string) {
-        const auto status = acc->get_string(context, handle, name.c_str(), nullptr, 0, &needed);
-        if (status == ESN_OK) {
-            std::vector<char> buffer(needed + 1, '\0');
-            (void)acc->get_string(context, handle, name.c_str(), buffer.data(), buffer.size(), &needed);
-            return napi_create_string_utf8(env, buffer.data(), needed, &result) == napi_ok ? result : nullptr;
+    switch (kind) {
+    case kMemberString: {
+        if (!acc->get_string) {
+            return nullptr;
         }
+        std::size_t needed = 0;
+        const auto status = acc->get_string(context, handle, name, nullptr, 0, &needed);
         if (status == ESN_ERR_STALE_HANDLE) {
             return fail(env, status, name);
         }
+        if (status != ESN_OK) {
+            return nullptr;
+        }
+        std::vector<char> buffer(needed + 1, '\0');
+        (void)acc->get_string(context, handle, name, buffer.data(), buffer.size(), &needed);
+        if (napi_create_string_utf8(env, buffer.data(), needed, &result) != napi_ok) {
+            return nullptr;
+        }
+        break;
     }
-    if (acc->get_bool) {
+    case kMemberBool: {
         int value = 0;
-        if (acc->get_bool(context, handle, name.c_str(), &value) == ESN_OK) {
-            return napi_get_boolean(env, value != 0, &result) == napi_ok ? result : nullptr;
+        if (!acc->get_bool) {
+            return nullptr;
         }
+        const auto status = acc->get_bool(context, handle, name, &value);
+        if (status == ESN_ERR_STALE_HANDLE) {
+            return fail(env, status, name);
+        }
+        if (status != ESN_OK || napi_get_boolean(env, value != 0, &result) != napi_ok) {
+            return nullptr;
+        }
+        break;
     }
-    if (acc->get_int) {
+    case kMemberInt: {
         std::int64_t value = 0;
-        if (acc->get_int(context, handle, name.c_str(), &value) == ESN_OK) {
-            return napi_create_int64(env, value, &result) == napi_ok ? result : nullptr;
+        if (!acc->get_int) {
+            return nullptr;
         }
+        const auto status = acc->get_int(context, handle, name, &value);
+        if (status == ESN_ERR_STALE_HANDLE) {
+            return fail(env, status, name);
+        }
+        if (status != ESN_OK || napi_create_int64(env, value, &result) != napi_ok) {
+            return nullptr;
+        }
+        break;
     }
-    if (acc->get_double) {
+    case kMemberDouble: {
         double value = 0;
-        if (acc->get_double(context, handle, name.c_str(), &value) == ESN_OK) {
-            return napi_create_double(env, value, &result) == napi_ok ? result : nullptr;
+        if (!acc->get_double) {
+            return nullptr;
         }
+        const auto status = acc->get_double(context, handle, name, &value);
+        if (status == ESN_ERR_STALE_HANDLE) {
+            return fail(env, status, name);
+        }
+        if (status != ESN_OK || napi_create_double(env, value, &result) != napi_ok) {
+            return nullptr;
+        }
+        break;
     }
-    if (acc->get_handle) {
+    case kMemberHandle: {
         esn_handle value = 0;
-        if (acc->get_handle(context, handle, name.c_str(), &value) == ESN_OK) {
-            // Tagged so JavaScript can tell a nested object from a plain number and wrap it.
-            napi_value tagged = nullptr;
-            napi_value inner = nullptr;
-            if (napi_create_object(env, &tagged) == napi_ok &&
-                napi_create_int64(env, static_cast<std::int64_t>(value), &inner) == napi_ok &&
-                napi_set_named_property(env, tagged, "__esn_handle", inner) == napi_ok) {
-                return tagged;
-            }
+        if (!acc->get_handle) {
+            return nullptr;
+        }
+        const auto status = acc->get_handle(context, handle, name, &value);
+        if (status == ESN_ERR_STALE_HANDLE) {
+            return fail(env, status, name);
+        }
+        if (status != ESN_OK) {
+            return nullptr;
+        }
+        // Tagged so JavaScript can tell a nested object from a plain number and wrap it.
+        napi_value inner = nullptr;
+        if (napi_create_object(env, &result) != napi_ok ||
+            napi_create_int64(env, static_cast<std::int64_t>(value), &inner) != napi_ok ||
+            napi_set_named_property(env, result, "__esn_handle", inner) != napi_ok) {
+            return nullptr;
+        }
+        break;
+    }
+    default:
+        return nullptr;
+    }
+
+    *answered = true;
+    return result;
+}
+
+bool exceptionPending(napi_env env)
+{
+    bool pending = false;
+    return napi_is_exception_pending(env, &pending) == napi_ok && pending;
+}
+
+// get(handle, name) - probes every accessor in turn. Kept for the prefixed reads ("tag:x", "player:x")
+// whose names vary per call, so remembering a winner would only fill the table.
+napi_value jsGet(napi_env env, napi_callback_info info)
+{
+    esn_handle handle = 0;
+    std::string name;
+    if (!accessors() || !readTargetAndName(env, info, &handle, name)) {
+        return nullptr;
+    }
+    for (int kind = 0; kind < kMemberCount; ++kind) {
+        bool answered = false;
+        napi_value value = fetchMember(env, handle, name.c_str(), kind, &answered);
+        if (answered) {
+            return value;
+        }
+        if (exceptionPending(env)) {
             return nullptr;
         }
     }
     // Unknown members read as undefined rather than throwing; stale handles still throw above.
     napi_value undefined_value = nullptr;
     return napi_get_undefined(env, &undefined_value) == napi_ok ? undefined_value : nullptr;
+}
+
+// getAs(handle, name, kind) - asks exactly one accessor. undefined means "that one does not answer",
+// which is what lets the runtime probe from JavaScript and remember which kind won.
+napi_value jsGetAs(napi_env env, napi_callback_info info)
+{
+    esn_handle handle = 0;
+    std::string name;
+    napi_value kind_value = nullptr;
+    napi_value undefined_value = nullptr;
+    (void)napi_get_undefined(env, &undefined_value);
+    if (!accessors() || !readTargetAndName(env, info, &handle, name, &kind_value) || !kind_value) {
+        return undefined_value;
+    }
+    std::int32_t kind = -1;
+    if (napi_get_value_int32(env, kind_value, &kind) != napi_ok) {
+        return undefined_value;
+    }
+    bool answered = false;
+    napi_value value = fetchMember(env, handle, name.c_str(), kind, &answered);
+    if (answered) {
+        return value;
+    }
+    return exceptionPending(env) ? nullptr : undefined_value;
 }
 
 napi_value jsSet(napi_env env, napi_callback_info info)
@@ -926,6 +1028,7 @@ napi_value registerBinding(napi_env env, napi_value exports)
     defineFunction(env, exports, "serverSelf", jsServerSelf);
     defineFunction(env, exports, "broadcastMessage", jsBroadcastMessage);
     defineFunction(env, exports, "get", jsGet);
+    defineFunction(env, exports, "getAs", jsGetAs);
     defineFunction(env, exports, "set", jsSet);
     defineFunction(env, exports, "getBytes", jsGetBytes);
     defineFunction(env, exports, "setBytes", jsSetBytes);
