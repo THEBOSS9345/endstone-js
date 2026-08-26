@@ -15,12 +15,12 @@ node\scripts\test-endstone-node.ps1
 `linux-serve.sh` symlinks every example, so `testkit` loads automatically. Expect at start-up:
 
 ```
-[Nodejs] Node host ABI version 14
+[Nodejs] Node host ABI version 15
 [Nodejs] loaded 3/3 JavaScript plugin(s)
 [Nodejs] testkit ready: 26 commands, schema r26_u4
 ```
 
-If the ABI line says anything other than 14, the plugin and host halves are out of step — rebuild.
+If the ABI line says anything other than 15, the plugin and host halves are out of step — rebuild.
 
 ---
 
@@ -176,6 +176,24 @@ These fire without a command:
 RakNet's network thread, and delivering it would enter V8 off-thread and race the handle table - which is
 exactly what the `handles must not be kept past the callback` errors on `motd` were. The runtime now drops
 it and warns once at start-up.
+
+---
+
+## 12. Regression checks
+
+These cover defects that were fixed after the sections above were written. Each one failed silently
+before, which is why they are called out rather than left to the general passes.
+
+| Do | Expect | Was |
+| --- | --- | --- |
+| Right-click a block holding an item | The `interact` log line ends `item=minecraft:<something>`, not `item=-` | `event.item` was always `undefined` on `playerInteract` and `playerItemConsume` — the branch that read it was unreachable |
+| `/jstap`, then move around | Decoded packets whose payloads contain bytes ≥ 0x80 now decode; the `complete=true` share should be visibly higher than before | Payloads crossed as UTF-8, so every byte that was not valid UTF-8 became U+FFFD and then `0xFD` |
+| `/jsboard`, then `/jsintro` repeatedly (20+ times) | Steady memory and no slowdown | Every read of `server.scoreboard`, `player.scoreboard`, `level.getDimension()` minted a *persistent* handle that was never released, and each event dispatch walks the whole handle table |
+| `/jstap` on and off 20+ times, then break a block | The break still logs exactly once | Each `unsubscribe` left its Endstone listener wired forever, so listeners accumulated |
+| From a command handler, call something that fires an event (e.g. `/gm` in the `commands` example, which calls `performCommand`) | The command finishes normally | A nested dispatch used to free the outer dispatch's `Location`/`ItemStack`/`Block` objects while the outer handler was still holding them |
+
+The nested-dispatch case is the one worth being deliberate about: it is a use-after-free, so the old
+behaviour was undefined rather than reliably wrong. It may have looked fine and corrupted memory anyway.
 
 ---
 

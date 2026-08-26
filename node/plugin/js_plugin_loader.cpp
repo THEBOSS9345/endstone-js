@@ -104,12 +104,15 @@ bool JsPlugin::onCommand(CommandSender &sender, const Command &command, const st
         argv.push_back(arg.c_str());
     }
 
-    // The sender handle is scoped to this call, exactly like an event's handles.
+    // The sender handle is scoped to this call, exactly like an event's handles. The scope is opened
+    // here rather than inside trackSender so it nests: a command handler that fires an event gets its
+    // own inner scope, and unwinding that one leaves this one's objects alone.
+    const auto scope = bridge_->beginScope();
     const auto sender_handle = bridge_->trackSender(sender);
     int handled = 0;
     const auto status = api_.plugin_command(handle_, command.getName().c_str(), sender_handle,
                                            argv.empty() ? nullptr : argv.data(), argv.size(), &handled);
-    bridge_->releaseDispatch();
+    bridge_->endScope(scope);
 
     if (status != ESN_OK) {
         getLogger().error("Command '{}' failed: {}", command.getName(), api_.message(status));

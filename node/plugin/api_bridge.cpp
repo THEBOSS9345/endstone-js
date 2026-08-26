@@ -21,53 +21,24 @@
 
 #include <endstone/actor/actor.h>
 #include <endstone/actor/mob.h>
+#include <endstone/ban/ip_ban_list.h>
+#include <endstone/ban/player_ban_list.h>
 #include <endstone/block/block.h>
 #include <endstone/block/block_data.h>
 #include <endstone/block/block_state.h>
-#include <endstone/ban/ip_ban_list.h>
-#include <endstone/ban/player_ban_list.h>
-#include <endstone/enchantments/enchantment.h>
-#include <endstone/inventory/meta/item_meta.h>
-#include <endstone/lang/language.h>
 #include <endstone/boss/boss_bar.h>
 #include <endstone/command/command_sender.h>
 #include <endstone/command/console_command_sender.h>
 #include <endstone/damage/damage_source.h>
-#include <endstone/permissions/permission_level.h>
-#include <endstone/game_mode.h>
-#include <endstone/inventory/inventory.h>
-#include <endstone/inventory/item_stack.h>
-#include <endstone/nbt/tag.h>
-#include <endstone/inventory/player_inventory.h>
-#include <endstone/map/map_view.h>
-#include <endstone/util/socket_address.h>
+#include <endstone/enchantments/enchantment.h>
 #include <endstone/event/actor/actor_damage_event.h>
 #include <endstone/event/actor/actor_death_event.h>
-#include <endstone/event/actor/actor_knockback_event.h>
-#include <endstone/event/player/player_bed_leave_event.h>
-#include <endstone/event/player/player_dimension_change_event.h>
-#include <endstone/event/player/player_emote_event.h>
-#include <endstone/event/player/player_game_mode_change_event.h>
-#include <endstone/event/player/player_interact_actor_event.h>
-#include <endstone/event/player/player_item_consume_event.h>
-#include <endstone/event/player/player_item_held_event.h>
-#include <endstone/event/player/player_kick_event.h>
-#include <endstone/event/player/player_login_event.h>
-#include <endstone/event/server/script_message_event.h>
-#include <endstone/event/server/server_list_ping_event.h>
-#include <endstone/event/server/server_load_event.h>
-#include <endstone/inventory/equipment_slot.h>
-#include <endstone/event/actor/player_death_event.h>
-#include <endstone/event/server/map_initialize_event.h>
-#include <endstone/event/server/packet_receive_event.h>
-#include <endstone/event/server/packet_send_event.h>
-#include <endstone/event/server/plugin_disable_event.h>
-#include <endstone/event/server/plugin_enable_event.h>
 #include <endstone/event/actor/actor_explode_event.h>
 #include <endstone/event/actor/actor_knockback_event.h>
 #include <endstone/event/actor/actor_remove_event.h>
 #include <endstone/event/actor/actor_spawn_event.h>
 #include <endstone/event/actor/actor_teleport_event.h>
+#include <endstone/event/actor/player_death_event.h>
 #include <endstone/event/block/block_break_event.h>
 #include <endstone/event/block/block_cook_event.h>
 #include <endstone/event/block/block_event.h>
@@ -106,28 +77,45 @@
 #include <endstone/event/player/player_skin_change_event.h>
 #include <endstone/event/player/player_teleport_event.h>
 #include <endstone/event/server/broadcast_message_event.h>
+#include <endstone/event/server/map_initialize_event.h>
+#include <endstone/event/server/packet_receive_event.h>
+#include <endstone/event/server/packet_send_event.h>
+#include <endstone/event/server/plugin_disable_event.h>
+#include <endstone/event/server/plugin_enable_event.h>
 #include <endstone/event/server/script_message_event.h>
 #include <endstone/event/server/server_command_event.h>
 #include <endstone/event/server/server_list_ping_event.h>
+#include <endstone/event/server/server_load_event.h>
 #include <endstone/event/weather/thunder_change_event.h>
 #include <endstone/event/weather/weather_change_event.h>
 #include <endstone/form/action_form.h>
 #include <endstone/form/message_form.h>
 #include <endstone/form/modal_form.h>
-#include <endstone/level/dimension.h>
+#include <endstone/game_mode.h>
+#include <endstone/inventory/equipment_slot.h>
+#include <endstone/inventory/inventory.h>
+#include <endstone/inventory/item_stack.h>
+#include <endstone/inventory/meta/item_meta.h>
+#include <endstone/inventory/player_inventory.h>
+#include <endstone/lang/language.h>
 #include <endstone/level/chunk.h>
-#include <endstone/skin.h>
+#include <endstone/level/dimension.h>
+#include <endstone/level/level.h>
+#include <endstone/level/location.h>
+#include <endstone/map/map_view.h>
+#include <endstone/nbt/tag.h>
+#include <endstone/permissions/permission_level.h>
+#include <endstone/player.h>
+#include <endstone/plugin/plugin_manager.h>
+#include <endstone/scheduler/scheduler.h>
+#include <endstone/scheduler/task.h>
 #include <endstone/scoreboard/criteria.h>
 #include <endstone/scoreboard/objective.h>
 #include <endstone/scoreboard/score.h>
 #include <endstone/scoreboard/scoreboard.h>
-#include <endstone/level/level.h>
-#include <endstone/level/location.h>
-#include <endstone/player.h>
-#include <endstone/scheduler/scheduler.h>
-#include <endstone/scheduler/task.h>
-#include <endstone/plugin/plugin_manager.h>
 #include <endstone/server.h>
+#include <endstone/skin.h>
+#include <endstone/util/socket_address.h>
 #include <endstone/util/vector.h>
 
 namespace endstone::node {
@@ -571,9 +559,34 @@ esn_handle ApiBridge::track(void *ptr, const Kind kind, const bool persistent)
     if (!ptr) {
         return 0;
     }
+    // A persistent handle is never released, so minting a fresh one per read would grow the table for
+    // the server's lifetime - and every dispatch walks that table. Reuse the one this object already
+    // has, unless it was tracked under a different kind.
+    if (persistent) {
+        if (const auto it = persistent_handles_.find(ptr); it != persistent_handles_.end()) {
+            const auto *entry = find(it->second);
+            if (entry && entry->kind == kind) {
+                return it->second;
+            }
+            persistent_handles_.erase(it);
+        }
+    }
     const auto handle = next_handle_++;
     handles_[handle] = Entry{ptr, kind, persistent};
+    if (persistent) {
+        persistent_handles_.emplace(ptr, handle);
+    }
     return handle;
+}
+
+void ApiBridge::untrack(const esn_handle handle)
+{
+    if (const auto it = handles_.find(handle); it != handles_.end()) {
+        if (it->second.persistent) {
+            persistent_handles_.erase(it->second.ptr);
+        }
+        handles_.erase(it);
+    }
 }
 
 esn_handle ApiBridge::trackActor(Actor *actor)
@@ -623,63 +636,78 @@ void ApiBridge::setEventSink(EventSink sink)
     event_sink_ = std::move(sink);
 }
 
+std::size_t ApiBridge::registrationFor(const std::string_view event_name, const int priority,
+                                      const bool ignore_cancelled)
+{
+    for (std::size_t i = 0; i < registrations_.size(); ++i) {
+        const auto &registration = registrations_[i];
+        if (registration.event_name == event_name && registration.priority == priority &&
+            registration.ignore_cancelled == ignore_cancelled) {
+            return i;
+        }
+    }
+    registrations_.push_back(Registration{std::string{event_name}, priority, ignore_cancelled, {}, false});
+    return registrations_.size() - 1;
+}
+
 esn_status ApiBridge::subscribe(const std::string_view event_name, const int priority, const bool ignore_cancelled,
                                 std::uint32_t *out)
 {
     if (event_name.empty() || !out) {
         return ESN_ERR_BAD_ARGUMENT;
     }
+    const auto index = registrationFor(event_name, priority, ignore_cancelled);
     const auto subscription = next_subscription_++;
-    subscriptions_.emplace(subscription, std::string{event_name});
+    subscriptions_.emplace(subscription, index);
+    registrations_[index].subscribers.push_back(subscription);
 
     // Endstone refuses to register a listener while the owning plugin is not enabled, and every
     // JavaScript subscription is registered in this plugin's name. Plugins subscribe during load -
-    // before this plugin is enabled - so those are queued and registered on enable. The subscription
-    // id is minted here either way, so JavaScript never has to know which path was taken.
-    if (plugin_.isEnabled()) {
-        registerWithEndstone(subscription, event_name, priority, ignore_cancelled);
-    }
-    else {
-        pending_.push_back({subscription, std::string{event_name}, priority, ignore_cancelled});
+    // before this plugin is enabled - so registration waits for the enable. The subscription id is
+    // minted here either way, so JavaScript never has to know which path was taken.
+    if (plugin_.isEnabled() && !registrations_[index].registered) {
+        registerWithEndstone(index);
     }
 
     *out = subscription;
     return ESN_OK;
 }
 
-void ApiBridge::registerWithEndstone(const std::uint32_t subscription, const std::string_view event_name,
-                                     const int priority, const bool ignore_cancelled)
+void ApiBridge::registerWithEndstone(const std::size_t index)
 {
+    registrations_[index].registered = true;
     plugin_.getServer().getPluginManager().registerEvent(
-        std::string{event_name},
-        [this, subscription](Event &event) {
-            if (subscriptions_.contains(subscription)) {
-                dispatch(subscription, event);
-            }
-        },
-        toPriority(priority), plugin_, ignore_cancelled);
+        registrations_[index].event_name, [this, index](Event &event) { dispatch(index, event); },
+        toPriority(registrations_[index].priority), plugin_, registrations_[index].ignore_cancelled);
 }
 
 void ApiBridge::flushPendingSubscriptions()
 {
-    const auto pending = std::move(pending_);
-    pending_.clear();
-    for (const auto &entry : pending) {
-        // Anything unsubscribed before the flush is skipped rather than registered and dropped.
-        if (subscriptions_.contains(entry.subscription)) {
-            registerWithEndstone(entry.subscription, entry.event_name, entry.priority, entry.ignore_cancelled);
+    for (std::size_t i = 0; i < registrations_.size(); ++i) {
+        // Anything unsubscribed before the flush leaves an empty registration, which is not worth
+        // wiring up until something subscribes to it again.
+        if (!registrations_[i].registered && !registrations_[i].subscribers.empty()) {
+            registerWithEndstone(i);
         }
     }
 }
 
 esn_status ApiBridge::unsubscribe(const std::uint32_t subscription)
 {
-    // Endstone has no per-handler unregister, so the handler stays wired and becomes a no-op. Cheap,
-    // and it keeps unsubscribe honest from JavaScript's point of view.
-    return subscriptions_.erase(subscription) > 0 ? ESN_OK : ESN_ERR_BAD_ARGUMENT;
+    const auto it = subscriptions_.find(subscription);
+    if (it == subscriptions_.end()) {
+        return ESN_ERR_BAD_ARGUMENT;
+    }
+    // The Endstone listener stays wired - there is no per-handler unregister - but it is shared by
+    // every subscription with the same terms, so it is reused rather than accumulated when something
+    // subscribes again.
+    auto &subscribers = registrations_[it->second].subscribers;
+    std::erase(subscribers, subscription);
+    subscriptions_.erase(it);
+    return ESN_OK;
 }
 
-void ApiBridge::dispatch(const std::uint32_t subscription, Event &event)
+void ApiBridge::dispatch(const std::size_t registration, Event &event)
 {
     if (!event_sink_) {
         return;
@@ -700,36 +728,60 @@ void ApiBridge::dispatch(const std::uint32_t subscription, Event &event)
     }
 
     // Everything minted from here on belongs to this dispatch only.
-    const auto scope_start = next_handle_;
+    const auto mark = beginScope();
     const auto handle = track(&event, Kind::Event);
 
-    // The release must happen even if the sink throws. It cannot today - every host entry point
+    // Copied, not referenced: a handler may subscribe or unsubscribe while it runs, which would move
+    // the registration vector under us. Each id is re-checked so a handler that unsubscribes a later
+    // one in this same list is honoured.
+    const auto subscribers = registrations_[registration].subscribers;
+
+    // The unwind must happen even if the sink throws. It cannot today - every host entry point
     // catches - but a handle surviving this scope would point at an Event that is about to be
     // destroyed, so the invariant is enforced here rather than relied upon from the other side.
     try {
-        event_sink_(subscription, handle);
+        for (const auto subscription : subscribers) {
+            if (subscriptions_.contains(subscription)) {
+                event_sink_(subscription, handle);
+            }
+        }
     }
     catch (...) {
-        releaseScope(scope_start);
+        endScope(mark);
         throw;
     }
-    releaseScope(scope_start);
+    endScope(mark);
 }
 
-void ApiBridge::releaseScope(const esn_handle scope_start)
+ApiBridge::ScopeMark ApiBridge::beginScope()
+{
+    return ScopeMark{next_handle_,          owned_blocks_.size(),  owned_block_data_.size(),
+                     owned_block_states_.size(), owned_locations_.size(), owned_vectors_.size(),
+                     owned_items_.size()};
+}
+
+void ApiBridge::endScope(const ScopeMark &mark)
 {
     for (auto it = handles_.begin(); it != handles_.end();) {
-        const bool expired = it->first >= scope_start && !it->second.persistent;
+        const bool expired = it->first >= mark.handle_start && !it->second.persistent;
         it = expired ? handles_.erase(it) : std::next(it);
     }
-    // Anything the bridge had to own for the duration goes with them.
-    owned_blocks_.clear();
-    owned_block_data_.clear();
-    owned_block_states_.clear();
-    owned_locations_.clear();
-    owned_vectors_.clear();
-    owned_items_.clear();
-    item_writebacks_.clear();
+    // Truncated back to the mark rather than cleared: a nested dispatch must not free what the
+    // dispatch around it is still holding. Erasing the tail keeps every earlier element's address,
+    // which is what the outer scope's handles point at.
+    const auto trim = [](auto &owned, const std::size_t keep) {
+        if (owned.size() > keep) {
+            owned.erase(owned.begin() + static_cast<std::ptrdiff_t>(keep), owned.end());
+        }
+    };
+    trim(owned_blocks_, mark.blocks);
+    trim(owned_block_data_, mark.block_data);
+    trim(owned_block_states_, mark.block_states);
+    trim(owned_locations_, mark.locations);
+    trim(owned_vectors_, mark.vectors);
+    trim(owned_items_, mark.items);
+    std::erase_if(item_writebacks_,
+                  [&](const auto &entry) { return entry.first >= mark.handle_start; });
 }
 
 esn_handle ApiBridge::trackOwnedItem(ItemStack item, std::function<void(const ItemStack &)> writeback)
@@ -1189,7 +1241,7 @@ esn_status ApiBridge::bossBarInvoke(const esn_handle target, BossBar &bar, const
     // the same object is a clean stale-handle error rather than a use-after-free.
     if (name == "remove") {
         bar.removeAll();
-        handles_.erase(target);
+        untrack(target);
         std::erase_if(owned_boss_bars_, [&](const std::unique_ptr<BossBar> &owned) { return owned.get() == &bar; });
         return ESN_OK;
     }
@@ -1354,7 +1406,6 @@ void ApiBridge::updateCommands()
 
 esn_handle ApiBridge::trackSender(CommandSender &sender)
 {
-    command_scope_start_ = next_handle_;
     // A player gets the full Player surface; the console and anything else gets the sender surface.
     if (auto *player = sender.asPlayer()) {
         return track(player, Kind::Player);
@@ -1362,15 +1413,12 @@ esn_handle ApiBridge::trackSender(CommandSender &sender)
     return track(&sender, Kind::CommandSender);
 }
 
-void ApiBridge::releaseDispatch()
-{
-    releaseScope(command_scope_start_);
-}
-
 void ApiBridge::shutdown()
 {
     subscriptions_.clear();
+    registrations_.clear();
     handles_.clear();
+    persistent_handles_.clear();
     event_sink_ = nullptr;
     // Cancel before dropping the sink: a task that fired afterwards would call into a host that is
     // being torn down.
@@ -2360,19 +2408,6 @@ esn_status ApiBridge::getString(const esn_handle target, const std::string_view 
             const auto message = static_cast<PlayerDeathEvent *>(event)->getDeathMessage();
             return emitString(message ? messageToString(*message) : std::string{}, buf, cap, needed);
         }
-        // The payload is raw packet bytes, so it can contain NUL and is not text. It crosses as a
-        // sized string and JavaScript should treat it as binary.
-        if (name == "payload") {
-            if (event->getEventName() == "PacketReceiveEvent") {
-                const auto payload = static_cast<PacketReceiveEvent *>(event)->getPayload();
-                return emitString(std::string{payload}, buf, cap, needed);
-            }
-            if (event->getEventName() == "PacketSendEvent") {
-                const auto payload = static_cast<PacketSendEvent *>(event)->getPayload();
-                return emitString(std::string{payload}, buf, cap, needed);
-            }
-            return ESN_ERR_NO_SUCH_MEMBER;
-        }
         if (name == "address") {
             if (event->getEventName() == "PacketReceiveEvent") {
                 return emitString(static_cast<PacketReceiveEvent *>(event)->getAddress().getHostname(), buf, cap,
@@ -2382,6 +2417,49 @@ esn_status ApiBridge::getString(const esn_handle target, const std::string_view 
                 return emitString(static_cast<PacketSendEvent *>(event)->getAddress().getHostname(), buf, cap, needed);
             }
             return ESN_ERR_NO_SUCH_MEMBER;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    return find(target) ? ESN_ERR_NO_SUCH_MEMBER : ESN_ERR_STALE_HANDLE;
+}
+
+// Packet payloads are bytes, not text, so they get their own accessor rather than riding getString.
+// Handing them through the text path meant the host built the JavaScript string with
+// napi_create_string_utf8, and any byte >= 0x80 that did not happen to form valid UTF-8 was replaced
+// with U+FFFD - so a payload was silently corrupted on the way out while sendPacket, which reads
+// latin1, was correct on the way in.
+
+esn_status ApiBridge::getBytes(const esn_handle target, const std::string_view name, char *buf,
+                               const std::size_t cap, std::size_t *needed)
+{
+    if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
+        if (name == "payload") {
+            const auto ev = event->getEventName();
+            if (ev == "PacketReceiveEvent") {
+                return emitString(static_cast<PacketReceiveEvent *>(event)->getPayload(), buf, cap, needed);
+            }
+            if (ev == "PacketSendEvent") {
+                return emitString(static_cast<PacketSendEvent *>(event)->getPayload(), buf, cap, needed);
+            }
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    return find(target) ? ESN_ERR_NO_SUCH_MEMBER : ESN_ERR_STALE_HANDLE;
+}
+
+esn_status ApiBridge::setBytes(const esn_handle target, const std::string_view name, const std::string_view value)
+{
+    if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
+        if (name == "payload") {
+            const auto ev = event->getEventName();
+            if (ev == "PacketReceiveEvent") {
+                static_cast<PacketReceiveEvent *>(event)->setPayload(value);
+                return ESN_OK;
+            }
+            if (ev == "PacketSendEvent") {
+                static_cast<PacketSendEvent *>(event)->setPayload(value);
+                return ESN_OK;
+            }
         }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
@@ -2443,14 +2521,6 @@ esn_status ApiBridge::getHandle(const esn_handle target, const std::string_view 
             }
             return ESN_ERR_NO_SUCH_MEMBER;
         }
-        if (name == "item") {
-            if (event->getEventName() == "PlayerDropItemEvent") {
-                auto &drop = const_cast<ItemStack &>(static_cast<PlayerDropItemEvent *>(event)->getItem());
-                *out = track(&drop, Kind::ItemStack);
-                return ESN_OK;
-            }
-            return ESN_ERR_NO_SUCH_MEMBER;
-        }
         const auto ev = event->getEventName();
         // Blocks carried by events other than the plain BlockEvent ones.
         if (name == "toBlock" && ev == "BlockFromToEvent") {
@@ -2501,6 +2571,11 @@ esn_status ApiBridge::getHandle(const esn_handle target, const std::string_view 
         }
         // Items an event hands out. These are live references, so changes reach the world directly.
         if (name == "item") {
+            if (ev == "PlayerDropItemEvent") {
+                auto &drop = const_cast<ItemStack &>(static_cast<PlayerDropItemEvent *>(event)->getItem());
+                *out = track(&drop, Kind::ItemStack);
+                return ESN_OK;
+            }
             if (ev == "PlayerItemConsumeEvent") {
                 auto &item = const_cast<ItemStack &>(static_cast<PlayerItemConsumeEvent *>(event)->getItem());
                 *out = track(&item, Kind::ItemStack);
@@ -3048,17 +3123,6 @@ esn_status ApiBridge::setString(const esn_handle target, const std::string_view 
             auto *death = static_cast<PlayerDeathEvent *>(event);
             death->setDeathMessage(value.empty() ? std::optional<Message>{} : Message{std::string{value}});
             return ESN_OK;
-        }
-        if (name == "payload") {
-            if (event->getEventName() == "PacketReceiveEvent") {
-                static_cast<PacketReceiveEvent *>(event)->setPayload(value);
-                return ESN_OK;
-            }
-            if (event->getEventName() == "PacketSendEvent") {
-                static_cast<PacketSendEvent *>(event)->setPayload(value);
-                return ESN_OK;
-            }
-            return ESN_ERR_NO_SUCH_MEMBER;
         }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
@@ -3652,6 +3716,14 @@ esn_status ESN_CALL tGetHandle(void *c, esn_handle t, const char *n, esn_handle 
 {
     ESN_GUARD(bridge(c).getHandle(t, n ? n : "", o))
 }
+esn_status ESN_CALL tGetBytes(void *c, esn_handle t, const char *n, char *b, std::size_t cap, std::size_t *need)
+{
+    ESN_GUARD(bridge(c).getBytes(t, n ? n : "", b, cap, need))
+}
+esn_status ESN_CALL tSetBytes(void *c, esn_handle t, const char *n, const char *v, std::size_t len)
+{
+    ESN_GUARD(bridge(c).setBytes(t, n ? n : "", std::string_view(v ? v : "", v ? len : 0)))
+}
 esn_status ESN_CALL tSetBool(void *c, esn_handle t, const char *n, int v)
 {
     ESN_GUARD(bridge(c).setBool(t, n ? n : "", v != 0))
@@ -3841,10 +3913,12 @@ void ApiBridge::fill(esn_endstone_api &api)
     api.accessors.get_double = tGetDouble;
     api.accessors.get_string = tGetString;
     api.accessors.get_handle = tGetHandle;
+    api.accessors.get_bytes = tGetBytes;
     api.accessors.set_bool = tSetBool;
     api.accessors.set_int = tSetInt;
     api.accessors.set_double = tSetDouble;
     api.accessors.set_string = tSetString;
+    api.accessors.set_bytes = tSetBytes;
     api.accessors.invoke = tInvoke;
     api.accessors.type_name = tTypeName;
     api.subscribe = tSubscribe;

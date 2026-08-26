@@ -52,7 +52,7 @@ extern "C" {
 #endif
 
 /* Bumped on any incompatible change below. Checked by both sides at load time. */
-#define ESN_ABI_VERSION 14u
+#define ESN_ABI_VERSION 15u
 
 typedef enum esn_status {
     ESN_OK = 0,
@@ -140,12 +140,23 @@ typedef struct esn_accessors {
     esn_status(ESN_CALL *get_string)(void *context, esn_handle target, const char *name, char *buf, size_t cap,
                                      size_t *out_needed);
     esn_status(ESN_CALL *get_handle)(void *context, esn_handle target, const char *name, esn_handle *out);
+    /*
+     * Binary counterpart to get_string, for a value that is bytes rather than text - a packet payload.
+     * Identical size-then-fetch convention, but the bytes are passed through verbatim: the host must
+     * not decode them as UTF-8, because an arbitrary byte >= 0x80 is rarely valid UTF-8 and would be
+     * replaced with U+FFFD, silently corrupting the payload.
+     */
+    esn_status(ESN_CALL *get_bytes)(void *context, esn_handle target, const char *name, char *buf, size_t cap,
+                                    size_t *out_needed);
 
     esn_status(ESN_CALL *set_bool)(void *context, esn_handle target, const char *name, int value);
     esn_status(ESN_CALL *set_int)(void *context, esn_handle target, const char *name, int64_t value);
     esn_status(ESN_CALL *set_double)(void *context, esn_handle target, const char *name, double value);
     esn_status(ESN_CALL *set_string)(void *context, esn_handle target, const char *name, const char *value,
                                      size_t length);
+    /* Binary counterpart to set_string. `value` may contain NUL bytes; `length` is authoritative. */
+    esn_status(ESN_CALL *set_bytes)(void *context, esn_handle target, const char *name, const char *value,
+                                    size_t length);
 
     /*
      * Calls a method. Arguments arrive as an array of NUL-terminated strings, an array of doubles and

@@ -109,6 +109,8 @@ public:
     esn_status getDouble(esn_handle target, std::string_view name, double *out);
     esn_status getString(esn_handle target, std::string_view name, char *buf, std::size_t cap, std::size_t *needed);
     esn_status getHandle(esn_handle target, std::string_view name, esn_handle *out);
+    esn_status getBytes(esn_handle target, std::string_view name, char *buf, std::size_t cap, std::size_t *needed);
+    esn_status setBytes(esn_handle target, std::string_view name, std::string_view value);
     esn_status setBool(esn_handle target, std::string_view name, bool value);
     esn_status setInt(esn_handle target, std::string_view name, std::int64_t value);
     esn_status setDouble(esn_handle target, std::string_view name, double value);
@@ -144,12 +146,33 @@ public:
      * @brief Wraps a command sender for the duration of one command dispatch.
      *
      * A player sender is tracked as a Player so a handler gets the whole Player surface; anything else
-     * is tracked as a CommandSender. Release it with releaseDispatch() when the handler returns.
+     * is tracked as a CommandSender. Open a scope around it and close that when the handler returns.
      */
     esn_handle trackSender(CommandSender &sender);
 
-    /** Invalidates every non-persistent handle, as the end of an event dispatch does. */
-    void releaseDispatch();
+    /**
+     * @brief Where to unwind a dispatch back to.
+     *
+     * Dispatches nest: a handler that makes the server fire another event, or run another command,
+     * re-enters the bridge. A scope must therefore restore what it found rather than drop everything,
+     * or the inner one frees the objects the outer handler is still holding and leaves its handles
+     * pointing at freed memory.
+     */
+    struct ScopeMark {
+        esn_handle handle_start;
+        std::size_t blocks;
+        std::size_t block_data;
+        std::size_t block_states;
+        std::size_t locations;
+        std::size_t vectors;
+        std::size_t items;
+    };
+
+    /** Opens a dispatch scope. Pair every call with endScope(). */
+    [[nodiscard]] ScopeMark beginScope();
+    /** Invalidates everything minted since the mark, leaving anything older untouched. */
+    void endScope(const ScopeMark &mark);
+
     esn_status subscribe(std::string_view event_name, int priority, bool ignore_cancelled, std::uint32_t *out);
     esn_status unsubscribe(std::uint32_t subscription);
 
@@ -192,20 +215,30 @@ private:
                                 const std::function<double(std::size_t, double)> &number,
                                 std::size_t number_count, esn_handle *out_handle);
 
-    /** Invalidates every non-persistent handle minted at or after `scope_start`. */
-    void releaseScope(esn_handle scope_start);
-
-    void registerWithEndstone(std::uint32_t subscription, std::string_view event_name, int priority,
-                              bool ignore_cancelled);
-
-    /** A subscription made before the plugin was enabled, waiting for flushPendingSubscriptions(). */
-    struct PendingSubscription {
-        std::uint32_t subscription;
+    /**
+     * @brief One Endstone listener, shared by every subscription that asked for the same thing.
+     *
+     * Endstone has no per-handler unregister, so registering one listener per subscription would
+     * leave a dead listener behind on every unsubscribe - and a plugin that toggles a subscription
+     * accumulates them for the server's lifetime. Registrations are keyed by what actually reaches
+     * Endstone, so their number is bounded by the distinct combinations a plugin uses.
+     */
+    struct Registration {
         std::string event_name;
         int priority;
         bool ignore_cancelled;
+        /** Subscription ids to deliver to, in the order they subscribed. */
+        std::vector<std::uint32_t> subscribers;
+        /** False while the plugin is not enabled yet; see flushPendingSubscriptions(). */
+        bool registered;
     };
-    std::vector<PendingSubscription> pending_;
+
+    /** Registers `registrations_[index]` with Endstone. */
+    void registerWithEndstone(std::size_t index);
+    /** The registration matching these terms, creating one if there is none. */
+    std::size_t registrationFor(std::string_view event_name, int priority, bool ignore_cancelled);
+
+    std::vector<Registration> registrations_;
 
     /** Event names already reported as undeliverable because they fire off the server thread. */
     std::unordered_set<std::string> warned_async_;
@@ -215,9 +248,6 @@ private:
     /** Scheduled tasks by the id JavaScript knows them by, so they can be cancelled. */
     std::unordered_map<std::uint32_t, std::shared_ptr<Task>> tasks_;
     std::uint32_t next_task_{1};
-
-    /** Where the current command dispatch's handles begin, for releaseDispatch(). */
-    esn_handle command_scope_start_{0};
 
     /** Owns anything created on demand whose lifetime is not the caller's, e.g. Block instances. */
     std::vector<std::unique_ptr<Block>> owned_blocks_;
@@ -269,6 +299,8 @@ private:
      * as `trackSender` (via `asPlayer()`) and `eventActor` (via the trait's `Mob *` getter) both do.
      */
     esn_handle track(void *ptr, Kind kind, bool persistent = false);
+    /** Drops a handle, keeping the persistent index in step. */
+    void untrack(esn_handle handle);
     /**
      * Tracks an actor whose concrete type is not known statically, picking Kind::Player when the
      * pointer matches an online player. That check avoids RTTI, which is unusable across the plugin
@@ -283,16 +315,27 @@ private:
     Mob *resolveMob(esn_handle handle) const;
     const Entry *find(esn_handle handle) const;
 
-    /** Delivers one event to the host, then invalidates every handle that delivery created. */
-    void dispatch(std::uint32_t subscription, Event &event);
+    /**
+     * @brief Delivers one event to every subscriber of a registration, then unwinds the scope.
+     *
+     * One scope and one event handle serve all of them: they see the same event object, and a
+     * handler that unsubscribes mid-delivery is honoured for the handlers that follow it.
+     */
+    void dispatch(std::size_t registration, Event &event);
 
     Plugin &plugin_;
     EventSink event_sink_;
 
     std::unordered_map<esn_handle, Entry> handles_;
+    /**
+     * Persistent handles by the object they point at, so repeated reads of e.g. server.scoreboard
+     * hand back the one handle instead of minting another that is never released.
+     */
+    std::unordered_map<const void *, esn_handle> persistent_handles_;
     esn_handle next_handle_{1};
     esn_handle level_handle_{0};  // cached: the level is a singleton for the server's lifetime
-    std::unordered_map<std::uint32_t, std::string> subscriptions_;
+    /** Subscription id -> index into registrations_. */
+    std::unordered_map<std::uint32_t, std::size_t> subscriptions_;
     std::uint32_t next_subscription_{1};
 };
 

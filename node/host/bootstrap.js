@@ -473,6 +473,11 @@ function wrap(handle) {
       if (prop === 'sendPacket') {
         return (packetId, payload) => binding.sendPacket(handle, Number(packetId), toByteString(payload));
       }
+      // A packet payload is bytes, not text, so it goes through the binary accessor. The generic one
+      // decodes as UTF-8, which replaces every byte that is not valid UTF-8 with U+FFFD.
+      if (prop === 'payload') {
+        return binding.getBytes(handle, 'payload');
+      }
       if (prop === 'getTag') {
         return (key) => binding.get(handle, 'tag:' + String(key));
       }
@@ -657,6 +662,11 @@ function wrap(handle) {
     },
     set(_t, prop, value) {
       if (typeof prop !== 'string') return false;
+      // Bytes, as above - and a Uint8Array is accepted so a decoded payload can be rebuilt and put back.
+      if (prop === 'payload') {
+        binding.setBytes(handle, 'payload', toByteString(value));
+        return true;
+      }
       // Lore is an array on this side and one newline-joined string on the other; null clears it.
       if (prop === 'lore') {
         const lines = value === null || value === undefined ? [] : value;

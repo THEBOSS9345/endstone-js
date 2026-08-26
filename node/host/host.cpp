@@ -676,6 +676,60 @@ napi_value jsTypeName(napi_env env, napi_callback_info info)
     return napi_create_string_utf8(env, buffer.data(), needed, &result) == napi_ok ? result : nullptr;
 }
 
+// getBytes(handle, name) / setBytes(handle, name, byteString)
+//
+// Bytes cross as latin1 - one JavaScript code unit per byte, NUL included - which is the only encoding
+// that round-trips arbitrary data through a JS string. napi_create_string_utf8 would replace every
+// invalid sequence with U+FFFD and quietly destroy a packet payload.
+napi_value jsGetBytes(napi_env env, napi_callback_info info)
+{
+    esn_handle handle = 0;
+    std::string name;
+    const auto *acc = accessors();
+    napi_value undefined_value = nullptr;
+    (void)napi_get_undefined(env, &undefined_value);
+    if (!acc || !acc->get_bytes || !readTargetAndName(env, info, &handle, name)) {
+        return undefined_value;
+    }
+    void *context = g_host->api->context;
+    std::size_t needed = 0;
+    const auto status = acc->get_bytes(context, handle, name.c_str(), nullptr, 0, &needed);
+    if (status == ESN_ERR_STALE_HANDLE) {
+        return fail(env, status, name);
+    }
+    if (status != ESN_OK) {
+        return undefined_value;
+    }
+    std::vector<char> buffer(needed + 1, '\0');
+    (void)acc->get_bytes(context, handle, name.c_str(), buffer.data(), buffer.size(), &needed);
+    napi_value result = nullptr;
+    return napi_create_string_latin1(env, buffer.data(), needed, &result) == napi_ok ? result : undefined_value;
+}
+
+napi_value jsSetBytes(napi_env env, napi_callback_info info)
+{
+    esn_handle handle = 0;
+    std::string name;
+    napi_value value = nullptr;
+    const auto *acc = accessors();
+    if (!acc || !acc->set_bytes || !readTargetAndName(env, info, &handle, name, &value) || !value) {
+        return nullptr;
+    }
+    std::size_t length = 0;
+    if (napi_get_value_string_latin1(env, value, nullptr, 0, &length) != napi_ok) {
+        return nullptr;
+    }
+    std::vector<char> bytes(length + 1, '\0');
+    if (napi_get_value_string_latin1(env, value, bytes.data(), bytes.size(), &length) != napi_ok) {
+        return nullptr;
+    }
+    const auto status = acc->set_bytes(g_host->api->context, handle, name.c_str(), bytes.data(), length);
+    if (status != ESN_OK) {
+        return fail(env, status, name);
+    }
+    return nullptr;
+}
+
 napi_value jsSubscribe(napi_env env, napi_callback_info info)
 {
     std::size_t argc = 3;
@@ -872,6 +926,8 @@ napi_value registerBinding(napi_env env, napi_value exports)
     defineFunction(env, exports, "broadcastMessage", jsBroadcastMessage);
     defineFunction(env, exports, "get", jsGet);
     defineFunction(env, exports, "set", jsSet);
+    defineFunction(env, exports, "getBytes", jsGetBytes);
+    defineFunction(env, exports, "setBytes", jsSetBytes);
     defineFunction(env, exports, "invoke", jsInvoke);
     defineFunction(env, exports, "typeName", jsTypeName);
     defineFunction(env, exports, "subscribe", jsSubscribe);
