@@ -15,12 +15,12 @@ node\scripts\test-endstone-node.ps1
 `linux-serve.sh` symlinks every example, so `testkit` loads automatically. Expect at start-up:
 
 ```
-[Nodejs] Node host ABI version 15
+[Nodejs] Node host ABI version 16
 [Nodejs] loaded 3/3 JavaScript plugin(s)
-[Nodejs] testkit ready: 48 commands, schema r26_u4
+[Nodejs] testkit ready: 49 commands, schema r26_u4
 ```
 
-If the ABI line says anything other than 15, the plugin and host halves are out of step — rebuild.
+If the ABI line says anything other than 16, the plugin and host halves are out of step — rebuild.
 
 ---
 
@@ -259,6 +259,28 @@ the log for the pickup line.
 | `/jssrv2` | `maxPlayers` written and restored, and `getMap(id)` returning the map from `/jsmapitem`. |
 | `/jsredirect`, then teleport | Every teleport lands you back where you stood. `/jsredirect` again to stop. This is `event.to` — before it, a teleport could only be cancelled outright, never redirected. |
 
+### Drawing on a map
+
+`/jsdraw` — creates a map, attaches a JavaScript renderer, and puts it in your hand. You should see a
+red/green gradient with a blue disc in the middle. A blank map means the renderer never ran.
+
+**This was previously documented as impossible.** It is not: Endstone lets a plugin supply a
+`MapRenderer`, and its own Python bindings do exactly that through a trampoline. The JS side now
+subclasses it and forwards the draw call.
+
+The one thing to watch is the log line the first draw prints:
+
+```
+[testkit] map draw: primaryThread=true viewer=<you>
+```
+
+**If `primaryThread` is ever `false`, stop and report it** — the draw happens on the packet-send path,
+and entering JavaScript from a non-server thread is unsafe for the same reason `serverListPing` had to
+be dropped. The command shouts `MAP DRAW IS OFF THE SERVER THREAD` if it sees that.
+
+A whole frame is assigned at once (`canvas.pixels = frame`) rather than pixel by pixel: a map is
+128×128, so per-pixel writes would cross into the server 16384 times per draw, per viewer.
+
 ### Weather
 
 Run `/weather rain` and `/weather thunder`. The log should report `weather -> raining` / `-> clear` and
@@ -280,8 +302,6 @@ Not implemented, so nothing to test:
 - **`itemFactory`** — its whole surface takes a detached `ItemMeta*`, which would need a new handle
   kind to expose something already reachable as properties on an item.
 - **Custom dimensions** (`DimensionCreator`) — develop only.
-- **Drawing on a map.** `MapRenderer` is a C++ interface; a JS plugin cannot supply one, so
-  `server.createMap()` maps stay blank.
 - **Effects and attributes** — deliberately left out: Endstone is adding them on its `develop` branch with
   different types, so binding them against `main` would mean writing them twice.
 - **Asynchronous events**, i.e. `serverListPing`. They fire off the server thread and cannot reach

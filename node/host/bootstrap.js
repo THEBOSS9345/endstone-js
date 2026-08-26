@@ -288,6 +288,7 @@ const METHODS_BY_TYPE = {
   ItemStack: ['removeTag', 'addEnchant', 'removeEnchant', 'removeEnchants', 'clone',
               'setMapView', 'addPage', 'addChargedProjectile'],
   Event: ['cancel', 'getExplodedBlock', 'setKnockback', 'setFrom', 'setTo'],
+  MapCanvas: ['setPixel'],
 };
 
 // Endstone's own hierarchy, so a Player answers to everything an Actor does.
@@ -584,6 +585,19 @@ function wrap(handle) {
           return formId;
         };
       }
+      // A map renderer. The function stays here and only its id crosses, the same way a form or a
+      // scheduled task works. Endstone owns the renderer once added, so there is no removal.
+      if (prop === 'setRenderer' || prop === 'addRenderer') {
+        return (draw) => {
+          if (typeof draw !== 'function') {
+            throw new TypeError('addRenderer(draw): draw must be a function');
+          }
+          const id = nextRendererId++;
+          mapRenderers.set(id, { draw, plugin: activePluginId });
+          binding.addMapRenderer(handle, id);
+          return id;
+        };
+      }
       if (prop === 'closeForm') {
         return () => binding.closeForm(handle);
       }
@@ -839,6 +853,10 @@ function wrap(handle) {
         // The `rotation` field is two numbers behind one object; route it through the same
         // dispatch as a method so the host reads yaw, pitch.
         binding.invoke(handle, 'setRotation', ...flattenRotation(value));
+      } else if (prop === 'pixels') {
+        // A whole 128x128 RGBA frame in one crossing. Setting pixels one at a time would cross the
+        // ABI 16384 times per draw, per viewer.
+        binding.setBytes(handle, 'pixels', toByteString(value));
       } else if (prop === 'blockStates') {
         // Only the states named are changed; the rest of the block's palette entry is kept, so
         // turning a stair round does not reset whether it is upside down.
@@ -1171,6 +1189,28 @@ function runDeclaredCommand(pluginId, name, senderHandle, args) {
 // runs in step with the world, so it can touch the API safely and its timing is tied to the tick rate
 // rather than to wall-clock milliseconds.
 const scheduledTasks = new Map();
+
+// Map renderers, by the id the bridge knows them by.
+const mapRenderers = new Map();
+let nextRendererId = 1;
+
+/** Draws one map for one viewer. Called from C++ on the thread that sends the map packet. */
+function renderMap(renderer, canvasHandle, playerHandle) {
+  const entry = mapRenderers.get(renderer);
+  if (!entry) return;
+  try {
+    entry.draw(wrap(canvasHandle), wrap(playerHandle));
+  } catch (err) {
+    binding.log(4, `map renderer threw: ${(err && err.stack) || err}`);
+  }
+}
+
+/** Drops a plugin's renderers. Endstone still owns them, so this only stops ours from running. */
+function dropRenderers(pluginId) {
+  for (const [id, entry] of mapRenderers) {
+    if (entry.plugin === pluginId) mapRenderers.delete(id);
+  }
+}
 
 function runTask(task) {
   const entry = scheduledTasks.get(task);
@@ -1945,6 +1985,7 @@ function unloadPlugin(id) {
   dropCommands(id);
   dropTasks(id);
   dropForms(id);
+  dropRenderers(id);
   plugins.delete(id);
 }
 
@@ -2069,6 +2110,7 @@ function reloadPlugins(filter) {
       dropSubscriptions(record.id);
       dropTasks(record.id);
       dropForms(record.id);
+      dropRenderers(record.id);
       const wasDeclared = dropCommands(record.id);
 
       // Pick up edits to package.json, including a changed main entry point.
@@ -2134,7 +2176,7 @@ function reloadPlugins(filter) {
 
 binding.setRuntime({
   beginLoad, pollLoad, invoke: invokePlugin, unload: unloadPlugin, dispatchEvent,
-  reload: reloadPlugins, command: runDeclaredCommand, task: runTask, formResult,
+  reload: reloadPlugins, command: runDeclaredCommand, task: runTask, formResult, renderMap,
 });
 
 // --- the built-in reload command ----------------------------------------------------------------

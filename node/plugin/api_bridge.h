@@ -43,6 +43,8 @@ class ItemStack;
 class Dimension;
 class Level;
 class Location;
+class MapCanvas;
+class MapRenderer;
 class MapView;
 class Mob;
 class Player;
@@ -86,6 +88,16 @@ public:
     /** Where scheduled tasks go - normally esn_host_run_task. Set before scheduling. */
     using TaskSink = std::function<void(std::uint32_t task)>;
     void setTaskSink(TaskSink sink);
+
+    /** Where map draws go - normally esn_host_render_map. Set before a renderer is added. */
+    using RenderSink = std::function<void(std::uint32_t renderer, esn_handle canvas, esn_handle player)>;
+    void setRenderSink(RenderSink sink);
+
+    /** Attaches a JavaScript renderer to a map. Endstone owns it once added. */
+    esn_status addMapRenderer(esn_handle map, std::uint32_t renderer);
+
+    /** Draws one renderer, bracketing its own scope so the canvas cannot outlive the call. */
+    void renderMap(std::uint32_t renderer, MapCanvas &canvas, Player &player);
 
     /** Schedules a JavaScript callback on the server thread. period 0 runs it once. */
     esn_status scheduleTask(std::uint32_t delay_ticks, std::uint32_t period_ticks, std::uint32_t *out_task);
@@ -185,7 +197,7 @@ private:
         Player, Mob, Actor, Item, Block, Level, DamageSource, ItemStack, Location, Vector, CommandSender,
         // PlayerInventory is distinct from Inventory only so the equipment slots can be reached; every
         // generic inventory operation accepts either.
-        Inventory, PlayerInventory, Plugin, MapView, Server, Dimension, Scoreboard, Event, BossBar,
+        Inventory, PlayerInventory, Plugin, MapView, MapCanvas, Server, Dimension, Scoreboard, Event, BossBar,
         // A block's palette entry (type plus its states), and a detached snapshot of one position.
         BlockData, BlockState
     };
@@ -247,6 +259,9 @@ private:
 
     FormSink form_sink_;
     TaskSink task_sink_;
+    RenderSink render_sink_;
+    /** Keeps every renderer handed to a map alive; Endstone holds a shared_ptr too. */
+    std::vector<std::shared_ptr<MapRenderer>> owned_map_renderers_;
     /** Scheduled tasks by the id JavaScript knows them by, so they can be cancelled. */
     std::unordered_map<std::uint32_t, std::shared_ptr<Task>> tasks_;
     std::uint32_t next_task_{1};

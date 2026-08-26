@@ -512,6 +512,58 @@ commands.register("jsmapitem", (sender) => {
     else say(sender, "§ayou are holding the map this plugin made");
 }, { description: "Puts a created map into a filled_map item.", op: true });
 
+commands.register("jsdraw", (sender) => {
+    if (!needPlayer(sender)) return;
+    // A renderer really is suppliable from JavaScript - Endstone lets a plugin add one, which is how
+    // its Python bindings do it too. The map stays blank without one.
+    const map = server.createMap();
+    map.centerX = Math.round(sender.location.x);
+    map.centerZ = Math.round(sender.location.z);
+
+    // A whole 128x128 RGBA frame, built once and assigned in a single crossing. Per-pixel calls would
+    // cross the ABI 16384 times for every draw, for every viewer.
+    const SIZE = 128;
+    const frame = new Uint8Array(SIZE * SIZE * 4);
+    for (let y = 0; y < SIZE; ++y) {
+        for (let x = 0; x < SIZE; ++x) {
+            const at = (y * SIZE + x) * 4;
+            const ring = Math.round(Math.hypot(x - 64, y - 64));
+            frame[at] = (x * 2) & 0xff;              // red ramps east
+            frame[at + 1] = (y * 2) & 0xff;          // green ramps south
+            frame[at + 2] = ring < 40 ? 220 : 40;    // a disc in the middle
+            frame[at + 3] = 255;
+        }
+    }
+
+    let draws = 0;
+    let reportedThread = false;
+    map.addRenderer((canvas, viewer) => {
+        draws += 1;
+        // The open question was whether a draw happens on the server thread. If this ever reports
+        // false, entering JavaScript here is unsafe and the renderer has to go.
+        if (!reportedThread) {
+            reportedThread = true;
+            logger.info(`[testkit] map draw: primaryThread=${server.isPrimaryThread} ` +
+                        `viewer=${viewer ? viewer.name : "?"}`);
+            if (!server.isPrimaryThread) {
+                logger.error("[testkit] MAP DRAW IS OFF THE SERVER THREAD - unsafe, report this");
+            }
+        }
+        canvas.pixels = frame;
+    });
+
+    sender.inventory.setItemInMainHand({ type: "minecraft:filled_map" });
+    const item = sender.inventory.itemInMainHand;
+    if (item.metaType === "map") item.setMapView(map);
+    sender.sendMap(map);
+    say(sender, "§ahold the map - it should show a red/green gradient with a blue disc");
+    say(sender, "§7if it is blank, the renderer never ran; check the log for the draw line");
+    scheduler.runLater(() => {
+        say(sender, `§7renderer ran ${draws} time(s) in the first 3s`);
+        if (draws === 0) say(sender, "§cRENDERER NEVER RAN");
+    }, 60);
+}, { description: "Draws a real image on a map from JavaScript.", op: true });
+
 commands.register("jsbook", (sender) => {
     if (!needPlayer(sender)) return;
     sender.inventory.setItemInMainHand({ type: "minecraft:written_book" });

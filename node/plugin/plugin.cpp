@@ -274,6 +274,7 @@ private:
                               resolve(module_, "esn_plugin_command", api_.plugin_command) &&
                               resolve(module_, "esn_host_dispatch_event", api_.dispatch_event) &&
                               resolve(module_, "esn_host_run_task", api_.run_task) &&
+                              resolve(module_, "esn_host_render_map", api_.render_map) &&
                               resolve(module_, "esn_host_form_result", api_.form_result);
         if (!resolved) {
             getLogger().error("Node host is missing expected entry points");
@@ -321,6 +322,10 @@ private:
                 (void)api->dispatch_event(host, subscription, event);
             });
             bridge_->setTaskSink([api, host](const std::uint32_t task) { (void)api->run_task(host, task); });
+            bridge_->setRenderSink([api, host](const std::uint32_t renderer, const esn_handle canvas,
+                                               const esn_handle player) {
+                (void)api->render_map(host, renderer, canvas, player);
+            });
             bridge_->setFormSink([api, host](const std::uint32_t form_id, const bool closed, std::string data) {
                 (void)api->form_result(host, form_id, closed ? 1 : 0, data.c_str(), data.size());
             });

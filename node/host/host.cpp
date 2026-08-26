@@ -1010,6 +1010,27 @@ napi_value jsScheduleTask(napi_env env, napi_callback_info info)
     return napi_create_uint32(env, task, &result) == napi_ok ? result : nullptr;
 }
 
+// addMapRenderer(mapHandle, rendererId) - the id is minted by the runtime, like a form or a task.
+napi_value jsAddMapRenderer(napi_env env, napi_callback_info info)
+{
+    std::size_t argc = 2;
+    napi_value argv[2] = {nullptr, nullptr};
+    const auto *api = g_host ? g_host->api : nullptr;
+    double handle = 0;
+    std::uint32_t renderer = 0;
+    if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc < 2 || !api ||
+        !api->add_map_renderer || napi_get_value_double(env, argv[0], &handle) != napi_ok ||
+        napi_get_value_uint32(env, argv[1], &renderer) != napi_ok) {
+        return nullptr;
+    }
+    const auto status = api->add_map_renderer(api->context, static_cast<esn_handle>(handle), renderer);
+    if (status != ESN_OK) {
+        return fail(env, status, "addRenderer");
+    }
+    napi_value undefined_value = nullptr;
+    return napi_get_undefined(env, &undefined_value) == napi_ok ? undefined_value : nullptr;
+}
+
 napi_value jsCancelTask(napi_env env, napi_callback_info info)
 {
     std::size_t argc = 1;
@@ -1053,6 +1074,7 @@ napi_value registerBinding(napi_env env, napi_value exports)
     defineFunction(env, exports, "closeForm", jsCloseForm);
     defineFunction(env, exports, "scheduleTask", jsScheduleTask);
     defineFunction(env, exports, "cancelTask", jsCancelTask);
+    defineFunction(env, exports, "addMapRenderer", jsAddMapRenderer);
     if (g_host) {
         defineString(env, exports, "scriptPath", g_host->script_path.c_str());
     }
@@ -1537,6 +1559,29 @@ esn_status ESN_CALL esn_host_form_result(esn_host *handle, uint32_t form_id, int
             return ESN_ERR_INTERNAL;
         }
         return callRuntime(host, "formResult", 3, argv, nullptr) ? ESN_OK : ESN_ERR_SCRIPT_FAILED;
+    }
+    catch (...) {
+        return ESN_ERR_INTERNAL;
+    }
+}
+
+esn_status ESN_CALL esn_host_render_map(esn_host *handle, uint32_t renderer, esn_handle canvas,
+                                       esn_handle player)
+{
+    auto *host = reinterpret_cast<HostImpl *>(handle);
+    if (!host || !host->node) {
+        return ESN_ERR_NOT_INITIALIZED;
+    }
+    try {
+        const embed::Scope scope(host->node);
+        napi_env env = host->napi;
+        napi_value argv[3] = {nullptr, nullptr, nullptr};
+        if (!env || napi_create_uint32(env, renderer, &argv[0]) != napi_ok ||
+            napi_create_int64(env, static_cast<std::int64_t>(canvas), &argv[1]) != napi_ok ||
+            napi_create_int64(env, static_cast<std::int64_t>(player), &argv[2]) != napi_ok) {
+            return ESN_ERR_INTERNAL;
+        }
+        return callRuntime(host, "renderMap", 3, argv, nullptr) ? ESN_OK : ESN_ERR_SCRIPT_FAILED;
     }
     catch (...) {
         return ESN_ERR_INTERNAL;

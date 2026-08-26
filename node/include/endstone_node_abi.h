@@ -52,7 +52,7 @@ extern "C" {
 #endif
 
 /* Bumped on any incompatible change below. Checked by both sides at load time. */
-#define ESN_ABI_VERSION 15u
+#define ESN_ABI_VERSION 16u
 
 typedef enum esn_status {
     ESN_OK = 0,
@@ -250,6 +250,14 @@ typedef struct esn_endstone_api {
                                        uint32_t *out_task);
     /* Stops a scheduled task. Safe to call for a task that has already finished. */
     void(ESN_CALL *cancel_task)(void *context, uint32_t task);
+
+    /*
+     * Attaches a JavaScript renderer to a map. `renderer` is an id minted by the runtime, handed back
+     * to esn_host_render_map every time that map is drawn - the same shape forms and tasks use.
+     *
+     * Endstone owns the renderer once it is added; there is no detach.
+     */
+    esn_status(ESN_CALL *add_map_renderer)(void *context, esn_handle map, uint32_t renderer);
 } esn_endstone_api;
 
 /* Mirrors endstone::EventPriority. */
@@ -409,6 +417,16 @@ ESN_EXPORT esn_status ESN_CALL esn_plugin_reload(esn_plugin *plugin);
  */
 ESN_EXPORT esn_status ESN_CALL esn_host_form_result(esn_host *host, uint32_t form_id, int closed,
                                                    const char *data, size_t length);
+
+/*
+ * Draws one map for one player. Called by Endstone on the thread that sends the map packet, with the
+ * canvas and the viewing player as dispatch-scoped handles that are invalidated when this returns.
+ *
+ * A map is 128x128, so a renderer that sets pixels one at a time crosses the ABI 16384 times per draw
+ * per viewer; the canvas therefore also takes a whole frame at once through set_bytes.
+ */
+ESN_EXPORT esn_status ESN_CALL esn_host_render_map(esn_host *host, uint32_t renderer, esn_handle canvas,
+                                                  esn_handle player);
 
 /*
  * Runs a scheduled task's JavaScript callback. Called by Endstone on the server thread each time the

@@ -107,6 +107,8 @@
 #include <endstone/level/dimension.h>
 #include <endstone/level/level.h>
 #include <endstone/level/location.h>
+#include <endstone/map/map_canvas.h>
+#include <endstone/map/map_renderer.h>
 #include <endstone/map/map_view.h>
 #include <endstone/nbt/tag.h>
 #include <endstone/permissions/permissible.h>
@@ -121,6 +123,7 @@
 #include <endstone/scoreboard/scoreboard.h>
 #include <endstone/server.h>
 #include <endstone/skin.h>
+#include <endstone/util/color.h>
 #include <endstone/util/socket_address.h>
 #include <endstone/util/vector.h>
 
@@ -1384,6 +1387,27 @@ esn_status ApiBridge::bossBarInvoke(const esn_handle target, BossBar &bar, const
     return ESN_ERR_NO_SUCH_MEMBER;
 }
 
+/**
+ * @brief A MapRenderer whose draw call is a JavaScript function.
+ *
+ * Endstone lets a plugin supply one of these - its Python bindings do exactly this through a
+ * trampoline - so a JavaScript plugin can too. The renderer holds only an id; the function lives in
+ * the runtime, the same way a form or a scheduled task does.
+ */
+class JsMapRenderer : public MapRenderer {
+public:
+    JsMapRenderer(ApiBridge &bridge, const std::uint32_t id) : bridge_(bridge), id_(id) {}
+
+    void render(MapView &, MapCanvas &canvas, Player &player) override
+    {
+        bridge_.renderMap(id_, canvas, player);
+    }
+
+private:
+    ApiBridge &bridge_;
+    std::uint32_t id_;
+};
+
 esn_status ApiBridge::sendForm(const esn_handle player_handle, const std::uint32_t form_id,
                               const std::string_view spec)
 {
@@ -1505,6 +1529,45 @@ esn_status ApiBridge::sendForm(const esn_handle player_handle, const std::uint32
     return ESN_ERR_BAD_ARGUMENT;
 }
 
+void ApiBridge::setRenderSink(RenderSink sink)
+{
+    render_sink_ = std::move(sink);
+}
+
+esn_status ApiBridge::addMapRenderer(const esn_handle map_handle, const std::uint32_t renderer)
+{
+    auto *map = static_cast<MapView *>(resolve(map_handle, Kind::MapView));
+    if (!map) {
+        return find(map_handle) ? ESN_ERR_WRONG_TYPE : ESN_ERR_STALE_HANDLE;
+    }
+    if (!render_sink_) {
+        return ESN_ERR_NOT_INITIALIZED;
+    }
+    auto owned = std::make_shared<JsMapRenderer>(*this, renderer);
+    owned_map_renderers_.push_back(owned);
+    map->addRenderer(std::move(owned));
+    return ESN_OK;
+}
+
+void ApiBridge::renderMap(const std::uint32_t renderer, MapCanvas &canvas, Player &player)
+{
+    if (!render_sink_) {
+        return;
+    }
+    // A draw is its own scope: the canvas is only valid for this call, exactly like an event's handles.
+    const auto mark = beginScope();
+    const auto canvas_handle = track(&canvas, Kind::MapCanvas);
+    const auto player_handle = track(&player, Kind::Player);
+    try {
+        render_sink_(renderer, canvas_handle, player_handle);
+    }
+    catch (...) {
+        endScope(mark);
+        throw;
+    }
+    endScope(mark);
+}
+
 esn_status ApiBridge::closeForm(const esn_handle player_handle)
 {
     auto *player = static_cast<Player *>(resolve(player_handle, Kind::Player));
@@ -1565,6 +1628,9 @@ void ApiBridge::shutdown()
     }
     tasks_.clear();
     task_sink_ = nullptr;
+    render_sink_ = nullptr;
+    // Endstone keeps its own shared_ptr to each of these, so dropping ours only releases our claim.
+    owned_map_renderers_.clear();
     // Clear the bars off every screen rather than leaving them there until the client reconnects.
     for (auto &bar : owned_boss_bars_) {
         if (bar) {
@@ -2799,6 +2865,26 @@ esn_status ApiBridge::getBytes(const esn_handle target, const std::string_view n
 
 esn_status ApiBridge::setBytes(const esn_handle target, const std::string_view name, const std::string_view value)
 {
+    if (auto *canvas = static_cast<MapCanvas *>(resolve(target, Kind::MapCanvas))) {
+        // A whole frame in one crossing. 128x128 RGBA, row-major - setting pixels one at a time would
+        // cross the ABI 16384 times for every draw, for every viewer.
+        if (name == "pixels") {
+            constexpr int kMapSize = 128;
+            const auto expected = static_cast<std::size_t>(kMapSize) * kMapSize * 4;
+            if (value.size() < expected) {
+                return ESN_ERR_BAD_ARGUMENT;
+            }
+            const auto *bytes = reinterpret_cast<const unsigned char *>(value.data());
+            for (int y = 0; y < kMapSize; ++y) {
+                for (int x = 0; x < kMapSize; ++x) {
+                    const auto at = (static_cast<std::size_t>(y) * kMapSize + x) * 4;
+                    canvas->setPixelColor(x, y, Color{bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]});
+                }
+            }
+            return ESN_OK;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
     if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
         if (name == "payload") {
             const auto ev = event->getEventName();
@@ -4108,6 +4194,18 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
         }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
+    if (auto *canvas = static_cast<MapCanvas *>(resolve(target, Kind::MapCanvas))) {
+        // setPixel(x, y, r, g, b, a) - for a renderer that touches a handful of pixels. Anything
+        // drawing a whole frame should assign canvas.pixels instead.
+        if (name == "setPixel") {
+            canvas->setPixelColor(static_cast<int>(number(0)), static_cast<int>(number(1)),
+                                  Color{static_cast<std::uint8_t>(number(2)), static_cast<std::uint8_t>(number(3)),
+                                        static_cast<std::uint8_t>(number(4)),
+                                        static_cast<std::uint8_t>(number(5, 255))});
+            return ESN_OK;
+        }
+        return ESN_ERR_NO_SUCH_MEMBER;
+    }
     if (auto *state = static_cast<BlockState *>(resolve(target, Kind::BlockState))) {
         // update(force, applyPhysics) - writes the snapshot back to the world. Without force it only
         // applies if the position is still the type it was captured as, so a racing change is not
@@ -4261,6 +4359,9 @@ esn_status ApiBridge::typeName(const esn_handle target, char *buf, const std::si
     }
     if (resolve(target, Kind::MapView)) {
         return emitString("MapView", buf, cap, needed);
+    }
+    if (resolve(target, Kind::MapCanvas)) {
+        return emitString("MapCanvas", buf, cap, needed);
     }
     if (resolve(target, Kind::Server)) {
         return emitString("Server", buf, cap, needed);
@@ -4476,6 +4577,15 @@ esn_status ESN_CALL tScheduleTask(void *c, std::uint32_t delay, std::uint32_t pe
         return ESN_ERR_INTERNAL;
     }
 }
+esn_status ESN_CALL tAddMapRenderer(void *c, esn_handle map, std::uint32_t renderer)
+{
+    try {
+        return bridge(c).addMapRenderer(map, renderer);
+    }
+    catch (...) {
+        return ESN_ERR_INTERNAL;
+    }
+}
 void ESN_CALL tCancelTask(void *c, std::uint32_t task)
 {
     try {
@@ -4529,6 +4639,7 @@ void ApiBridge::fill(esn_endstone_api &api)
     api.update_commands = tUpdateCommands;
     api.schedule_task = tScheduleTask;
     api.cancel_task = tCancelTask;
+    api.add_map_renderer = tAddMapRenderer;
 }
 
 }  // namespace endstone::node
