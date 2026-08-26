@@ -285,7 +285,8 @@ const METHODS_BY_TYPE = {
     'setHeldItemSlot', 'setHelmet', 'setChestplate', 'setLeggings', 'setBoots',
     'setItemInMainHand', 'setItemInOffHand',
   ],
-  ItemStack: ['removeTag', 'addEnchant', 'removeEnchant', 'removeEnchants', 'clone'],
+  ItemStack: ['removeTag', 'addEnchant', 'removeEnchant', 'removeEnchants', 'clone',
+              'setMapView', 'addPage', 'addChargedProjectile'],
   Event: ['cancel', 'getExplodedBlock', 'setKnockback', 'setFrom', 'setTo'],
 };
 
@@ -612,6 +613,12 @@ function wrap(handle) {
         const joined = binding.get(handle, 'loreList');
         return typeof joined === 'string' && joined !== '' ? joined.split(NEWLINE) : [];
       }
+      // A writable book's pages, newline-joined like lore. A page containing a newline is therefore
+      // not representable, which matches the client - each entry is its own page.
+      if (prop === 'pages') {
+        const joined = binding.get(handle, 'pageList');
+        return typeof joined === 'string' && joined !== '' ? joined.split(NEWLINE) : [];
+      }
       // { "minecraft:sharpness": 5 }, keyed by enchantment id.
       if (prop === 'enchants') {
         const joined = binding.get(handle, 'enchantList');
@@ -787,6 +794,12 @@ function wrap(handle) {
         const lines = value === null || value === undefined ? [] : value;
         if (!Array.isArray(lines)) throw new TypeError('lore must be an array of strings, or null');
         binding.set(handle, 'loreList', lines.map(String).join(NEWLINE));
+        return true;
+      }
+      if (prop === 'pages') {
+        const pages = value === null || value === undefined ? [] : value;
+        if (!Array.isArray(pages)) throw new TypeError('pages must be an array of strings, or null');
+        binding.set(handle, 'pageList', pages.map(String).join(NEWLINE));
         return true;
       }
       // A handle-valued write: the ABI's setters carry only scalars, so it goes through a method, the

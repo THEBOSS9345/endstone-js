@@ -95,7 +95,11 @@
 #include <endstone/inventory/equipment_slot.h>
 #include <endstone/inventory/inventory.h>
 #include <endstone/inventory/item_stack.h>
+#include <endstone/inventory/meta/book_meta.h>
+#include <endstone/inventory/meta/crossbow_meta.h>
 #include <endstone/inventory/meta/item_meta.h>
+#include <endstone/inventory/meta/map_meta.h>
+#include <endstone/inventory/meta/writable_book_meta.h>
 #include <endstone/inventory/player_inventory.h>
 #include <endstone/lang/language.h>
 #include <endstone/level/chunk.h>
@@ -448,6 +452,51 @@ void editMeta(ItemStack &stack, Edit &&edit)
     }
     edit(*meta);
     (void)stack.setItemMeta(meta.get());
+}
+
+/**
+ * @brief The item's metadata as a subclass, or nullptr when it is not that kind of item.
+ *
+ * NOT dynamic_cast - the plugin's type_info is a different object from the runtime's, so it silently
+ * fails across the library boundary. getType() is a virtual call and always works, and once the kind
+ * is known by name a static_cast is safe and needs no RTTI. Same discipline as the event traits.
+ */
+template <typename Meta>
+Meta *metaAs(const std::unique_ptr<ItemMeta> &meta)
+{
+    return (meta && meta->getType() == Meta::MetaType) ? static_cast<Meta *>(meta.get()) : nullptr;
+}
+
+/** Applies `edit` to an item's metadata as `Meta`, writing it back. False when the kind is wrong. */
+template <typename Meta, typename Edit>
+bool editMetaAs(ItemStack &stack, Edit &&edit)
+{
+    auto meta = stack.getItemMeta();
+    auto *typed = metaAs<Meta>(meta);
+    if (!typed) {
+        return false;
+    }
+    edit(*typed);
+    (void)stack.setItemMeta(meta.get());
+    return true;
+}
+
+std::string_view generationName(const BookMeta::Generation generation)
+{
+    switch (generation) {
+    case BookMeta::Generation::Original: return "original";
+    case BookMeta::Generation::CopyOfOriginal: return "copyOfOriginal";
+    case BookMeta::Generation::CopyOfCopy: return "copyOfCopy";
+    }
+    return "original";
+}
+
+std::optional<BookMeta::Generation> generationFromName(const std::string_view name)
+{
+    if (name == "original") return BookMeta::Generation::Original;
+    if (name == "copyOfOriginal" || name == "copyoforiginal") return BookMeta::Generation::CopyOfOriginal;
+    if (name == "copyOfCopy" || name == "copyofcopy") return BookMeta::Generation::CopyOfCopy;
+    return std::nullopt;
 }
 
 EventPriority toPriority(int value)
@@ -1708,6 +1757,29 @@ esn_status ApiBridge::getBool(const esn_handle target, const std::string_view na
     }
     if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
         if (name == "hasItemMeta") { *out = stack->hasItemMeta(); return ESN_OK; }
+        if (name == "hasMapId" || name == "hasMapView" || name == "hasTitle" || name == "hasAuthor" ||
+            name == "hasGeneration" || name == "hasPages" || name == "hasChargedProjectiles") {
+            const auto meta = stack->getItemMeta();
+            if (const auto *map = metaAs<MapMeta>(meta)) {
+                if (name == "hasMapId") { *out = map->hasMapId(); return ESN_OK; }
+                if (name == "hasMapView") { *out = map->hasMapView(); return ESN_OK; }
+            }
+            if (const auto *book = metaAs<BookMeta>(meta)) {
+                if (name == "hasTitle") { *out = book->hasTitle(); return ESN_OK; }
+                if (name == "hasAuthor") { *out = book->hasAuthor(); return ESN_OK; }
+                if (name == "hasGeneration") { *out = book->hasGeneration(); return ESN_OK; }
+            }
+            if (const auto *writable = metaAs<WritableBookMeta>(meta); writable && name == "hasPages") {
+                *out = writable->hasPages();
+                return ESN_OK;
+            }
+            if (const auto *crossbow = metaAs<CrossbowMeta>(meta); crossbow && name == "hasChargedProjectiles") {
+                *out = crossbow->hasChargedProjectiles();
+                return ESN_OK;
+            }
+            *out = 0;  // right question, wrong kind of item - absent rather than an error
+            return ESN_OK;
+        }
         if (name == "unbreakable") {
             const auto meta = stack->getItemMeta();
             *out = meta && meta->isUnbreakable();
@@ -1906,6 +1978,24 @@ esn_status ApiBridge::getInt(const esn_handle target, const std::string_view nam
             }
         }
         return ESN_ERR_NO_SUCH_MEMBER;
+    }
+    if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack));
+        stack && (name == "mapId" || name == "pageCount" || name == "chargedProjectileCount")) {
+        const auto meta = stack->getItemMeta();
+        if (const auto *map = metaAs<MapMeta>(meta); map && name == "mapId") {
+            *out = map->hasMapId() ? map->getMapId() : 0;
+            return ESN_OK;
+        }
+        if (const auto *writable = metaAs<WritableBookMeta>(meta); writable && name == "pageCount") {
+            *out = writable->getPageCount();
+            return ESN_OK;
+        }
+        if (const auto *crossbow = metaAs<CrossbowMeta>(meta); crossbow && name == "chargedProjectileCount") {
+            *out = static_cast<std::int64_t>(crossbow->getChargedProjectiles().size());
+            return ESN_OK;
+        }
+        *out = 0;
+        return ESN_OK;
     }
     if (auto *inventory = resolveInventory(target)) {
         if (name == "size") { *out = inventory->getSize(); return ESN_OK; }
@@ -2315,6 +2405,34 @@ esn_status ApiBridge::getString(const esn_handle target, const std::string_view 
     if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
         if (name == "type") { return emitString(std::string{stack->getType().getId()}, buf, cap, needed); }
         if (name == "translationKey") { return emitString(stack->getTranslationKey(), buf, cap, needed); }
+        // Written-book and writable-book metadata. A wrong-kind read is empty rather than an error, so
+        // `item.title || item.type` reads naturally.
+        if (name == "title" || name == "author" || name == "generation" || name == "pageList") {
+            const auto meta = stack->getItemMeta();
+            if (const auto *book = metaAs<BookMeta>(meta)) {
+                if (name == "title") {
+                    return emitString(book->hasTitle() ? book->getTitle() : "", buf, cap, needed);
+                }
+                if (name == "author") {
+                    return emitString(book->hasAuthor() ? book->getAuthor() : "", buf, cap, needed);
+                }
+                if (name == "generation") {
+                    const auto generation = book->getGeneration();
+                    return emitString(generation ? generationName(*generation) : "", buf, cap, needed);
+                }
+            }
+            if (const auto *writable = metaAs<WritableBookMeta>(meta); writable && name == "pageList") {
+                std::string joined;
+                for (const auto &page : writable->getPages()) {
+                    if (!joined.empty()) {
+                        joined += '\n';
+                    }
+                    joined += page;
+                }
+                return emitString(joined, buf, cap, needed);
+            }
+            return emitString("", buf, cap, needed);
+        }
         // Metadata that reads as text. An item with no metadata reads as empty rather than failing, so
         // `item.displayName || item.type` is the natural idiom.
         if (name == "displayName") {
@@ -2997,6 +3115,13 @@ esn_status ApiBridge::setInt(const esn_handle target, const std::string_view nam
     if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
         // Writes reach the world only for a stack the server handed out live, such as the one on
         // PlayerDropItemEvent. A stack read out of an inventory is a copy - change the inventory.
+        if (name == "mapId") {
+            if (!editMetaAs<MapMeta>(*stack, [&](MapMeta &map) { map.setMapId(value); })) {
+                return ESN_ERR_WRONG_TYPE;
+            }
+            persistItem(target);
+            return ESN_OK;
+        }
         if (name == "amount") { stack->setAmount(static_cast<int>(value)); persistItem(target); return ESN_OK; }
         if (name == "data") { stack->setData(static_cast<int>(value)); persistItem(target); return ESN_OK; }
         if (name == "damage" || name == "repairCost") {
@@ -3125,6 +3250,39 @@ esn_status ApiBridge::setString(const esn_handle target, const std::string_view 
             editMeta(*stack, [&](ItemMeta &meta) {
                 meta.setLore(lines.empty() ? std::nullopt : std::optional{lines});
             });
+            persistItem(target);
+            return ESN_OK;
+        }
+        // Written-book metadata. An empty string clears the field, as displayName does.
+        if (name == "title" || name == "author" || name == "generation") {
+            const auto text = std::string{value};
+            const auto changed = editMetaAs<BookMeta>(*stack, [&](BookMeta &book) {
+                if (name == "title") {
+                    book.setTitle(text.empty() ? std::nullopt : std::optional{text});
+                }
+                else if (name == "author") {
+                    book.setAuthor(text.empty() ? std::nullopt : std::optional{text});
+                }
+                else {
+                    book.setGeneration(generationFromName(text));
+                }
+            });
+            if (!changed) {
+                return ESN_ERR_WRONG_TYPE;
+            }
+            persistItem(target);
+            return ESN_OK;
+        }
+        if (name == "pageList") {
+            std::vector<std::string> pages;
+            if (!value.empty()) {
+                for (const auto &page : splitOn(value, '\n')) {
+                    pages.push_back(page);
+                }
+            }
+            if (!editMetaAs<WritableBookMeta>(*stack, [&](WritableBookMeta &book) { book.setPages(pages); })) {
+                return ESN_ERR_WRONG_TYPE;
+            }
             persistItem(target);
             return ESN_OK;
         }
@@ -3801,6 +3959,41 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
         }
         if (name == "removeEnchants") {
             editMeta(*stack, [&](ItemMeta &meta) { meta.removeEnchants(); });
+            persistItem(target);
+            return ESN_OK;
+        }
+        // setMapView(map) - what turns a blank map item into the one server.createMap() made. Takes a
+        // handle rather than an id because that is the object a plugin already has.
+        if (name == "setMapView") {
+            auto *map = static_cast<MapView *>(resolve(handle_at(0), Kind::MapView));
+            if (!map) {
+                return ESN_ERR_BAD_ARGUMENT;
+            }
+            if (!editMetaAs<MapMeta>(*stack, [&](MapMeta &meta) { meta.setMapView(map); })) {
+                return ESN_ERR_WRONG_TYPE;
+            }
+            persistItem(target);
+            return ESN_OK;
+        }
+        if (name == "addPage") {
+            if (!editMetaAs<WritableBookMeta>(*stack,
+                                              [&](WritableBookMeta &book) { book.addPage({text}); })) {
+                return ESN_ERR_WRONG_TYPE;
+            }
+            persistItem(target);
+            return ESN_OK;
+        }
+        // addChargedProjectile(type, amount, data) - described like any other item argument.
+        if (name == "addChargedProjectile") {
+            if (text.empty()) {
+                return ESN_ERR_BAD_ARGUMENT;
+            }
+            const endstone::ItemStack projectile{text, static_cast<int>(number(0, 1)),
+                                                 static_cast<int>(number(1, 0))};
+            if (!editMetaAs<CrossbowMeta>(
+                    *stack, [&](CrossbowMeta &crossbow) { crossbow.addChargedProjectile(projectile); })) {
+                return ESN_ERR_WRONG_TYPE;
+            }
             persistItem(target);
             return ESN_OK;
         }
