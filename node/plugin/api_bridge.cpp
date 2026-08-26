@@ -473,10 +473,40 @@ void editMeta(ItemStack &stack, Edit &&edit)
  * fails across the library boundary. getType() is a virtual call and always works, and once the kind
  * is known by name a static_cast is safe and needs no RTTI. Same discipline as the event traits.
  */
+bool metaTypeMatches(const ItemMeta::Type actual, const ItemMeta::Type wanted)
+{
+    if (actual == wanted) {
+        return true;
+    }
+    // BookMeta derives from WritableBookMeta, so a written book answers a writable-book request.
+    return wanted == ItemMeta::Type::WritableBook && actual == ItemMeta::Type::Book;
+}
+
 template <typename Meta>
 Meta *metaAs(const std::unique_ptr<ItemMeta> &meta)
 {
-    return (meta && meta->getType() == Meta::MetaType) ? static_cast<Meta *>(meta.get()) : nullptr;
+    return (meta && metaTypeMatches(meta->getType(), Meta::MetaType)) ? static_cast<Meta *>(meta.get())
+                                                                     : nullptr;
+}
+
+/**
+ * @brief Which metadata an item carries, as text.
+ *
+ * Worth exposing because the server decides this, not the item id: at present it produces MapMeta for
+ * minecraft:filled_map and the plain base for everything else, so book and crossbow metadata is
+ * declared by the API and never actually instantiated. A plugin can check this rather than discover it
+ * as a failed write.
+ */
+std::string_view metaTypeName(const ItemMeta::Type type)
+{
+    switch (type) {
+    case ItemMeta::Type::Item: return "item";
+    case ItemMeta::Type::Book: return "book";
+    case ItemMeta::Type::CrossBow: return "crossbow";
+    case ItemMeta::Type::Map: return "map";
+    case ItemMeta::Type::WritableBook: return "writableBook";
+    }
+    return "item";
 }
 
 /** Applies `edit` to an item's metadata as `Meta`, writing it back. False when the kind is wrong. */
@@ -2498,6 +2528,11 @@ esn_status ApiBridge::getString(const esn_handle target, const std::string_view 
     if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
         if (name == "type") { return emitString(std::string{stack->getType().getId()}, buf, cap, needed); }
         if (name == "translationKey") { return emitString(stack->getTranslationKey(), buf, cap, needed); }
+        if (name == "metaType") {
+            const auto meta = stack->getItemMeta();
+            return emitString(meta ? metaTypeName(meta->getType()) : std::string_view{"item"}, buf, cap,
+                              needed);
+        }
         // Written-book and writable-book metadata. A wrong-kind read is empty rather than an error, so
         // `item.title || item.type` reads naturally.
         if (name == "title" || name == "author" || name == "generation" || name == "pageList") {

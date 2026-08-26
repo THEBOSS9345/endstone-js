@@ -482,6 +482,17 @@ commands.register("jsdim2", (sender) => {
 // --- item metadata ---------------------------------------------------------------------------------
 let testkitMap = null;
 
+// This server build only produces MapMeta (for minecraft:filled_map); book and crossbow metadata are
+// declared by the Endstone API but never instantiated, so writing them fails. Check first and say so.
+const needMeta = (sender, item, wanted, what) => {
+    if (item.metaType === wanted) return true;
+    say(sender, `§eThis server does not provide ${what} metadata: the item reports ` +
+                `metaType=§f${item.metaType}§e, not §f${wanted}§e.`);
+    say(sender, "§7Endstone declares the type but its core maps only minecraft:filled_map to a");
+    say(sender, "§7subclass, so this will start working when upstream wires the rest up.");
+    return false;
+};
+
 commands.register("jsmapitem", (sender) => {
     if (!needPlayer(sender)) return;
     if (!testkitMap) {
@@ -490,7 +501,10 @@ commands.register("jsmapitem", (sender) => {
         testkitMap.centerZ = Math.round(sender.location.z);
     }
     sender.inventory.setItemInMainHand({ type: "minecraft:filled_map" });
-    sender.inventory.itemInMainHand.setMapView(testkitMap);
+    const held = sender.inventory.itemInMainHand;
+    say(sender, `§7metaType=${held.metaType} (expected map)`);
+    if (!needMeta(sender, held, "map", "map")) return;
+    held.setMapView(testkitMap);
     // Read back off the inventory, not off the copy that was written.
     const again = sender.inventory.itemInMainHand;
     say(sender, `§7hasMapView=${again.hasMapView} hasMapId=${again.hasMapId} mapId=${again.mapId}`);
@@ -502,6 +516,8 @@ commands.register("jsbook", (sender) => {
     if (!needPlayer(sender)) return;
     sender.inventory.setItemInMainHand({ type: "minecraft:written_book" });
     const item = sender.inventory.itemInMainHand;
+    say(sender, `§7metaType=${item.metaType} (expected book)`);
+    if (!needMeta(sender, item, "book", "written book")) return;
     item.title = "Testkit";
     item.author = sender.name;
     item.generation = "copyOfOriginal";
@@ -516,6 +532,8 @@ commands.register("jspages", (sender) => {
     if (!needPlayer(sender)) return;
     sender.inventory.setItemInMainHand({ type: "minecraft:writable_book" });
     const item = sender.inventory.itemInMainHand;
+    say(sender, `§7metaType=${item.metaType} (expected writableBook)`);
+    if (!needMeta(sender, item, "writableBook", "writable book")) return;
     item.pages = ["First page.", "Second page."];
     sender.inventory.itemInMainHand.addPage("Third page.");
     const again = sender.inventory.itemInMainHand;
@@ -527,7 +545,10 @@ commands.register("jspages", (sender) => {
 commands.register("jsbow", (sender) => {
     if (!needPlayer(sender)) return;
     sender.inventory.setItemInMainHand({ type: "minecraft:crossbow" });
-    sender.inventory.itemInMainHand.addChargedProjectile("minecraft:arrow");
+    const bow = sender.inventory.itemInMainHand;
+    say(sender, `§7metaType=${bow.metaType} (expected crossbow)`);
+    if (!needMeta(sender, bow, "crossbow", "crossbow")) return;
+    bow.addChargedProjectile("minecraft:arrow");
     const again = sender.inventory.itemInMainHand;
     say(sender, `§7charged=${again.hasChargedProjectiles} count=${again.chargedProjectileCount}`);
     if (again.chargedProjectileCount < 1) say(sender, "§cCROSSBOW NOT LOADED");

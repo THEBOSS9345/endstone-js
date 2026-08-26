@@ -220,9 +220,18 @@ can, so a dropped write shows up as a red `§c` line rather than as nothing at a
 | Do | Expect |
 | --- | --- |
 | `/jsmapitem` | You end up holding a `filled_map` pointing at the map the plugin made. This is the gap where `createMap()` and `sendMap()` both worked and there was no way to put a map *into an item*. |
-| `/jsbook` | A written book with title, author and generation, all read back off the inventory. |
-| `/jspages` | A writable book with `pageCount=3` — two set at once, one appended. |
-| `/jsbow` | A crossbow reporting `charged=true count=1`. |
+| `/jsbook` | **A yellow "this server does not provide written book metadata" notice** — see below. |
+| `/jspages` | The same notice for writable books. |
+| `/jsbow` | The same notice for crossbows. |
+
+**Only map metadata actually exists on this build.** Endstone declares `BookMeta`,
+`WritableBookMeta` and `CrossbowMeta` in its public headers, but its core maps only
+`minecraft:air` and `minecraft:filled_map` to a metadata subclass — everything else gets the plain
+base. So those three are bound here and cannot succeed until upstream instantiates them. `item.metaType`
+reports what an item really carries, which is the check to make before writing any of these fields.
+
+This is worth re-testing after each upstream merge: the bindings are already in place, so they will
+start working the moment the core wires the types up.
 
 ### Inventory matching
 
