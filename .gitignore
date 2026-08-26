@@ -24,6 +24,8 @@ __pycache__/
 conan_provider.cmake
 .env
 
+data/
+
 # JavaScript plugin dependencies (node/), installed per plugin by npm
 node_modules/
 
