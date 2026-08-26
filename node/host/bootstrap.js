@@ -273,14 +273,14 @@ const METHODS_BY_TYPE = {
   Server: [
     'dispatchCommand', 'createBossBar', 'reloadData', 'broadcast',
     'banPlayer', 'unbanPlayer', 'banIp', 'unbanIp', 'createMap', 'createScoreboard',
-    'getOnlinePlayer',
+    'getOnlinePlayer', 'getMap', 'shutdown', 'reload',
   ],
   BossBar: ['addPlayer', 'removePlayer', 'removeAll', 'addFlag', 'removeFlag', 'remove'],
   Scoreboard: [
     'addObjective', 'removeObjective', 'setDisplayName', 'setDisplay', 'clearSlot',
     'setScore', 'addScore', 'resetScores',
   ],
-  Inventory: ['getItem', 'setItem', 'addItem', 'removeItem', 'clear', 'remove'],
+  Inventory: ['getItem', 'setItem', 'addItem', 'removeItem', 'clear', 'remove', 'removeStack'],
   PlayerInventory: [
     'setHeldItemSlot', 'setHelmet', 'setChestplate', 'setLeggings', 'setBoots',
     'setItemInMainHand', 'setItemInOffHand',
@@ -292,7 +292,7 @@ const METHODS_BY_TYPE = {
 
 // Endstone's own hierarchy, so a Player answers to everything an Actor does.
 const TYPE_PARENT = {
-  Player: 'Mob', Mob: 'Actor', Actor: 'CommandSender', PlayerInventory: 'Inventory',
+  Player: 'Mob', Mob: 'Actor', Actor: 'CommandSender', Item: 'Actor', PlayerInventory: 'Inventory',
 };
 
 // Flattened per type on first use. The type of a handle never changes, so this is computed once per
@@ -327,19 +327,26 @@ const ITEM_METHODS = new Set([
   'setHelmet', 'setChestplate', 'setLeggings', 'setBoots', 'setItemInMainHand', 'setItemInOffHand',
 ]);
 
+// A type id matches by name only; a whole stack matches on metadata too - NBT, enchantments, a custom
+// name - which is the difference between "a pickaxe" and "the enchanted pickaxe". Passing a stack
+// routes to Endstone's own comparison rather than the loop below.
 const INVENTORY_HELPERS = {
   contents() {
     const all = [];
     for (let slot = 0; slot < this.size; ++slot) all.push(this.getItem(slot));
     return all;
   },
-  contains(type) {
-    return this.first(type) !== -1;
+  contains(typeOrStack) {
+    const against = asHandle(typeOrStack);
+    if (against !== null) return binding.get(this.handle, 'containsStack:' + against) === true;
+    return this.first(typeOrStack) !== -1;
   },
-  first(type) {
+  first(typeOrStack) {
+    const against = asHandle(typeOrStack);
+    if (against !== null) return Number(binding.get(this.handle, 'firstStack:' + against));
     for (let slot = 0; slot < this.size; ++slot) {
       const item = this.getItem(slot);
-      if (item && item.type === type) return slot;
+      if (item && item.type === typeOrStack) return slot;
     }
     return -1;
   },
@@ -351,15 +358,24 @@ const INVENTORY_HELPERS = {
     }
     return total;
   },
-  containsAtLeast(type, amount) {
-    return this.countOf(type) >= amount;
+  containsAtLeast(typeOrStack, amount) {
+    const against = asHandle(typeOrStack);
+    if (against !== null) {
+      return binding.get(this.handle, `containsStack:${against},${Math.round(amount)}`) === true;
+    }
+    return this.countOf(typeOrStack) >= amount;
   },
-  /** Every slot holding that type. Empty array when there are none. */
-  all(type) {
+  /** Every slot holding that type, or that exact stack. Empty array when there are none. */
+  all(typeOrStack) {
+    const against = asHandle(typeOrStack);
+    if (against !== null) {
+      const joined = binding.get(this.handle, 'allStacks:' + against);
+      return typeof joined === 'string' && joined !== '' ? joined.split(NEWLINE).map(Number) : [];
+    }
     const slots = [];
     for (let slot = 0; slot < this.size; ++slot) {
       const item = this.getItem(slot);
-      if (item && item.type === type) slots.push(slot);
+      if (item && item.type === typeOrStack) slots.push(slot);
     }
     return slots;
   },
@@ -662,8 +678,12 @@ function wrap(handle) {
         const joined = binding.get(handle, 'objectiveList');
         if (typeof joined !== 'string' || joined === '') return [];
         return joined.split(NEWLINE).map((line) => {
-          const [name, displayName, modifiable] = line.split(UNIT_SEPARATOR);
-          return { name, displayName, modifiable: modifiable === '1' };
+          const [name, displayName, modifiable, displaySlot, sortOrder] = line.split(UNIT_SEPARATOR);
+          return {
+            name, displayName, modifiable: modifiable === '1',
+            displaySlot: displaySlot || null,
+            sortOrder: sortOrder || null,
+          };
         });
       }
       if (prop === 'entries') {
@@ -690,6 +710,12 @@ function wrap(handle) {
       }
       // A boss bar's viewers, as names: handing back Player objects would tie them to a dispatch scope
       // that has long since ended by the time a timer updates the bar.
+      // Who will see a chat message, as names. getRecipients hands back a copy on the C++ side, so
+      // this is an observation - filtering it does not change who receives the message.
+      if (prop === 'recipients') {
+        const joined = binding.get(handle, 'recipientNameList');
+        return typeof joined === 'string' && joined !== '' ? joined.split(NEWLINE) : [];
+      }
       if (prop === 'playerNames') {
         const joined = binding.get(handle, 'playerNameList');
         return typeof joined === 'string' && joined !== '' ? joined.split(NEWLINE) : [];

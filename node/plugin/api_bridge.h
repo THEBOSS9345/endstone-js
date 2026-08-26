@@ -38,6 +38,7 @@ class CommandSender;
 class DamageSource;
 class Event;
 class Inventory;
+class Item;
 class ItemStack;
 class Dimension;
 class Level;
@@ -180,7 +181,8 @@ private:
     // Mob is distinct from Actor because only living things have health, and Endstone's actor events
     // are templated on one or the other (ActorEvent<Mob> vs ActorEvent<Actor>).
     enum class Kind : std::uint8_t {
-        Player, Mob, Actor, Block, Level, DamageSource, ItemStack, Location, Vector, CommandSender,
+        // Item is a dropped item stack in the world, distinct from ItemStack which is the stack itself.
+        Player, Mob, Actor, Item, Block, Level, DamageSource, ItemStack, Location, Vector, CommandSender,
         // PlayerInventory is distinct from Inventory only so the equipment slots can be reached; every
         // generic inventory operation accepts either.
         Inventory, PlayerInventory, Plugin, MapView, Server, Dimension, Scoreboard, Event, BossBar,
