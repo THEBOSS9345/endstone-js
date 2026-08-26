@@ -184,6 +184,25 @@ const serverBase = {
     const parts = [String(locale), String(key), ...(params ?? []).map(String)];
     return binding.get(serverHandle, 'translate:' + parts.join(UNIT_SEPARATOR));
   },
+  /**
+   * Registry lookups keyed by id, so a plugin can ask about a type it does not hold an instance of -
+   * what a durability bar or a level cap needs before the item exists.
+   *
+   * An id that is not registered answers -1. That is deliberately not 0, which is a real answer
+   * meaning "does not wear out".
+   */
+  getItemMaxDurability(type) {
+    return binding.get(serverHandle, 'itemMaxDurability:' + String(type));
+  },
+  getItemMaxStackSize(type) {
+    return binding.get(serverHandle, 'itemMaxStackSize:' + String(type));
+  },
+  getEnchantmentMaxLevel(id) {
+    return binding.get(serverHandle, 'enchantMaxLevel:' + String(id));
+  },
+  getEnchantmentStartLevel(id) {
+    return binding.get(serverHandle, 'enchantStartLevel:' + String(id));
+  },
   /** The server's own locale, e.g. `"en_US"`. */
   get locale() { return binding.get(serverHandle, 'locale'); },
   /**
@@ -619,20 +638,6 @@ function wrap(handle) {
       }
       if (prop === 'isPermissionSet') {
         return (node) => binding.get(handle, 'permissionSet:' + String(node)) === true;
-      }
-      // Registry lookups keyed by id, so a plugin can ask about a type before it holds one - what a
-      // level cap or a durability bar needs. -1 means the id is not registered, which is not 0.
-      if (prop === 'getEnchantmentMaxLevel') {
-        return (id) => binding.get(handle, 'enchantMaxLevel:' + String(id));
-      }
-      if (prop === 'getEnchantmentStartLevel') {
-        return (id) => binding.get(handle, 'enchantStartLevel:' + String(id));
-      }
-      if (prop === 'getItemMaxDurability') {
-        return (id) => binding.get(handle, 'itemMaxDurability:' + String(id));
-      }
-      if (prop === 'getItemMaxStackSize') {
-        return (id) => binding.get(handle, 'itemMaxStackSize:' + String(id));
       }
       if (prop === 'getTag') {
         return (key) => binding.get(handle, 'tag:' + String(key));
