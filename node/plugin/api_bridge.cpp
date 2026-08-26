@@ -1693,6 +1693,16 @@ esn_status ApiBridge::getBool(const esn_handle target, const std::string_view na
             *out = static_cast<PlayerEmoteEvent *>(event)->isMuted();
             return ESN_OK;
         }
+        // The state being changed *to*, which is the only thing either weather event carries: without
+        // it a handler cannot tell rain starting from rain stopping.
+        if (name == "raining" && ev == "WeatherChangeEvent") {
+            *out = static_cast<WeatherChangeEvent *>(event)->toWeatherState();
+            return ESN_OK;
+        }
+        if (name == "thundering" && ev == "ThunderChangeEvent") {
+            *out = static_cast<ThunderChangeEvent *>(event)->toThunderState();
+            return ESN_OK;
+        }
         // Event::isCancellable() is private to EventHandler; the ICancellable cast is the public test.
         if (name == "isCancellable") { *out = eventCancellable(event) != nullptr; return ESN_OK; }
         if (name == "isAsynchronous") { *out = event->isAsynchronous(); return ESN_OK; }
@@ -3300,6 +3310,15 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
             if (out_handle) {
                 *out_handle = track(raw, Kind::Scoreboard, true);
             }
+            return ESN_OK;
+        }
+        // getOnlinePlayer(index) - the counterpart to onlinePlayerCount, so JavaScript can walk the
+        // player list. Indexed rather than returning an array because an accessor carries one value;
+        // the runtime turns the pair back into server.onlinePlayers. Same shape as Dimension.getActor.
+        if (name == "getOnlinePlayer" && out_handle) {
+            const auto players = server->getOnlinePlayers();
+            const auto index = static_cast<std::size_t>(number(0));
+            *out_handle = index < players.size() && players[index] ? track(players[index], Kind::Player) : 0;
             return ESN_OK;
         }
         // broadcast(message, permission) - only players holding the permission see it.

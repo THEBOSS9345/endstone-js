@@ -121,6 +121,22 @@ const serverBase = {
   logger: makeLogger(null),
   broadcastMessage(message) { binding.broadcastMessage(String(message)); },
   /**
+   * Every player currently online. Built from onlinePlayerCount and getOnlinePlayer because an
+   * accessor carries one value and cannot return an array.
+   *
+   * Dispatch-scoped like any player: read it again next tick rather than keeping the result.
+   */
+  get onlinePlayers() {
+    if (!serverHandle) return [];
+    const players = [];
+    const count = binding.serverOnlinePlayerCount();
+    for (let index = 0; index < count; ++index) {
+      const player = wrap(asHandle(binding.invoke(serverHandle, 'getOnlinePlayer', index)) ?? 0);
+      if (player) players.push(player);
+    }
+    return players;
+  },
+  /**
    * Looks up an online player by name or UUID, or null if they are not online. The only way to reach a
    * player outside an event - but the result is dispatch-scoped like any player, so look it up again
    * next time rather than keeping it.
@@ -242,6 +258,7 @@ const METHODS_BY_TYPE = {
   Server: [
     'dispatchCommand', 'createBossBar', 'reloadData', 'broadcast',
     'banPlayer', 'unbanPlayer', 'banIp', 'unbanIp', 'createMap', 'createScoreboard',
+    'getOnlinePlayer',
   ],
   BossBar: ['addPlayer', 'removePlayer', 'removeAll', 'addFlag', 'removeFlag', 'remove'],
   Scoreboard: [
