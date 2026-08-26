@@ -7,9 +7,10 @@
 
 import { commands, events, packets, scheduler, server, logger } from "@endstone-js/server";
 
-const say = (sender, text) => {
+const say = (who, text) => {
     logger.info(`[testkit] ${text.replace(/§./g, "")}`);
-    sender.sendMessage(text);
+    const player = typeof who === "string" ? server.getPlayer(who) : who;
+    if (player) player.sendMessage(text);
 };
 
 const needPlayer = (sender) => {
@@ -106,12 +107,14 @@ commands.register("jstag", (sender) => {
 commands.register("jsform", (sender, args) => {
     if (!needPlayer(sender)) return;
     const which = (args[0] ?? "action").toLowerCase();
+    // No need to capture the sender: a form callback is handed a freshly resolved player, because the
+    // handle that sent the form is stale by the time the answer arrives.
     if (which === "message") {
         sender.sendForm({
             type: "message", title: "Message form", content: "Pick one.",
             button1: "Left", button2: "Right",
-            onSubmit: (i) => say(sender, `§amessage form -> ${i}`),
-            onClose: () => say(sender, "§7message form dismissed"),
+            onSubmit: (i, player) => say(player, `§amessage form -> ${i}`),
+            onClose: (player) => say(player, "§7message form dismissed"),
         });
     } else if (which === "modal") {
         sender.sendForm({
@@ -125,8 +128,8 @@ commands.register("jsform", (sender, args) => {
                 { type: "divider" },
                 { type: "textInput", label: "Some text", placeholder: "type here", defaultValue: "hello" },
             ],
-            onSubmit: (r) => say(sender, `§amodal form -> ${JSON.stringify(r)}`),
-            onClose: () => say(sender, "§7modal form dismissed"),
+            onSubmit: (r, player) => say(player, `§amodal form -> ${JSON.stringify(r)}`),
+            onClose: (player) => say(player, "§7modal form dismissed"),
         });
     } else {
         sender.sendForm({
@@ -138,8 +141,8 @@ commands.register("jsform", (sender, args) => {
                 { type: "divider" },
                 "Last button",
             ],
-            onSubmit: (i) => say(sender, `§aaction form -> ${i}`),
-            onClose: () => say(sender, "§7action form dismissed"),
+            onSubmit: (i, player) => say(player, `§aaction form -> ${i}`),
+            onClose: (player) => say(player, "§7action form dismissed"),
         });
     }
 }, { description: "Shows a form.", usages: ["/jsform <action|message|modal>"] });

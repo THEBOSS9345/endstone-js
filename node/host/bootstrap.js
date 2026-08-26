@@ -426,6 +426,9 @@ function wrap(handle) {
   // Resolved on first use and kept: one ABI call per object, however many properties are read off it.
   let typeName = null;
   const typeOf = () => (typeName ??= binding.typeName(handle));
+  // Bound methods, per handle: a method is built once and reused, rather than a fresh closure on
+  // every access. Distinct from the module-level methodCache, which maps a type to its method names.
+  const boundMethods = new Map();
   const proxy = new Proxy({ [HANDLE]: handle }, {
     get(_t, prop) {
       if (prop === HANDLE || prop === 'handle') return handle;
@@ -457,9 +460,19 @@ function wrap(handle) {
         return (spec) => {
           if (!spec || typeof spec !== 'object') throw new TypeError('sendForm(spec): spec must be an object');
           const formId = nextFormId++;
+          // The player is read now, while this handle is still live, so the result can be delivered
+          // with a fresh one. A form is answered on a later tick, by which point the handle that sent
+          // it is long stale - and the callback wanting to reply to that same player is the whole
+          // point of a form, so the runtime resolves it rather than making every author do it.
+          // uniqueId rather than name: it survives a name change and cannot collide.
+          let recipient = null;
+          try {
+            recipient = binding.get(handle, 'uniqueId') ?? null;
+          } catch { /* not a player; the callbacks simply get null */ }
           openForms.set(formId, {
             kind: String(spec.type ?? 'action').toLowerCase(),
             onSubmit: spec.onSubmit, onClose: spec.onClose, plugin: activePluginId,
+            recipient,
           });
           binding.sendForm(handle, formId, serialiseForm(spec));
           return formId;
@@ -635,9 +648,11 @@ function wrap(handle) {
       // path, and an unknown name ends up reported as a missing member rather than as a function that
       // throws when called.
       if (methodsFor(typeOf()).has(prop)) {
+        let cached = boundMethods.get(prop);
+        if (cached) return cached;
         // Item arguments describe a stack; slot indices stay as plain numbers before them.
         if (ITEM_METHODS.has(prop)) {
-          return (...args) => {
+          cached = (...args) => {
             const flat = [];
             for (const arg of args) {
               if (typeof arg === 'number') flat.push(arg);
@@ -647,14 +662,17 @@ function wrap(handle) {
             const nested = asHandle(result);
             return nested === null ? result : wrap(nested);
           };
+        } else {
+          // Everything else passes through as-is except vector/rotation objects, which flatten into the
+          // positional numbers the host reads; the host sorts strings, numbers and handles into arrays.
+          cached = (...args) => {
+            const result = binding.invoke(handle, prop, ...flatten(args));
+            const nested = asHandle(result);
+            return nested === null ? result : wrap(nested);
+          };
         }
-        // Everything else passes through as-is except vector/rotation objects, which flatten into the
-        // positional numbers the host reads; the host sorts strings, numbers and handles into arrays.
-        return (...args) => {
-          const result = binding.invoke(handle, prop, ...flatten(args));
-          const nested = asHandle(result);
-          return nested === null ? result : wrap(nested);
-        };
+        boundMethods.set(prop, cached);
+        return cached;
       }
       const value = binding.get(handle, prop);
       const nested = asHandle(value);
@@ -994,7 +1012,14 @@ function runTask(task) {
   try {
     entry.handler();
   } catch (err) {
-    binding.log(4, `scheduled task threw: ${(err && err.stack) || err}`);
+    const msg = (err && err.stack) || err;
+    binding.log(4, `scheduled task threw: ${msg}`);
+    if (msg && typeof msg === 'string' && msg.includes('no longer valid')) {
+      binding.log(3,
+        `Hint: scheduled tasks fire on a later tick. You cannot use a 'sender' or 'player' handle ` +
+        `captured when the task was created. Instead, capture the player's name (a string) and use ` +
+        `server.getPlayer(name) inside the task to get a fresh handle.`);
+    }
   }
 }
 
@@ -1101,9 +1126,12 @@ function formResult(formId, closed, data) {
   const entry = openForms.get(formId);
   if (!entry) return;
   openForms.delete(formId);
+  // Resolved fresh on this tick. Null when they have since disconnected, which a handler should check
+  // before replying - the form outlived them.
+  const player = entry.recipient ? server.getPlayer(entry.recipient) : null;
   try {
     if (closed) {
-      if (entry.onClose) entry.onClose();
+      if (entry.onClose) entry.onClose(player);
       return;
     }
     if (!entry.onSubmit) return;
@@ -1111,12 +1139,19 @@ function formResult(formId, closed, data) {
       // A modal form answers with a JSON array, one entry per control that takes a value.
       let parsed = data;
       try { parsed = JSON.parse(data); } catch { /* hand back the raw string if it is not JSON */ }
-      entry.onSubmit(parsed);
+      entry.onSubmit(parsed, player);
     } else {
-      entry.onSubmit(Number(data));
+      entry.onSubmit(Number(data), player);
     }
   } catch (err) {
-    binding.log(4, `form handler threw: ${(err && err.stack) || err}`);
+    const msg = (err && err.stack) || err;
+    binding.log(4, `form handler threw: ${msg}`);
+    if (msg && typeof msg === 'string' && msg.includes('no longer valid')) {
+      binding.log(3,
+        `Hint: form callbacks fire on a later tick, so the handle that sent the form is stale by then. ` +
+        `The callback is passed a fresh player for exactly this - onSubmit(data, player) and ` +
+        `onClose(player) - so use that instead of the one you captured.`);
+    }
   }
 }
 

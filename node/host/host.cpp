@@ -438,7 +438,8 @@ const char *statusText(esn_status status)
     switch (status) {
     case ESN_ERR_STALE_HANDLE:
         return "the object is no longer valid - handles must not be kept past the callback that "
-               "produced them";
+               "produced them. Copy the primitives you need (name, uniqueId, coordinates) before "
+               "the callback returns; never retain a Player, Block, or other handle for later use";
     case ESN_ERR_NO_SUCH_MEMBER:
         return "no such property or method on this object";
     case ESN_ERR_WRONG_TYPE:
