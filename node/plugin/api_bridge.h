@@ -200,6 +200,7 @@ public:
     esn_handle own(std::unique_ptr<BlockState> state) override;
     esn_handle own(const Location &location) override;
     esn_handle own(const Vector &vector) override;
+    esn_handle ownItem(ItemStack item, std::function<void(const ItemStack &)> writeback) override;
     Server &server() override;
     Plugin &owner() override;
 

@@ -17,6 +17,7 @@
 #include "types/bind.h"
 #include "types/block_face.h"
 #include "types/block_states.h"
+#include "types/inventory/item_meta.h"
 #include "types/records.h"
 #include "types/descriptor.h"
 
@@ -420,127 +421,6 @@ std::string_view equipmentSlotName(const EquipmentSlot slot)
     return "hand";
 }
 
-// Custom item data rides the name-keyed accessors: a property called "tag:endstone:timer" addresses
-// the key "endstone:timer" in the item's own NBT. That keeps arbitrary per-item data out of the ABI,
-// which carries only scalars, and means adding it needed no new entry points.
-constexpr std::string_view kTagPrefix = "tag:";
-
-std::optional<std::string> tagKeyOf(const std::string_view name)
-{
-    if (name.size() > kTagPrefix.size() && name.substr(0, kTagPrefix.size()) == kTagPrefix) {
-        return std::string{name.substr(kTagPrefix.size())};
-    }
-    return std::nullopt;
-}
-
-/** The tag stored under `key`, or nullptr when the item has no such key. */
-const nbt::Tag *findTag(const CompoundTag &nbt, const std::string &key)
-{
-    return nbt.contains(key) ? &nbt.at(key) : nullptr;
-}
-
-/** Applies `edit` to a copy of the item's NBT and writes it back. */
-template <typename Edit>
-void editNbt(ItemStack &stack, Edit &&edit)
-{
-    auto nbt = stack.getNbt();
-    edit(nbt);
-    stack.setNbt(nbt);
-}
-
-/**
- * @brief Reads then writes back an item's metadata - display name, lore, damage, enchantments.
- *
- * getItemMeta() hands out a copy, so a change only reaches the item once setItemMeta puts it back. Same
- * shape as editNbt, and like it the caller must follow with persistItem() so the stack itself is saved
- * back to the slot it came from.
- */
-template <typename Edit>
-void editMeta(ItemStack &stack, Edit &&edit)
-{
-    auto meta = stack.getItemMeta();
-    if (!meta) {
-        return;
-    }
-    edit(*meta);
-    (void)stack.setItemMeta(meta.get());
-}
-
-/**
- * @brief The item's metadata as a subclass, or nullptr when it is not that kind of item.
- *
- * NOT dynamic_cast - the plugin's type_info is a different object from the runtime's, so it silently
- * fails across the library boundary. getType() is a virtual call and always works, and once the kind
- * is known by name a static_cast is safe and needs no RTTI. Same discipline as the event traits.
- */
-bool metaTypeMatches(const ItemMeta::Type actual, const ItemMeta::Type wanted)
-{
-    if (actual == wanted) {
-        return true;
-    }
-    // BookMeta derives from WritableBookMeta, so a written book answers a writable-book request.
-    return wanted == ItemMeta::Type::WritableBook && actual == ItemMeta::Type::Book;
-}
-
-template <typename Meta>
-Meta *metaAs(const std::unique_ptr<ItemMeta> &meta)
-{
-    return (meta && metaTypeMatches(meta->getType(), Meta::MetaType)) ? static_cast<Meta *>(meta.get())
-                                                                     : nullptr;
-}
-
-/**
- * @brief Which metadata an item carries, as text.
- *
- * Worth exposing because the server decides this, not the item id: at present it produces MapMeta for
- * minecraft:filled_map and the plain base for everything else, so book and crossbow metadata is
- * declared by the API and never actually instantiated. A plugin can check this rather than discover it
- * as a failed write.
- */
-std::string_view metaTypeName(const ItemMeta::Type type)
-{
-    switch (type) {
-    case ItemMeta::Type::Item: return "item";
-    case ItemMeta::Type::Book: return "book";
-    case ItemMeta::Type::CrossBow: return "crossbow";
-    case ItemMeta::Type::Map: return "map";
-    case ItemMeta::Type::WritableBook: return "writableBook";
-    }
-    return "item";
-}
-
-/** Applies `edit` to an item's metadata as `Meta`, writing it back. False when the kind is wrong. */
-template <typename Meta, typename Edit>
-bool editMetaAs(ItemStack &stack, Edit &&edit)
-{
-    auto meta = stack.getItemMeta();
-    auto *typed = metaAs<Meta>(meta);
-    if (!typed) {
-        return false;
-    }
-    edit(*typed);
-    (void)stack.setItemMeta(meta.get());
-    return true;
-}
-
-std::string_view generationName(const BookMeta::Generation generation)
-{
-    switch (generation) {
-    case BookMeta::Generation::Original: return "original";
-    case BookMeta::Generation::CopyOfOriginal: return "copyOfOriginal";
-    case BookMeta::Generation::CopyOfCopy: return "copyOfCopy";
-    }
-    return "original";
-}
-
-std::optional<BookMeta::Generation> generationFromName(const std::string_view name)
-{
-    if (name == "original") return BookMeta::Generation::Original;
-    if (name == "copyOfOriginal" || name == "copyoforiginal") return BookMeta::Generation::CopyOfOriginal;
-    if (name == "copyOfCopy" || name == "copyofcopy") return BookMeta::Generation::CopyOfCopy;
-    return std::nullopt;
-}
-
 EventPriority toPriority(int value)
 {
     switch (value) {
@@ -898,9 +778,6 @@ void ApiBridge::persistItem(const esn_handle target)
     const auto it = item_writebacks_.find(target);
     if (it == item_writebacks_.end() || !it->second) {
         return;
-    }
-    if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
-        it->second(*stack);
     }
 }
 
@@ -1617,6 +1494,11 @@ esn_handle ApiBridge::own(const Vector &vector)
     return track(&owned_vectors_.back(), Kind::Vector);
 }
 
+esn_handle ApiBridge::ownItem(ItemStack item, std::function<void(const ItemStack &)> writeback)
+{
+    return trackOwnedItem(std::move(item), std::move(writeback));
+}
+
 Server &ApiBridge::server()
 {
     return plugin_.getServer();
@@ -1646,7 +1528,7 @@ std::optional<esn_status> ApiBridge::registryGet(const esn_handle target, const 
         return member->get && member->kind == want ? std::optional{member->get(found.self, *this, out)}
                                                    : std::nullopt;
     }
-    if (const auto found = findDynamic(kind, name, self); found && found.dynamic->kind == want) {
+    if (const auto found = findDynamic(kind, name, self, want)) {
         return found.dynamic->get(found.self, found.suffix, *this, out);
     }
     return std::nullopt;
@@ -1806,86 +1688,11 @@ esn_status ApiBridge::getBool(const esn_handle target, const std::string_view na
         if (name == "isIndirect") { *out = source->isIndirect(); return ESN_OK; }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
-    if (auto *inventory = resolveInventory(target)) {
-        if (name == "isEmpty") { *out = inventory->isEmpty(); return ESN_OK; }
-        // Matching against a whole stack rather than a type id, so NBT, enchantments and custom names
-        // count. The stack rides the accessor name because these take an object, as similarTo: does.
-        if (const auto request = suffixOf(name, "containsStack:")) {
-            const auto comma = request->find(',');
-            const auto other = parseHandleSuffix(request->substr(0, comma));
-            const auto *against = static_cast<const ItemStack *>(resolve(other, Kind::ItemStack));
-            if (!against) {
-                return ESN_ERR_BAD_ARGUMENT;
-            }
-            if (comma == std::string::npos) {
-                *out = inventory->contains(*against);
-                return ESN_OK;
-            }
-            *out = inventory->containsAtLeast(*against, std::stoi(request->substr(comma + 1)));
-            return ESN_OK;
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
     if (auto *map = static_cast<MapView *>(resolve(target, Kind::MapView))) {
         if (name == "isLocked") { *out = map->isLocked(); return ESN_OK; }
         // True when a plugin supplied the lowermost renderer, i.e. the map is not a world map.
         if (name == "isVirtual") { *out = map->isVirtual(); return ESN_OK; }
         if (name == "unlimitedTracking") { *out = map->isUnlimitedTracking(); return ESN_OK; }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
-    if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
-        if (name == "hasItemMeta") { *out = stack->hasItemMeta(); return ESN_OK; }
-        if (name == "hasMapId" || name == "hasMapView" || name == "hasTitle" || name == "hasAuthor" ||
-            name == "hasGeneration" || name == "hasPages" || name == "hasChargedProjectiles") {
-            const auto meta = stack->getItemMeta();
-            if (const auto *map = metaAs<MapMeta>(meta)) {
-                if (name == "hasMapId") { *out = map->hasMapId(); return ESN_OK; }
-                if (name == "hasMapView") { *out = map->hasMapView(); return ESN_OK; }
-            }
-            if (const auto *book = metaAs<BookMeta>(meta)) {
-                if (name == "hasTitle") { *out = book->hasTitle(); return ESN_OK; }
-                if (name == "hasAuthor") { *out = book->hasAuthor(); return ESN_OK; }
-                if (name == "hasGeneration") { *out = book->hasGeneration(); return ESN_OK; }
-            }
-            if (const auto *writable = metaAs<WritableBookMeta>(meta); writable && name == "hasPages") {
-                *out = writable->hasPages();
-                return ESN_OK;
-            }
-            if (const auto *crossbow = metaAs<CrossbowMeta>(meta); crossbow && name == "hasChargedProjectiles") {
-                *out = crossbow->hasChargedProjectiles();
-                return ESN_OK;
-            }
-            *out = 0;  // right question, wrong kind of item - absent rather than an error
-            return ESN_OK;
-        }
-        if (name == "unbreakable") {
-            const auto meta = stack->getItemMeta();
-            *out = meta && meta->isUnbreakable();
-            return ESN_OK;
-        }
-        // enchant:<id> - whether the item carries that enchantment at all.
-        if (const auto id = suffixOf(name, "enchant:")) {
-            const auto meta = stack->getItemMeta();
-            *out = meta && meta->hasEnchant(EnchantmentId{*id});
-            return ESN_OK;
-        }
-        // Whether that enchantment fights one the item already has, e.g. sharpness against smite.
-        if (const auto id = suffixOf(name, "conflicts:")) {
-            const auto meta = stack->getItemMeta();
-            *out = meta && meta->hasConflictingEnchant(EnchantmentId{*id});
-            return ESN_OK;
-        }
-        // similarTo:<handle> - invoke cannot return a bool, so the other stack rides the accessor name
-        // the same way a custom NBT key does.
-        if (name.starts_with("similarTo:")) {
-            const auto other = parseHandleSuffix(name.substr(10));
-            const auto *against = static_cast<const ItemStack *>(resolve(other, Kind::ItemStack));
-            if (!against) {
-                return ESN_ERR_BAD_ARGUMENT;
-            }
-            *out = stack->isSimilar(*against);
-            return ESN_OK;
-        }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *bar = static_cast<BossBar *>(resolve(target, Kind::BossBar))) {
@@ -2021,91 +1828,6 @@ esn_status ApiBridge::getInt(const esn_handle target, const std::string_view nam
         if (name == "seed") { *out = level->getSeed(); return ESN_OK; }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
-    if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
-        if (name == "amount") { *out = stack->getAmount(); return ESN_OK; }
-        if (name == "data") { *out = stack->getData(); return ESN_OK; }
-        if (name == "maxStackSize") { *out = stack->getMaxStackSize(); return ESN_OK; }
-        // 0 for anything that does not wear out. Paired with damage, this is a durability bar.
-        if (name == "maxDurability") { *out = stack->getType().getMaxDurability(); return ESN_OK; }
-        // Metadata that reads as a number. All three are 0 on an item with no metadata at all.
-        if (name == "damage" || name == "repairCost") {
-            const auto meta = stack->getItemMeta();
-            *out = !meta ? 0 : name == "damage" ? meta->getDamage() : meta->getRepairCost();
-            return ESN_OK;
-        }
-        // enchantLevel:<id> - 0 when the item does not have it, which is what getEnchantLevel returns.
-        if (const auto id = suffixOf(name, "enchantLevel:")) {
-            const auto meta = stack->getItemMeta();
-            *out = meta ? meta->getEnchantLevel(EnchantmentId{*id}) : 0;
-            return ESN_OK;
-        }
-        if (const auto key = tagKeyOf(name)) {
-            const auto nbt = stack->getNbt();
-            const auto *tag = findTag(nbt, *key);
-            if (!tag) {
-                return ESN_ERR_NO_SUCH_MEMBER;
-            }
-            // NBT has no boolean, so a byte covers both flags and small integers; it reads back as a
-            // number, which means a JavaScript `true` returns as 1.
-            switch (tag->type()) {
-            case nbt::Type::Byte:
-                *out = tag->get<ByteTag>().value();
-                return ESN_OK;
-            case nbt::Type::Short:
-                *out = tag->get<ShortTag>().value();
-                return ESN_OK;
-            case nbt::Type::Int:
-                *out = tag->get<IntTag>().value();
-                return ESN_OK;
-            case nbt::Type::Long:
-                *out = tag->get<LongTag>().value();
-                return ESN_OK;
-            default:
-                return ESN_ERR_WRONG_TYPE;
-            }
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
-    if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack));
-        stack && (name == "mapId" || name == "pageCount" || name == "chargedProjectileCount")) {
-        const auto meta = stack->getItemMeta();
-        if (const auto *map = metaAs<MapMeta>(meta); map && name == "mapId") {
-            *out = map->hasMapId() ? map->getMapId() : 0;
-            return ESN_OK;
-        }
-        if (const auto *writable = metaAs<WritableBookMeta>(meta); writable && name == "pageCount") {
-            *out = writable->getPageCount();
-            return ESN_OK;
-        }
-        if (const auto *crossbow = metaAs<CrossbowMeta>(meta); crossbow && name == "chargedProjectileCount") {
-            *out = static_cast<std::int64_t>(crossbow->getChargedProjectiles().size());
-            return ESN_OK;
-        }
-        *out = 0;
-        return ESN_OK;
-    }
-    if (auto *inventory = resolveInventory(target)) {
-        if (name == "size") { *out = inventory->getSize(); return ESN_OK; }
-        if (name == "maxStackSize") { *out = inventory->getMaxStackSize(); return ESN_OK; }
-        if (name == "firstEmpty") { *out = inventory->firstEmpty(); return ESN_OK; }
-        if (const auto request = suffixOf(name, "firstStack:")) {
-            const auto *against =
-                static_cast<const ItemStack *>(resolve(parseHandleSuffix(*request), Kind::ItemStack));
-            if (!against) {
-                return ESN_ERR_BAD_ARGUMENT;
-            }
-            *out = inventory->first(*against);
-            return ESN_OK;
-        }
-        if (name == "heldItemSlot") {
-            if (auto *player_inventory = static_cast<PlayerInventory *>(resolve(target, Kind::PlayerInventory))) {
-                *out = player_inventory->getHeldItemSlot();
-                return ESN_OK;
-            }
-            return ESN_ERR_NO_SUCH_MEMBER;
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
     if (auto *map = static_cast<MapView *>(resolve(target, Kind::MapView))) {
         if (name == "id") { *out = map->getId(); return ESN_OK; }
         if (name == "centerX") { *out = map->getCenterX(); return ESN_OK; }
@@ -2189,19 +1911,6 @@ esn_status ApiBridge::getDouble(const esn_handle target, const std::string_view 
     }
     if (auto *bar = static_cast<BossBar *>(resolve(target, Kind::BossBar))) {
         if (name == "progress") { *out = bar->getProgress(); return ESN_OK; }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
-    if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
-        if (const auto key = tagKeyOf(name)) {
-            const auto nbt = stack->getNbt();
-            const auto *tag = findTag(nbt, *key);
-            if (!tag) {
-                return ESN_ERR_NO_SUCH_MEMBER;
-            }
-            if (tag->type() == nbt::Type::Float) { *out = tag->get<FloatTag>().value(); return ESN_OK; }
-            if (tag->type() == nbt::Type::Double) { *out = tag->get<DoubleTag>().value(); return ESN_OK; }
-            return ESN_ERR_WRONG_TYPE;
-        }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *server = static_cast<Server *>(resolve(target, Kind::Server))) {
@@ -2299,25 +2008,6 @@ esn_status ApiBridge::getString(const esn_handle target, const std::string_view 
                 for (const auto &entry : server->getIpBanList().getEntries()) {
                     append(banRecord(*entry));
                 }
-            }
-            return emitString(joined, buf, cap, needed);
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
-    if (auto *inventory = resolveInventory(target)) {
-        // allStacks:<handle> - every slot holding a stack that matches by metadata, one per line.
-        if (const auto request = suffixOf(name, "allStacks:")) {
-            const auto *against =
-                static_cast<const ItemStack *>(resolve(parseHandleSuffix(*request), Kind::ItemStack));
-            if (!against) {
-                return ESN_ERR_BAD_ARGUMENT;
-            }
-            std::string joined;
-            for (const auto &[slot, stack] : inventory->all(*against)) {
-                if (!joined.empty()) {
-                    joined += '\n';
-                }
-                joined += std::to_string(slot);
             }
             return emitString(joined, buf, cap, needed);
         }
@@ -2424,115 +2114,6 @@ esn_status ApiBridge::getString(const esn_handle target, const std::string_view 
     }
     if (auto *level = static_cast<Level *>(resolve(target, Kind::Level))) {
         if (name == "name") { return emitString(level->getName(), buf, cap, needed); }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
-    if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
-        if (name == "type") { return emitString(std::string{stack->getType().getId()}, buf, cap, needed); }
-        if (name == "translationKey") { return emitString(stack->getTranslationKey(), buf, cap, needed); }
-        if (name == "metaType") {
-            const auto meta = stack->getItemMeta();
-            return emitString(meta ? metaTypeName(meta->getType()) : std::string_view{"item"}, buf, cap,
-                              needed);
-        }
-        // Written-book and writable-book metadata. A wrong-kind read is empty rather than an error, so
-        // `item.title || item.type` reads naturally.
-        if (name == "title" || name == "author" || name == "generation" || name == "pageList") {
-            const auto meta = stack->getItemMeta();
-            if (const auto *book = metaAs<BookMeta>(meta)) {
-                if (name == "title") {
-                    return emitString(book->hasTitle() ? book->getTitle() : "", buf, cap, needed);
-                }
-                if (name == "author") {
-                    return emitString(book->hasAuthor() ? book->getAuthor() : "", buf, cap, needed);
-                }
-                if (name == "generation") {
-                    const auto generation = book->getGeneration();
-                    return emitString(generation ? generationName(*generation) : "", buf, cap, needed);
-                }
-            }
-            if (const auto *writable = metaAs<WritableBookMeta>(meta); writable && name == "pageList") {
-                std::string joined;
-                for (const auto &page : writable->getPages()) {
-                    if (!joined.empty()) {
-                        joined += '\n';
-                    }
-                    joined += page;
-                }
-                return emitString(joined, buf, cap, needed);
-            }
-            return emitString("", buf, cap, needed);
-        }
-        // Metadata that reads as text. An item with no metadata reads as empty rather than failing, so
-        // `item.displayName || item.type` is the natural idiom.
-        if (name == "displayName") {
-            const auto meta = stack->getItemMeta();
-            return emitString(meta && meta->hasDisplayName() ? meta->getDisplayName() : "", buf, cap, needed);
-        }
-        // Lore and the enchantment list are newline-joined; the runtime splits them.
-        if (name == "loreList") {
-            const auto meta = stack->getItemMeta();
-            std::string joined;
-            if (meta && meta->hasLore()) {
-                for (const auto &line : meta->getLore()) {
-                    if (!joined.empty()) {
-                        joined += '\n';
-                    }
-                    joined += line;
-                }
-            }
-            return emitString(joined, buf, cap, needed);
-        }
-        // "<id>,<level>" per line.
-        if (name == "enchantList") {
-            const auto meta = stack->getItemMeta();
-            std::string joined;
-            if (meta && meta->hasEnchants()) {
-                for (const auto &[enchantment, level] : meta->getEnchants()) {
-                    if (!enchantment) {
-                        continue;
-                    }
-                    if (!joined.empty()) {
-                        joined += '\n';
-                    }
-                    joined += static_cast<std::string>(enchantment->getId()) + "," + std::to_string(level);
-                }
-            }
-            return emitString(joined, buf, cap, needed);
-        }
-        // The keys the item carries, newline-joined; the runtime splits them into an array.
-        if (name == "tagKeyList") {
-            std::string joined;
-            for (const auto &[key, value] : stack->getNbt()) {
-                if (!joined.empty()) {
-                    joined += '\n';
-                }
-                joined += key;
-            }
-            return emitString(joined, buf, cap, needed);
-        }
-        if (const auto key = tagKeyOf(name)) {
-            const auto nbt = stack->getNbt();
-            const auto *tag = findTag(nbt, *key);
-            if (!tag) {
-                return ESN_ERR_NO_SUCH_MEMBER;
-            }
-            if (tag->type() == nbt::Type::String) {
-                return emitString(tag->get<StringTag>().value(), buf, cap, needed);
-            }
-            // Compounds, lists and arrays have no scalar form, so they come back as SNBT text - enough
-            // to inspect data an addon or another plugin wrote, without a tag-tree walker here.
-            switch (tag->type()) {
-            case nbt::Type::Compound:
-            case nbt::Type::List:
-            case nbt::Type::ByteArray:
-            case nbt::Type::IntArray:
-                return emitString(std::format("{}", *tag), buf, cap, needed);
-            default:
-                break;
-            }
-            // Numeric: let the int or double probe answer instead.
-            return ESN_ERR_WRONG_TYPE;
-        }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *plugin = static_cast<Plugin *>(resolve(target, Kind::Plugin))) {
@@ -3012,40 +2593,6 @@ esn_status ApiBridge::getHandle(const esn_handle target, const std::string_view 
         if (name == "level") { *out = track(&dimension->getLevel(), Kind::Level, true); return ESN_OK; }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
-    if (auto *inventory = resolveInventory(target)) {
-        // The equipment slots, which only a player inventory has.
-        auto *player_inventory = static_cast<PlayerInventory *>(resolve(target, Kind::PlayerInventory));
-        if (player_inventory) {
-            using Setter = void (PlayerInventory::*)(std::optional<endstone::ItemStack>);
-            const auto equipment = [&](std::optional<endstone::ItemStack> item, Setter setter) -> esn_status {
-                if (!item) {
-                    *out = 0;  // an empty slot reads as null
-                    return ESN_OK;
-                }
-                *out = trackOwnedItem(std::move(*item),
-                                      [player_inventory, setter](const endstone::ItemStack &changed) {
-                                          (player_inventory->*setter)(changed);
-                                      });
-                return ESN_OK;
-            };
-            if (name == "helmet") { return equipment(player_inventory->getHelmet(), &PlayerInventory::setHelmet); }
-            if (name == "chestplate") {
-                return equipment(player_inventory->getChestplate(), &PlayerInventory::setChestplate);
-            }
-            if (name == "leggings") {
-                return equipment(player_inventory->getLeggings(), &PlayerInventory::setLeggings);
-            }
-            if (name == "boots") { return equipment(player_inventory->getBoots(), &PlayerInventory::setBoots); }
-            if (name == "itemInMainHand") {
-                return equipment(player_inventory->getItemInMainHand(), &PlayerInventory::setItemInMainHand);
-            }
-            if (name == "itemInOffHand") {
-                return equipment(player_inventory->getItemInOffHand(), &PlayerInventory::setItemInOffHand);
-            }
-        }
-        (void)inventory;
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
     return find(target) ? ESN_ERR_NO_SUCH_MEMBER : ESN_ERR_STALE_HANDLE;
 }
 
@@ -3065,22 +2612,6 @@ esn_status ApiBridge::setBool(const esn_handle target, const std::string_view na
             else {
                 bar->removeFlag(*flag);
             }
-            return ESN_OK;
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
-    if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
-        if (name == "unbreakable") {
-            editMeta(*stack, [&](ItemMeta &meta) { meta.setUnbreakable(value); });
-            persistItem(target);
-            return ESN_OK;
-        }
-        if (const auto key = tagKeyOf(name)) {
-            // NBT has no boolean type; a byte is the convention, and reads back as 0 or 1.
-            editNbt(*stack, [&](CompoundTag &nbt) {
-                nbt[*key] = ByteTag{static_cast<std::uint8_t>(value ? 1 : 0)};
-            });
-            persistItem(target);
             return ESN_OK;
         }
         return ESN_ERR_NO_SUCH_MEMBER;
@@ -3128,39 +2659,6 @@ esn_status ApiBridge::setInt(const esn_handle target, const std::string_view nam
         }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
-    if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
-        // Writes reach the world only for a stack the server handed out live, such as the one on
-        // PlayerDropItemEvent. A stack read out of an inventory is a copy - change the inventory.
-        if (name == "mapId") {
-            if (!editMetaAs<MapMeta>(*stack, [&](MapMeta &map) { map.setMapId(value); })) {
-                return ESN_ERR_WRONG_TYPE;
-            }
-            persistItem(target);
-            return ESN_OK;
-        }
-        if (name == "amount") { stack->setAmount(static_cast<int>(value)); persistItem(target); return ESN_OK; }
-        if (name == "data") { stack->setData(static_cast<int>(value)); persistItem(target); return ESN_OK; }
-        if (name == "damage" || name == "repairCost") {
-            const auto amount = static_cast<int>(value);
-            editMeta(*stack, [&](ItemMeta &meta) {
-                if (name == "damage") {
-                    meta.setDamage(amount);
-                }
-                else {
-                    meta.setRepairCost(amount);
-                }
-            });
-            persistItem(target);
-            return ESN_OK;
-        }
-        if (const auto key = tagKeyOf(name)) {
-            // Stored as a long so a JavaScript integer never silently narrows.
-            editNbt(*stack, [&](CompoundTag &nbt) { nbt[*key] = LongTag{value}; });
-            persistItem(target);
-            return ESN_OK;
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
     if (auto *item = static_cast<Item *>(resolve(target, Kind::Item))) {
         if (name == "pickupDelay") { item->setPickupDelay(static_cast<int>(value)); return ESN_OK; }
         if (name == "thrower") { item->setThrower(value); return ESN_OK; }
@@ -3188,14 +2686,6 @@ esn_status ApiBridge::setDouble(const esn_handle target, const std::string_view 
         // frame, so it is clamped here rather than in JavaScript where a plugin could skip it.
         if (name == "progress") {
             bar->setProgress(static_cast<float>(value < 0.0 ? 0.0 : value > 1.0 ? 1.0 : value));
-            return ESN_OK;
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
-    if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
-        if (const auto key = tagKeyOf(name)) {
-            editNbt(*stack, [&](CompoundTag &nbt) { nbt[*key] = DoubleTag{value}; });
-            persistItem(target);
             return ESN_OK;
         }
         return ESN_ERR_NO_SUCH_MEMBER;
@@ -3236,73 +2726,6 @@ esn_status ApiBridge::setString(const esn_handle target, const std::string_view 
                 return ESN_ERR_BAD_ARGUMENT;
             }
             bar->setStyle(*style);
-            return ESN_OK;
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
-    if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
-        if (name == "type") { stack->setType(std::string{value}); persistItem(target); return ESN_OK; }
-        // An empty string clears the custom name, which is what setDisplayName(nullopt) does.
-        if (name == "displayName") {
-            editMeta(*stack, [&](ItemMeta &meta) {
-                meta.setDisplayName(value.empty() ? std::nullopt : std::optional{std::string{value}});
-            });
-            persistItem(target);
-            return ESN_OK;
-        }
-        // Newline-joined on the way in as well; empty clears it.
-        if (name == "loreList") {
-            std::vector<std::string> lines;
-            for (std::size_t start = 0; start <= value.size() && !value.empty();) {
-                const auto end = value.find('\n', start);
-                lines.emplace_back(value.substr(start, end == std::string_view::npos ? end : end - start));
-                if (end == std::string_view::npos) {
-                    break;
-                }
-                start = end + 1;
-            }
-            editMeta(*stack, [&](ItemMeta &meta) {
-                meta.setLore(lines.empty() ? std::nullopt : std::optional{lines});
-            });
-            persistItem(target);
-            return ESN_OK;
-        }
-        // Written-book metadata. An empty string clears the field, as displayName does.
-        if (name == "title" || name == "author" || name == "generation") {
-            const auto text = std::string{value};
-            const auto changed = editMetaAs<BookMeta>(*stack, [&](BookMeta &book) {
-                if (name == "title") {
-                    book.setTitle(text.empty() ? std::nullopt : std::optional{text});
-                }
-                else if (name == "author") {
-                    book.setAuthor(text.empty() ? std::nullopt : std::optional{text});
-                }
-                else {
-                    book.setGeneration(generationFromName(text));
-                }
-            });
-            if (!changed) {
-                return ESN_ERR_WRONG_TYPE;
-            }
-            persistItem(target);
-            return ESN_OK;
-        }
-        if (name == "pageList") {
-            std::vector<std::string> pages;
-            if (!value.empty()) {
-                for (const auto &page : splitOn(value, '\n')) {
-                    pages.push_back(page);
-                }
-            }
-            if (!editMetaAs<WritableBookMeta>(*stack, [&](WritableBookMeta &book) { book.setPages(pages); })) {
-                return ESN_ERR_WRONG_TYPE;
-            }
-            persistItem(target);
-            return ESN_OK;
-        }
-        if (const auto key = tagKeyOf(name)) {
-            editNbt(*stack, [&](CompoundTag &nbt) { nbt[*key] = StringTag{std::string{value}}; });
-            persistItem(target);
             return ESN_OK;
         }
         return ESN_ERR_NO_SUCH_MEMBER;
@@ -3698,81 +3121,6 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
         }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
-    if (auto *inventory = resolveInventory(target)) {
-        // An item is described by a type plus optional amount and data, so nothing has to construct an
-        // ItemStack from JavaScript. An empty type means "no item", which clears the slot.
-        const auto described = [&](const std::size_t number_base) -> std::optional<endstone::ItemStack> {
-            if (text.empty()) {
-                return std::nullopt;
-            }
-            return endstone::ItemStack{text, static_cast<int>(number(number_base, 1)),
-                                      static_cast<int>(number(number_base + 1, 0))};
-        };
-
-        if (name == "getItem" && out_handle) {
-            const auto slot = static_cast<int>(number(0));
-            auto item = inventory->getItem(slot);
-            if (!item) {
-                *out_handle = 0;
-                return ESN_OK;
-            }
-            *out_handle = trackOwnedItem(std::move(*item), [inventory, slot](const endstone::ItemStack &changed) {
-                inventory->setItem(slot, changed);
-            });
-            return ESN_OK;
-        }
-        // setItem(slot, item): numbers are slot, then the item's amount and data.
-        if (name == "setItem") {
-            inventory->setItem(static_cast<int>(number(0)), described(1));
-            return ESN_OK;
-        }
-        if (name == "addItem") {
-            if (auto item = described(0)) {
-                (void)inventory->addItem({*item});
-            }
-            return ESN_OK;
-        }
-        if (name == "removeItem") {
-            if (auto item = described(0)) {
-                (void)inventory->removeItem({*item});
-            }
-            return ESN_OK;
-        }
-        if (name == "remove") { inventory->remove(std::string{text}); return ESN_OK; }
-        if (name == "removeStack") {
-            auto *against = static_cast<ItemStack *>(resolve(handle_at(0), Kind::ItemStack));
-            if (!against) {
-                return ESN_ERR_BAD_ARGUMENT;
-            }
-            inventory->remove(*against);
-            return ESN_OK;
-        }
-        if (name == "clear") {
-            // clear() empties everything; clear(slot) empties one slot.
-            if (number_count > 0) {
-                inventory->clear(static_cast<int>(number(0)));
-            }
-            else {
-                inventory->clear();
-            }
-            return ESN_OK;
-        }
-        // Everything below needs a PlayerInventory, so it all lives under the one guard - the nesting
-        // is what says which type owns a method, and scripts/check_methods.py reads it that way.
-        if (auto *player_inventory = static_cast<PlayerInventory *>(resolve(target, Kind::PlayerInventory))) {
-            if (name == "setHeldItemSlot") {
-                player_inventory->setHeldItemSlot(static_cast<int>(number(0)));
-                return ESN_OK;
-            }
-            if (name == "setHelmet") { player_inventory->setHelmet(described(0)); return ESN_OK; }
-            if (name == "setChestplate") { player_inventory->setChestplate(described(0)); return ESN_OK; }
-            if (name == "setLeggings") { player_inventory->setLeggings(described(0)); return ESN_OK; }
-            if (name == "setBoots") { player_inventory->setBoots(described(0)); return ESN_OK; }
-            if (name == "setItemInMainHand") { player_inventory->setItemInMainHand(described(0)); return ESN_OK; }
-            if (name == "setItemInOffHand") { player_inventory->setItemInOffHand(described(0)); return ESN_OK; }
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
     if (auto *canvas = static_cast<MapCanvas *>(resolve(target, Kind::MapCanvas))) {
         // setPixel(x, y, r, g, b, a) - for a renderer that touches a handful of pixels. Anything
         // drawing a whole frame should assign canvas.pixels instead.
@@ -3792,78 +3140,6 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
                 return ESN_ERR_WRONG_TYPE;
             }
             cancellable->cancel();
-            return ESN_OK;
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
-    if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
-        // Deleting a custom data key. Unlike reading and writing one this cannot ride the accessor
-        // name, because there is no "set to nothing" - so it is the one tag operation that is a method.
-        if (name == "removeTag") {
-            editNbt(*stack, [&](CompoundTag &nbt) { (void)nbt.erase(text); });
-            persistItem(target);
-            return ESN_OK;
-        }
-        // addEnchant(id, level) - forced, so a level above vanilla's maximum is allowed, which is the
-        // point of doing it from a plugin rather than an anvil.
-        if (name == "addEnchant") {
-            if (text.empty()) {
-                return ESN_ERR_BAD_ARGUMENT;
-            }
-            const auto level = static_cast<int>(number(0, 1));
-            editMeta(*stack, [&](ItemMeta &meta) { (void)meta.addEnchant(EnchantmentId{text}, level, true); });
-            persistItem(target);
-            return ESN_OK;
-        }
-        if (name == "removeEnchant") {
-            editMeta(*stack, [&](ItemMeta &meta) { (void)meta.removeEnchant(EnchantmentId{text}); });
-            persistItem(target);
-            return ESN_OK;
-        }
-        if (name == "removeEnchants") {
-            editMeta(*stack, [&](ItemMeta &meta) { meta.removeEnchants(); });
-            persistItem(target);
-            return ESN_OK;
-        }
-        // setMapView(map) - what turns a blank map item into the one server.createMap() made. Takes a
-        // handle rather than an id because that is the object a plugin already has.
-        if (name == "setMapView") {
-            auto *map = static_cast<MapView *>(resolve(handle_at(0), Kind::MapView));
-            if (!map) {
-                return ESN_ERR_BAD_ARGUMENT;
-            }
-            if (!editMetaAs<MapMeta>(*stack, [&](MapMeta &meta) { meta.setMapView(map); })) {
-                return ESN_ERR_WRONG_TYPE;
-            }
-            persistItem(target);
-            return ESN_OK;
-        }
-        if (name == "addPage") {
-            if (!editMetaAs<WritableBookMeta>(*stack,
-                                              [&](WritableBookMeta &book) { book.addPage({text}); })) {
-                return ESN_ERR_WRONG_TYPE;
-            }
-            persistItem(target);
-            return ESN_OK;
-        }
-        // addChargedProjectile(type, amount, data) - described like any other item argument.
-        if (name == "addChargedProjectile") {
-            if (text.empty()) {
-                return ESN_ERR_BAD_ARGUMENT;
-            }
-            const endstone::ItemStack projectile{text, static_cast<int>(number(0, 1)),
-                                                 static_cast<int>(number(1, 0))};
-            if (!editMetaAs<CrossbowMeta>(
-                    *stack, [&](CrossbowMeta &crossbow) { crossbow.addChargedProjectile(projectile); })) {
-                return ESN_ERR_WRONG_TYPE;
-            }
-            persistItem(target);
-            return ESN_OK;
-        }
-        // A detached copy: no writeback, so changing it cannot reach the slot the original came from.
-        // That is the point - it is how you keep an item's contents past the callback.
-        if (name == "clone" && out_handle) {
-            *out_handle = trackOwnedItem(*stack, nullptr);
             return ESN_OK;
         }
         return ESN_ERR_NO_SUCH_MEMBER;

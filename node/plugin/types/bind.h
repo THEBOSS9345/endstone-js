@@ -343,6 +343,21 @@ public:
         });
     }
 
+    /**
+     * A member that produces a handle itself, for the ones the bridge has to build rather than read -
+     * an equipment slot hands back a copy paired with the writeback that returns it to the slot, which
+     * no return type can express. Handle 0 means the member is empty, which reads back as null.
+     */
+    template <typename Fn, std::enable_if_t<std::is_invocable_r_v<esn_handle, Fn, T &, Binder &>, int> = 0>
+    void handle(const std::string_view name, Fn fn)
+    {
+        add(name, ValueKind::Handle, [fn](void *self, Binder &binder, Value &out) {
+            out.kind = ValueKind::Handle;
+            out.handle = fn(*static_cast<T *>(self), binder);
+            return ESN_OK;
+        });
+    }
+
     /** A member with both a getter and a setter. The setter's argument type drives the conversion. */
     template <typename Getter, typename C, typename R, typename A>
     void rw(const std::string_view name, Getter getter, R (C::*setter)(A))

@@ -99,6 +99,15 @@ public:
     virtual esn_handle own(const Location &location) = 0;
     virtual esn_handle own(const Vector &vector) = 0;
 
+    /**
+     * Hands out a copy of an item stack paired with a writeback that puts it back where it came from.
+     *
+     * Endstone returns stacks by value, so one read out of a slot is a copy and mutating it would be
+     * silently lost. A null writeback makes a detached copy, which is how a plugin keeps an item past
+     * the callback it came from.
+     */
+    virtual esn_handle ownItem(ItemStack item, std::function<void(const ItemStack &)> writeback) = 0;
+
     /** Runs an item handle's writeback, if it has one. Item stacks are values, not references. */
     virtual void persistItem(esn_handle target) = 0;
     virtual Server &server() = 0;
@@ -199,8 +208,12 @@ struct Lookup {
 
 /** Walks the base chain, adjusting `self` at every edge. */
 Lookup findMember(Kind kind, std::string_view name, void *self);
-/** The prefixed accessor matching `name`, with the remainder in the result's `suffix`. */
-Lookup findDynamic(Kind kind, std::string_view name, void *self);
+/**
+ * The prefixed accessor matching `name` *and* the accessor kind being asked for, with the remainder
+ * in the result's `suffix`. The kind is part of the match because one prefix can answer on several -
+ * an NBT tag reads as a number or as text depending on the tag, and the runtime probes to find out.
+ */
+Lookup findDynamic(Kind kind, std::string_view name, void *self, ValueKind want);
 
 /** Every registered kind, for the describe() introspection the runtime builds its tables from. */
 const std::vector<const TypeDesc *> &allTypes();

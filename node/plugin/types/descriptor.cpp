@@ -105,7 +105,7 @@ Lookup findMember(const Kind kind, const std::string_view name, void *self)
     return {};
 }
 
-Lookup findDynamic(const Kind kind, const std::string_view name, void *self)
+Lookup findDynamic(const Kind kind, const std::string_view name, void *self, const ValueKind want)
 {
     for (auto current = kind; current != Kind::None;) {
         const auto *desc = findType(current);
@@ -113,7 +113,7 @@ Lookup findDynamic(const Kind kind, const std::string_view name, void *self)
             return {};
         }
         for (const auto &entry : desc->dynamic) {
-            if (name.size() > entry.prefix.size() && name.starts_with(entry.prefix)) {
+            if (entry.kind == want && name.size() > entry.prefix.size() && name.starts_with(entry.prefix)) {
                 return Lookup{nullptr, &entry, self, name.substr(entry.prefix.size())};
             }
         }
