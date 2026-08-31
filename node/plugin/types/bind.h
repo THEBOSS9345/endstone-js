@@ -488,6 +488,16 @@ public:
     }
 };
 
+/** The same for an event, which is keyed by the name it reports rather than by a kind. */
+class EventRegistrar {
+public:
+    EventRegistrar(const std::string_view name, const std::string_view base, void *(*from_event)(void *),
+                   void *(*to_base)(void *), void (*bind)(TypeDesc &))
+    {
+        bind(declareEvent(name, base, from_event, to_base));
+    }
+};
+
 }  // namespace endstone::node
 
 /**
@@ -510,3 +520,28 @@ public:
  * both Mob and OfflinePlayer, so reaching a base member needs the compiler to adjust the pointer.
  */
 #define ESN_SUBTYPE(Type, KindValue, Base)                                                                   static void esnBind##Type(::endstone::node::TypeBuilder<::endstone::Type> &b);                            namespace {                                                                                               const ::endstone::node::TypeRegistrar esnRegistrar##Type{                                                     ::endstone::node::Kind::KindValue, #Type, ::endstone::node::KindOf<::endstone::Base>::value,              [](void *self) -> void * {                                                                                    return static_cast<::endstone::Base *>(static_cast<::endstone::Type *>(self));                        },                                                                                                        [](::endstone::node::TypeDesc &desc) {                                                                        ::endstone::node::TypeBuilder<::endstone::Type> builder{desc};                                            esnBind##Type(builder);                                                                               }};                                                                                                   }                                                                                                         static void esnBind##Type([[maybe_unused]] ::endstone::node::TypeBuilder<::endstone::Type> &b)
+
+/**
+ * Declares what one event exposes. `Base` is the event class it derives from - one of the abstract
+ * ones such as PlayerEvent, or Event itself at the root.
+ *
+ * @code
+ * ESN_EVENT(PlayerChatEvent, PlayerEvent)
+ * {
+ *     b.rw("message", &PlayerChatEvent::getMessage, &PlayerChatEvent::setMessage);
+ * }
+ * @endcode
+ *
+ * The downcast is generated here. It is a static_cast licensed by the name the event reported, which
+ * is the only way down: dynamic_cast on an Endstone type fails silently across the plugin boundary.
+ */
+#define ESN_EVENT(Type, Base)                                                                                static void esnBind##Type(::endstone::node::TypeBuilder<::endstone::Type> &b);                            namespace {                                                                                               const ::endstone::node::EventRegistrar esnEventRegistrar##Type{                                               #Type, #Base,                                                                                             [](void *event) -> void * {                                                                                   return static_cast<::endstone::Type *>(static_cast<::endstone::Event *>(event));                       },                                                                                                        [](void *self) -> void * {                                                                                    return static_cast<::endstone::Base *>(static_cast<::endstone::Type *>(self));                         },                                                                                                        [](::endstone::node::TypeDesc &desc) {                                                                        ::endstone::node::TypeBuilder<::endstone::Type> builder{desc};                                            esnBind##Type(builder);                                                                               }};                                                                                                   }                                                                                                         static void esnBind##Type([[maybe_unused]] ::endstone::node::TypeBuilder<::endstone::Type> &b)
+
+/**
+ * An abstract event class - PlayerEvent, ActorEvent, Event itself. Never looked up by name directly,
+ * only reached by the chain, so it needs no downcast of its own.
+ */
+#define ESN_EVENT_BASE(Type, Base)                                                                           static void esnBind##Type(::endstone::node::TypeBuilder<::endstone::Type> &b);                            namespace {                                                                                               const ::endstone::node::EventRegistrar esnEventRegistrar##Type{                                               #Type, #Base, nullptr,                                                                                    [](void *self) -> void * {                                                                                    return static_cast<::endstone::Base *>(static_cast<::endstone::Type *>(self));                         },                                                                                                        [](::endstone::node::TypeDesc &desc) {                                                                        ::endstone::node::TypeBuilder<::endstone::Type> builder{desc};                                            esnBind##Type(builder);                                                                               }};                                                                                                   }                                                                                                         static void esnBind##Type([[maybe_unused]] ::endstone::node::TypeBuilder<::endstone::Type> &b)
+
+/** The root: Event itself, which has no base to chain to. */
+#define ESN_EVENT_ROOT(Type)                                                                                 static void esnBind##Type(::endstone::node::TypeBuilder<::endstone::Type> &b);                            namespace {                                                                                               const ::endstone::node::EventRegistrar esnEventRegistrar##Type{                                               #Type, "", nullptr, nullptr,                                                                              [](::endstone::node::TypeDesc &desc) {                                                                        ::endstone::node::TypeBuilder<::endstone::Type> builder{desc};                                            esnBind##Type(builder);                                                                               }};                                                                                                   }                                                                                                         static void esnBind##Type([[maybe_unused]] ::endstone::node::TypeBuilder<::endstone::Type> &b)

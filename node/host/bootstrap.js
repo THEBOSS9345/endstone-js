@@ -275,58 +275,74 @@ const HANDLE = Symbol('endstone.handle');
 //
 // Keep this in step with ApiBridge::invoke: each entry is one of its `resolve(target, Kind::X)`
 // branches. Adding a method to the bridge and not to the type here leaves it uncallable.
-const METHODS_BY_TYPE = {
-  CommandSender: ['sendMessage', 'sendErrorMessage', 'addPermission', 'removePermission',
-                  'recalculatePermissions'],
-  Actor: ['sendMessage', 'remove', 'addScoreboardTag', 'removeScoreboardTag', 'setRotation', 'teleport'],
-  Mob: [],
-  Player: [
-    'sendErrorMessage', 'sendPopup', 'sendTip', 'sendTitle', 'resetTitle', 'sendToast', 'kick',
-    'performCommand', 'updateCommands', 'transfer', 'giveExp', 'giveExpLevels', 'playSound',
-    'stopSound', 'stopAllSounds', 'spawnParticle', 'sendMap', 'setScoreboard',
-  ],
-  Block: ['getRelative', 'captureState', 'clone'],
-  BlockState: ['update'],
-  Level: ['getDimension'],
-  Dimension: ['getBlockAt', 'getHighestBlockAt', 'spawnActor', 'getActor', 'dropItem'],
+// What each type exposes, read from the bridge at startup rather than kept here by hand. A member
+// declared in plugin/types/ therefore reaches JavaScript with nothing to add on this side, and the two
+// halves cannot drift - which is what METHODS_BY_TYPE and its build-time checker existed to catch.
+const METHODS_BY_TYPE = {};
+const TYPE_PARENT = {};
+// Prefixed accessors, so the runtime knows a type answers to `tag:` without hard-coding which do.
+const DYNAMIC_BY_TYPE = {};
+
+/** Parses the describe() records. See esn_accessors::describe for the format. */
+function readRegistry() {
+  const text = typeof binding.describe === 'function' ? binding.describe() : '';
+  if (typeof text !== 'string' || text === '') return false;
+  let current = null;
+  for (const line of text.split(NEWLINE)) {
+    if (line === '') continue;
+    const parts = line.split(UNIT_SEPARATOR);
+    if (parts[0] === 'T') {
+      current = parts[1];
+      METHODS_BY_TYPE[current] = [];
+      DYNAMIC_BY_TYPE[current] = [];
+      if (parts[2]) TYPE_PARENT[current] = parts[2];
+    } else if (parts[0] === 'M' && current) {
+      // Only the callable ones belong in the method table; properties are reached by accessor.
+      if ((parts[3] ?? '').includes('c')) METHODS_BY_TYPE[current].push(parts[1]);
+    } else if (parts[0] === 'D' && current) {
+      DYNAMIC_BY_TYPE[current].push(parts[1]);
+    }
+  }
+  return true;
+}
+
+// Types still answered by the bridge's hand-written chains, which describe() cannot see. Each one
+// disappears from here as it moves into plugin/types/.
+const LEGACY_METHODS_BY_TYPE = {
   Server: [
     'dispatchCommand', 'createBossBar', 'reloadData', 'broadcast',
     'banPlayer', 'unbanPlayer', 'banIp', 'unbanIp', 'createMap', 'createScoreboard',
     'getOnlinePlayer', 'getMap', 'shutdown', 'reload',
   ],
+  Level: ['getDimension'],
+  Dimension: ['getBlockAt', 'getHighestBlockAt', 'spawnActor', 'getActor', 'dropItem'],
   BossBar: ['addPlayer', 'removePlayer', 'removeAll', 'addFlag', 'removeFlag', 'remove'],
   Scoreboard: [
     'addObjective', 'removeObjective', 'setDisplayName', 'setDisplay', 'setDisplaySlot',
     'setSortOrder', 'clearSlot',
     'setScore', 'addScore', 'resetScores',
   ],
-  Inventory: ['getItem', 'setItem', 'addItem', 'removeItem', 'clear', 'remove', 'removeStack'],
-  PlayerInventory: [
-    'setHeldItemSlot', 'setHelmet', 'setChestplate', 'setLeggings', 'setBoots',
-    'setItemInMainHand', 'setItemInOffHand',
-  ],
-  ItemStack: ['removeTag', 'addEnchant', 'removeEnchant', 'removeEnchants', 'clone',
-              'setMapView', 'addPage', 'addChargedProjectile'],
   Event: ['cancel', 'getExplodedBlock', 'setKnockback', 'setFrom', 'setTo'],
   MapCanvas: ['setPixel'],
 };
 
-// Endstone's own hierarchy, so a Player answers to everything an Actor does.
-const TYPE_PARENT = {
-  Player: 'Mob', Mob: 'Actor', Actor: 'CommandSender', Item: 'Actor', PlayerInventory: 'Inventory',
-};
+const LEGACY_TYPE_PARENT = { Item: 'Actor' };
 
 // Flattened per type on first use. The type of a handle never changes, so this is computed once per
 // type rather than per property access.
 const methodCache = new Map();
+let registryRead = false;
 const methodsFor = (typeName) => {
+  if (!registryRead) registryRead = readRegistry();
   let names = methodCache.get(typeName);
   if (names) return names;
   names = new Set();
-  for (let type = typeName; type; type = TYPE_PARENT[type]) {
+  for (let type = typeName; type; type = TYPE_PARENT[type] ?? LEGACY_TYPE_PARENT[type]) {
     for (const name of METHODS_BY_TYPE[type] ?? []) names.add(name);
+    for (const name of LEGACY_METHODS_BY_TYPE[type] ?? []) names.add(name);
   }
-  methodCache.set(typeName, names);
+  // Only cache once the bridge has answered; before that the table is still empty.
+  if (registryRead) methodCache.set(typeName, names);
   return names;
 };
 

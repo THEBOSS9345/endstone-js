@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Checks that the runtime's METHODS_BY_TYPE matches the methods ApiBridge::invoke actually implements.
+"""Checks the runtime's legacy method table against the methods ApiBridge::invoke implements.
+
+Only the types still answered by the bridge's hand-written chains need this. A type declared in
+plugin/types/ describes itself to the runtime at startup, so the two halves cannot drift and there is
+nothing here to check - this file shrinks to nothing as the migration finishes.
 
 The two halves have to agree: a method in the bridge but not in the table is uncallable from
 JavaScript, and one in the table but not in the bridge is a function that throws when called. Neither
@@ -126,12 +130,12 @@ def bridge_methods(source: str) -> dict[str, set[str]]:
 
 
 def runtime_methods(source: str) -> tuple[dict[str, set[str]], dict[str, str]]:
-    table = source[source.index("const METHODS_BY_TYPE = {") : source.index("const TYPE_PARENT = {")]
+    table = source[source.index("const LEGACY_METHODS_BY_TYPE = {") : source.index("const LEGACY_TYPE_PARENT = {")]
     out: dict[str, set[str]] = {}
     for entry in re.finditer(r"^  (\w+): \[(.*?)\],$", table, re.M | re.S):
         out[entry.group(1)] = set(re.findall(r"'([A-Za-z_]\w*)'", entry.group(2)))
 
-    chain = source[source.index("const TYPE_PARENT = {") :]
+    chain = source[source.index("const LEGACY_TYPE_PARENT = {") :]
     chain = chain[: chain.index("};")]
     parents = dict(re.findall(r"(\w+): '(\w+)'", chain))
     return out, parents
@@ -144,22 +148,28 @@ def main() -> int:
     parser.add_argument("--types", type=Path, help="plugin/types, the descriptor tables")
     args = parser.parse_args()
 
+    raw_runtime_extra: dict[str, set[str]] = {}
     raw_bridge = bridge_methods(args.bridge.read_text(encoding="utf-8"))
-    # A type part-way through migration has methods on both sides, so the two are merged rather than
-    # compared: what matters to the runtime is that the method exists somewhere in the plugin.
+    # A type that describes itself to the runtime cannot drift from it, so there is nothing to compare.
+    # Its methods still take part in the flatten, because a legacy type may inherit from one.
+    described: dict[str, set[str]] = {}
     if args.types and args.types.is_dir():
-        for kind, names in descriptor_methods(args.types).items():
+        described = descriptor_methods(args.types)
+        for kind, names in described.items():
             raw_bridge.setdefault(kind, set()).update(names)
+            raw_runtime_extra[kind] = names
     raw_runtime, parents = runtime_methods(args.runtime.read_text(encoding="utf-8"))
 
     # Compared after resolving the parent chain, because that is what each side actually offers: the
     # runtime walks TYPE_PARENT at lookup time, and Player's branch in the bridge falls through to
     # actorInvoke. Comparing the raw per-type lists would flag every inherited method.
     bridge = flatten(raw_bridge, parents)
+    for kind, names in raw_runtime_extra.items():
+        raw_runtime.setdefault(kind, set()).update(names)
     runtime = flatten(raw_runtime, parents)
 
     problems: list[str] = []
-    for kind in sorted(set(bridge) | set(runtime)):
+    for kind in sorted((set(bridge) | set(runtime)) - set(described)):
         missing = bridge.get(kind, set()) - runtime.get(kind, set())
         extra = runtime.get(kind, set()) - bridge.get(kind, set()) - RUNTIME_ONLY
         if missing:

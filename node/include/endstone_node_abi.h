@@ -52,7 +52,7 @@ extern "C" {
 #endif
 
 /* Bumped on any incompatible change below. Checked by both sides at load time. */
-#define ESN_ABI_VERSION 16u
+#define ESN_ABI_VERSION 17u
 
 typedef enum esn_status {
     ESN_OK = 0,
@@ -172,6 +172,20 @@ typedef struct esn_accessors {
 
     /* Names the concrete Endstone type behind a handle, for diagnostics and JS class selection. */
     esn_status(ESN_CALL *type_name)(void *context, esn_handle target, char *buf, size_t cap, size_t *out_needed);
+
+    /*
+     * Every bound type and what it exposes, as text, so the runtime builds its tables from the bridge
+     * rather than keeping a second copy of them in step by hand.
+     *
+     * One record per line:
+     *
+     *   T<type><base or empty>      opens a type; members follow until the next T
+     *   M<name><kind><flags>     kind is b|i|d|s|h|y|-, flags any of r, w, c
+     *   D<prefix><kind>              a prefixed accessor, e.g. "tag:"
+     *
+     * An event type's base is another event's name; anything else names a kind.
+     */
+    esn_status(ESN_CALL *describe)(void *context, char *buf, size_t cap, size_t *out_needed);
 } esn_accessors;
 
 typedef struct esn_endstone_api {

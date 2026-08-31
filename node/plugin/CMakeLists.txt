@@ -33,3 +33,20 @@ add_custom_command(
         VERBATIM)
 add_custom_target(nodejs_method_check DEPENDS ${METHOD_CHECK_STAMP})
 add_dependencies(nodejs nodejs_method_check)
+
+# A member can be bound and work at runtime while being invisible to anyone writing a plugin, because
+# the TypeScript definitions are what they read. That is how Block went without x, y and z. The
+# definitions live in a sibling checkout, so this passes quietly when it is not there.
+set(TYPE_CHECK_STAMP ${CMAKE_CURRENT_BINARY_DIR}/types_checked.stamp)
+add_custom_command(
+        OUTPUT ${TYPE_CHECK_STAMP}
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/check_types.py
+        --types ${CMAKE_CURRENT_SOURCE_DIR}/types
+        --definitions ${CMAKE_CURRENT_SOURCE_DIR}/../../../endstone-server-types/index.d.ts
+        COMMAND ${CMAKE_COMMAND} -E touch ${TYPE_CHECK_STAMP}
+        DEPENDS ${NODEJS_TYPE_SOURCES}
+        ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/check_types.py
+        COMMENT "Checking the TypeScript definitions against the bindings"
+        VERBATIM)
+add_custom_target(nodejs_type_check DEPENDS ${TYPE_CHECK_STAMP})
+add_dependencies(nodejs nodejs_type_check)

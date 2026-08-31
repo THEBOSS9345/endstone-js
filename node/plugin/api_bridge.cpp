@@ -1521,6 +1521,20 @@ std::optional<esn_status> ApiBridge::registryGet(const esn_handle target, const 
     auto *const self = entry->ptr;
     const auto kind = entry->kind;
 
+    // An event says what it is rather than being resolvable to a kind, so its lookup starts from the
+    // name it reports. Everything else is keyed by kind.
+    if (kind == Kind::Event) {
+        const auto event_name = static_cast<Event *>(self)->getEventName();
+        if (const auto found = findEventMember(event_name, name, self)) {
+            const auto *member = found.member;
+            return member->get && member->kind == want ? std::optional{member->get(found.self, *this, out)}
+                                                       : std::nullopt;
+        }
+        if (const auto found = findEventDynamic(event_name, name, self, want)) {
+            return found.dynamic->get(found.self, found.suffix, *this, out);
+        }
+        return std::nullopt;
+    }
     if (const auto found = findMember(kind, name, self)) {
         // A member declared on the string accessor does not answer a request for an int. Falling
         // through rather than erroring lets the runtime probe the accessors to find the right one.
@@ -1541,7 +1555,9 @@ std::optional<esn_status> ApiBridge::registrySet(const esn_handle target, const 
     if (entry == nullptr) {
         return std::nullopt;
     }
-    const auto found = findMember(entry->kind, name, entry->ptr);
+    const auto found = entry->kind == Kind::Event
+                           ? findEventMember(static_cast<Event *>(entry->ptr)->getEventName(), name, entry->ptr)
+                           : findMember(entry->kind, name, entry->ptr);
     if (!found || !found.member->set || found.member->kind != want) {
         return std::nullopt;
     }
@@ -1560,7 +1576,9 @@ std::optional<esn_status> ApiBridge::registryCall(const esn_handle target, const
     if (entry == nullptr) {
         return std::nullopt;
     }
-    const auto found = findMember(entry->kind, name, entry->ptr);
+    const auto found = entry->kind == Kind::Event
+                           ? findEventMember(static_cast<Event *>(entry->ptr)->getEventName(), name, entry->ptr)
+                           : findMember(entry->kind, name, entry->ptr);
     if (!found || !found.member->call) {
         return std::nullopt;
     }
@@ -3147,10 +3165,78 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
     return find(target) ? ESN_ERR_NO_SUCH_MEMBER : ESN_ERR_STALE_HANDLE;
 }
 
+namespace {
+
+constexpr char kLineFeed = static_cast<char>(10);
+
+char kindLetter(const ValueKind kind)
+{
+    switch (kind) {
+    case ValueKind::Bool: return 'b';
+    case ValueKind::Int: return 'i';
+    case ValueKind::Double: return 'd';
+    case ValueKind::String: return 's';
+    case ValueKind::Handle: return 'h';
+    case ValueKind::Bytes: return 'y';
+    case ValueKind::None: break;
+    }
+    return '-';
+}
+
+}  // namespace
+
+esn_status ApiBridge::describe(char *buf, const std::size_t cap, std::size_t *needed)
+{
+    std::string out;
+    for (const auto *desc : allTypes()) {
+        const auto base = desc->base_event.empty() && desc->base != Kind::None
+                              ? std::string{findType(desc->base) ? findType(desc->base)->name : std::string{}}
+                              : desc->base_event;
+        out += "T";
+        out += kUnitSeparator;
+        out += desc->name;
+        out += kUnitSeparator;
+        out += base;
+        out += kLineFeed;
+        for (const auto &[name, member] : desc->members) {
+            std::string flags;
+            if (member.get) {
+                flags += 'r';
+            }
+            if (member.set) {
+                flags += 'w';
+            }
+            if (member.call) {
+                flags += 'c';
+            }
+            out += "M";
+            out += kUnitSeparator;
+            out += name;
+            out += kUnitSeparator;
+            out += kindLetter(member.kind);
+            out += kUnitSeparator;
+            out += flags;
+            out += kLineFeed;
+        }
+        for (const auto &entry : desc->dynamic) {
+            out += "D";
+            out += kUnitSeparator;
+            out += entry.prefix;
+            out += kUnitSeparator;
+            out += kindLetter(entry.kind);
+            out += kLineFeed;
+        }
+    }
+    return emitString(out, buf, cap, needed);
+}
+
 esn_status ApiBridge::typeName(const esn_handle target, char *buf, const std::size_t cap, std::size_t *needed)
 {
     // A migrated type already carries its name in its descriptor, so there is nothing to keep in step.
     if (const auto *entry = find(target)) {
+        if (entry->kind == Kind::Event) {
+            return emitString(static_cast<Event *>(entry->ptr)->getEventName(), buf, cap, needed);
+        }
         if (const auto *desc = findType(entry->kind)) {
             return emitString(desc->name, buf, cap, needed);
         }
@@ -3299,6 +3385,10 @@ esn_status ESN_CALL tInvoke(void *c, esn_handle t, const char *n, const char *co
 esn_status ESN_CALL tTypeName(void *c, esn_handle t, char *b, std::size_t cap, std::size_t *need)
 {
     ESN_GUARD(bridge(c).typeName(t, b, cap, need))
+}
+esn_status ESN_CALL tDescribe(void *c, char *b, std::size_t cap, std::size_t *need)
+{
+    ESN_GUARD(bridge(c).describe(b, cap, need))
 }
 esn_status ESN_CALL tSubscribe(void *c, const char *name, int priority, int ignore_cancelled, std::uint32_t *out)
 {
@@ -3480,6 +3570,7 @@ void ApiBridge::fill(esn_endstone_api &api)
     api.accessors.set_bytes = tSetBytes;
     api.accessors.invoke = tInvoke;
     api.accessors.type_name = tTypeName;
+    api.accessors.describe = tDescribe;
     api.subscribe = tSubscribe;
     api.unsubscribe = tUnsubscribe;
     api.send_form = tSendForm;

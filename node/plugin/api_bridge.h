@@ -135,6 +135,9 @@ public:
                       std::size_t string_count, const double *numbers, std::size_t number_count,
                       const esn_handle *handles, std::size_t handle_count, esn_handle *out_handle);
     esn_status typeName(esn_handle target, char *buf, std::size_t cap, std::size_t *needed);
+    /** Every bound type and what it exposes, so the runtime builds its tables from this rather than
+     *  keeping a hand-written copy of them in step. See esn_accessors::describe for the format. */
+    esn_status describe(char *buf, std::size_t cap, std::size_t *needed);
 
     /** Where form outcomes go - normally esn_host_form_result. Set before sending a form. */
     using FormSink = std::function<void(std::uint32_t form_id, bool closed, std::string data)>;

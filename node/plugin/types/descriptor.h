@@ -180,6 +180,10 @@ struct TypeDesc {
     Kind kind{Kind::None};
     std::string name;
     Kind base{Kind::None};
+    /** For an event: the descriptor it chains to, by name. Empty at the root. */
+    std::string base_event;
+    /** For an event: Event * to this concrete event, licensed by the name it reported. */
+    void *(*from_event)(void *){nullptr};
     /**
      * Converts a pointer to this type into one to its base.
      *
@@ -197,6 +201,19 @@ struct TypeDesc {
 TypeDesc &declareType(Kind kind, std::string_view name, Kind base, void *(*to_base)(void *));
 const TypeDesc *findType(Kind kind);
 
+/**
+ * @brief Creates or returns the descriptor for one event, keyed by the name the event reports.
+ *
+ * Events are not kinds: every event arrives as Kind::Event and says what it is through
+ * getEventName(), because the type cannot be recovered any other way - hidden visibility and a
+ * statically linked libc++abi make dynamic_cast on an Endstone type fail silently rather than
+ * usefully. `from_event` is the downcast that name licenses, and `base` chains to the abstract event
+ * classes so cancel and player are declared once each.
+ */
+TypeDesc &declareEvent(std::string_view name, std::string_view base, void *(*from_event)(void *),
+                       void *(*to_base)(void *));
+const TypeDesc *findEvent(std::string_view name);
+
 /** A member and the pointer to call it with, adjusted for whichever type in the chain declared it. */
 struct Lookup {
     const MemberDesc *member{nullptr};
@@ -208,6 +225,9 @@ struct Lookup {
 
 /** Walks the base chain, adjusting `self` at every edge. */
 Lookup findMember(Kind kind, std::string_view name, void *self);
+/** The same for an event, starting from the Event pointer the handle holds. */
+Lookup findEventMember(std::string_view event_name, std::string_view name, void *event);
+Lookup findEventDynamic(std::string_view event_name, std::string_view name, void *event, ValueKind want);
 /**
  * The prefixed accessor matching `name` *and* the accessor kind being asked for, with the remainder
  * in the result's `suffix`. The kind is part of the match because one prefix can answer on several -

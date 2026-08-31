@@ -39,6 +39,13 @@ std::vector<const TypeDesc *> &registered()
     return types;
 }
 
+/** Events are keyed by the name they report rather than by a kind - see declareEvent. */
+std::unordered_map<std::string, TypeDesc, StringHash, std::equal_to<>> &eventStorage()
+{
+    static std::unordered_map<std::string, TypeDesc, StringHash, std::equal_to<>> events;
+    return events;
+}
+
 }  // namespace
 
 std::string Args::str(const std::size_t index) const
@@ -124,6 +131,75 @@ Lookup findDynamic(const Kind kind, const std::string_view name, void *self, con
         current = desc->base;
     }
     return {};
+}
+
+TypeDesc &declareEvent(const std::string_view name, const std::string_view base, void *(*from_event)(void *),
+                       void *(*to_base)(void *))
+{
+    auto &desc = eventStorage()[std::string{name}];
+    if (desc.name.empty()) {
+        registered().push_back(&desc);
+    }
+    desc.kind = Kind::Event;
+    desc.name = std::string{name};
+    desc.base_event = std::string{base};
+    desc.from_event = from_event;
+    desc.to_base = to_base;
+    return desc;
+}
+
+const TypeDesc *findEvent(const std::string_view name)
+{
+    const auto &events = eventStorage();
+    const auto found = events.find(name);
+    return found == events.end() ? nullptr : &found->second;
+}
+
+namespace {
+
+/** Walks an event's chain, starting with the downcast its reported name licenses. */
+template <typename Match>
+Lookup walkEvent(const std::string_view event_name, void *event, Match match)
+{
+    const auto *desc = findEvent(event_name);
+    if (desc == nullptr || desc->from_event == nullptr) {
+        return {};
+    }
+    void *self = desc->from_event(event);
+    while (desc != nullptr) {
+        if (auto found = match(*desc, self)) {
+            return found;
+        }
+        if (desc->base_event.empty() || desc->to_base == nullptr) {
+            return {};
+        }
+        self = desc->to_base(self);
+        desc = findEvent(desc->base_event);
+    }
+    return {};
+}
+
+}  // namespace
+
+Lookup findEventMember(const std::string_view event_name, const std::string_view name, void *event)
+{
+    return walkEvent(event_name, event, [&](const TypeDesc &desc, void *self) -> Lookup {
+        const auto found = desc.members.find(name);
+        return found == desc.members.end() ? Lookup{} : Lookup{&found->second, nullptr, self, {}};
+    });
+}
+
+Lookup findEventDynamic(const std::string_view event_name, const std::string_view name, void *event,
+                        const ValueKind want)
+{
+    return walkEvent(event_name, event, [&](const TypeDesc &desc, void *self) -> Lookup {
+        for (const auto &entry : desc.dynamic) {
+            if (entry.kind == want && name.size() > entry.prefix.size() && name.starts_with(entry.prefix)) {
+                return Lookup{nullptr, &entry, self, name.substr(entry.prefix.size())};
+            }
+        }
+        return {};
+    });
 }
 
 const std::vector<const TypeDesc *> &allTypes()

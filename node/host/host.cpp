@@ -767,6 +767,23 @@ napi_value jsInvoke(napi_env env, napi_callback_info info)
     return nullptr;
 }
 
+/** The whole binding registry as text. Read once at startup; see esn_accessors::describe. */
+napi_value jsDescribe(napi_env env, napi_callback_info)
+{
+    const auto *acc = accessors();
+    if (!acc || !acc->describe) {
+        return nullptr;
+    }
+    std::size_t needed = 0;
+    if (acc->describe(g_host->api->context, nullptr, 0, &needed) != ESN_OK) {
+        return nullptr;
+    }
+    std::vector<char> buffer(needed + 1, char{});
+    (void)acc->describe(g_host->api->context, buffer.data(), buffer.size(), &needed);
+    napi_value result = nullptr;
+    return napi_create_string_utf8(env, buffer.data(), needed, &result) == napi_ok ? result : nullptr;
+}
+
 napi_value jsTypeName(napi_env env, napi_callback_info info)
 {
     std::size_t argc = 1;
@@ -1066,6 +1083,7 @@ napi_value registerBinding(napi_env env, napi_value exports)
     defineFunction(env, exports, "setBytes", jsSetBytes);
     defineFunction(env, exports, "invoke", jsInvoke);
     defineFunction(env, exports, "typeName", jsTypeName);
+    defineFunction(env, exports, "describe", jsDescribe);
     defineFunction(env, exports, "subscribe", jsSubscribe);
     defineFunction(env, exports, "unsubscribe", jsUnsubscribe);
     defineFunction(env, exports, "updateCommands", jsUpdateCommands);
