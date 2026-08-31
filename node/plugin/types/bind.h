@@ -69,7 +69,11 @@ ESN_KIND(MapView, MapView, false, false);
 ESN_KIND(MapCanvas, MapCanvas, false, false);
 ESN_KIND(DamageSource, DamageSource, false, false);
 ESN_KIND(BossBar, BossBar, false, false);
-ESN_KIND(Scoreboard, Scoreboard, false, false);
+ESN_KIND(Inventory, Inventory, false, false);
+ESN_KIND(PlayerInventory, PlayerInventory, false, false);
+// A scoreboard outlives the callback that reached it - the point of a per-player one is to update it
+// later - so its handle survives the dispatch.
+ESN_KIND(Scoreboard, Scoreboard, false, true);
 // A level and its dimensions are singletons for the server's lifetime, so their handles outlive the
 // dispatch that minted them.
 ESN_KIND(Level, Level, false, true);
@@ -305,19 +309,25 @@ class TypeBuilder {
 public:
     explicit TypeBuilder(TypeDesc &desc) : desc_(desc) {}
 
+    // The declaring class is deduced rather than assumed to be T: Endstone puts members on base
+    // classes - sendMessage on CommandSender, recalculatePermissions on Permissible - and those are
+    // still reachable through the derived type.
+
     /** A read-only member, from a const getter. */
-    template <typename R>
-    void ro(const std::string_view name, R (T::*getter)() const)
+    template <typename C, typename R>
+    void ro(const std::string_view name, R (C::*getter)() const)
     {
+        static_assert(std::is_base_of_v<C, T>, "that member belongs to an unrelated class");
         add(name, valueKindFor<R>(), [getter](void *self, Binder &binder, Value &out) {
             return writeValue((static_cast<T *>(self)->*getter)(), binder, out);
         });
     }
 
     /** A read-only member whose getter is not const, as several of Endstone's are. */
-    template <typename R>
-    void ro(const std::string_view name, R (T::*getter)())
+    template <typename C, typename R>
+    void ro(const std::string_view name, R (C::*getter)())
     {
+        static_assert(std::is_base_of_v<C, T>, "that member belongs to an unrelated class");
         add(name, valueKindFor<R>(), [getter](void *self, Binder &binder, Value &out) {
             return writeValue((static_cast<T *>(self)->*getter)(), binder, out);
         });
@@ -334,9 +344,22 @@ public:
     }
 
     /** A member with both a getter and a setter. The setter's argument type drives the conversion. */
-    template <typename Getter, typename R, typename A>
-    void rw(const std::string_view name, Getter getter, R (T::*setter)(A))
+    template <typename Getter, typename C, typename R, typename A>
+    void rw(const std::string_view name, Getter getter, R (C::*setter)(A))
     {
+        static_assert(std::is_base_of_v<C, T>, "that member belongs to an unrelated class");
+        ro(name, getter);
+        desc_.members[std::string{name}].set = [setter](void *self, Binder &, const Value &in) {
+            (void)(static_cast<T *>(self)->*setter)(readValue<A>(in));
+            return ESN_OK;
+        };
+    }
+
+    /** The same, for the setters Endstone declares const - several of them mutate through a handle. */
+    template <typename Getter, typename C, typename R, typename A>
+    void rw(const std::string_view name, Getter getter, R (C::*setter)(A) const)
+    {
+        static_assert(std::is_base_of_v<C, T>, "that member belongs to an unrelated class");
         ro(name, getter);
         desc_.members[std::string{name}].set = [setter](void *self, Binder &, const Value &in) {
             (void)(static_cast<T *>(self)->*setter)(readValue<A>(in));
@@ -357,17 +380,19 @@ public:
     }
 
     /** A method, with its arguments read positionally from the signature. */
-    template <typename R, typename... A>
-    void method(const std::string_view name, R (T::*fn)(A...))
+    template <typename C, typename R, typename... A>
+    void method(const std::string_view name, R (C::*fn)(A...))
     {
+        static_assert(std::is_base_of_v<C, T>, "that method belongs to an unrelated class");
         addMethod<R, A...>(name, [fn](T &self, std::tuple<detail::Bare<A>...> &values) {
             return std::apply([&](auto &...args) { return (self.*fn)(args...); }, values);
         });
     }
 
-    template <typename R, typename... A>
-    void method(const std::string_view name, R (T::*fn)(A...) const)
+    template <typename C, typename R, typename... A>
+    void method(const std::string_view name, R (C::*fn)(A...) const)
     {
+        static_assert(std::is_base_of_v<C, T>, "that method belongs to an unrelated class");
         addMethod<R, A...>(name, [fn](T &self, std::tuple<detail::Bare<A>...> &values) {
             return std::apply([&](auto &...args) { return (self.*fn)(args...); }, values);
         });

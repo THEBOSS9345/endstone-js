@@ -1622,6 +1622,11 @@ Server &ApiBridge::server()
     return plugin_.getServer();
 }
 
+Plugin &ApiBridge::owner()
+{
+    return plugin_;
+}
+
 std::optional<esn_status> ApiBridge::registryGet(const esn_handle target, const std::string_view name,
                                                  const ValueKind want, Value &out)
 {
@@ -1695,87 +1700,6 @@ namespace {
 // Player derives from Mob derives from Actor, so the shared members live in helpers that each kind's
 // dispatch falls through to. Adding a property to Actor therefore reaches Player for free.
 
-esn_status actorGetBool(Actor &actor, const std::string_view name, int *out)
-{
-    if (name == "isOnGround") { *out = actor.isOnGround(); return ESN_OK; }
-    if (name == "isInWater") { *out = actor.isInWater(); return ESN_OK; }
-    if (name == "isInLava") { *out = actor.isInLava(); return ESN_OK; }
-    if (name == "isDead") { *out = actor.isDead(); return ESN_OK; }
-    if (name == "isValid") { *out = actor.isValid(); return ESN_OK; }
-    if (name == "isNameTagVisible") { *out = actor.isNameTagVisible(); return ESN_OK; }
-    if (name == "isNameTagAlwaysVisible") { *out = actor.isNameTagAlwaysVisible(); return ESN_OK; }
-    return ESN_ERR_NO_SUCH_MEMBER;
-}
-
-esn_status actorGetInt(Actor &actor, const std::string_view name, std::int64_t *out)
-{
-    // Runtime ids exceed what a double represents exactly, so this is the one id exposed as a number
-    // only because Bedrock keeps them small in practice; prefer uniqueId for anything persistent.
-    if (name == "runtimeId") { *out = static_cast<std::int64_t>(actor.getRuntimeId()); return ESN_OK; }
-    // The persistent id, the one that survives a reload - this is what a saved reference should key on.
-    if (name == "id") { *out = actor.getId(); return ESN_OK; }
-    (void)actor;
-    (void)name;
-    (void)out;
-    return ESN_ERR_NO_SUCH_MEMBER;
-}
-
-esn_status actorSetBool(Actor &actor, const std::string_view name, const bool value)
-{
-    if (name == "isNameTagVisible") { actor.setNameTagVisible(value); return ESN_OK; }
-    if (name == "isNameTagAlwaysVisible") { actor.setNameTagAlwaysVisible(value); return ESN_OK; }
-    return ESN_ERR_NO_SUCH_MEMBER;
-}
-
-esn_status actorSetInt(Actor &actor, const std::string_view name, const std::int64_t value)
-{
-    (void)actor;
-    (void)name;
-    (void)value;
-    return ESN_ERR_NO_SUCH_MEMBER;
-}
-
-/**
- * @brief The methods every actor has, including players.
- *
- * Player's own branch falls back to this, so anything Endstone puts on Actor is reachable on a Player
- * too - the types say `Player extends Actor` and this is what makes that true. `remove` is safe to
- * expose here: EndstonePlayer overrides it to log "use Player::kick instead" and do nothing.
- */
-esn_status actorInvoke(Actor &actor, const std::string_view name, const std::string &text,
-                       const std::function<std::string(std::size_t)> &str,
-                       const std::function<double(std::size_t, double)> &number)
-{
-    // Actor derives from CommandSender, so both of its messaging methods belong here too.
-    if (name == "sendMessage") { actor.sendMessage(Message{text}); return ESN_OK; }
-    if (name == "sendErrorMessage") { actor.sendErrorMessage(Message{text}); return ESN_OK; }
-    if (name == "remove") { actor.remove(); return ESN_OK; }
-    if (name == "addScoreboardTag") { (void)actor.addScoreboardTag(text); return ESN_OK; }
-    if (name == "removeScoreboardTag") { (void)actor.removeScoreboardTag(text); return ESN_OK; }
-    // Backend for the `rotation` property. On a player this moves only the server-side rotation - the
-    // client owns its camera, so turning a player's view takes a teleport.
-    if (name == "setRotation") {
-        actor.setRotation(static_cast<float>(number(0, 0)), static_cast<float>(number(1, 0)));
-        return ESN_OK;
-    }
-    // teleport(location, { rotation, dimension }); rotation and dimension default to the current ones.
-    if (name == "teleport") {
-        const auto current = actor.getLocation();
-        auto *dimension = &actor.getDimension();
-        if (const auto requested = str(0); !requested.empty()) {
-            dimension = actor.getLevel().getDimension(requested);
-            if (!dimension) {
-                return ESN_ERR_BAD_ARGUMENT;
-            }
-        }
-        actor.teleport(Location{*dimension, static_cast<float>(number(0, 0)), static_cast<float>(number(1, 0)),
-                                static_cast<float>(number(2, 0)), static_cast<float>(number(4, current.getPitch())),
-                                static_cast<float>(number(3, current.getYaw()))});
-        return ESN_OK;
-    }
-    return ESN_ERR_NO_SUCH_MEMBER;
-}
-
 /** The remainder of `name` after `prefix`, or nullopt when it does not start with it. */
 std::optional<std::string> suffixOf(const std::string_view name, const std::string_view prefix)
 {
@@ -1835,22 +1759,6 @@ esn_handle parseHandleSuffix(const std::string_view digits)
 
 }  // namespace
 
-// Permissions live on Permissible, which CommandSender and therefore every Actor derives from, so one
-// helper serves players, actors and the console alike. The node rides the accessor name the way a
-// custom NBT key does, because the accessors carry no argument of their own.
-esn_status permissibleGetBool(Permissible &who, const std::string_view name, int *out)
-{
-    if (const auto node = suffixOf(name, "permission:")) {
-        *out = who.hasPermission(*node);
-        return ESN_OK;
-    }
-    if (const auto node = suffixOf(name, "permissionSet:")) {
-        *out = who.isPermissionSet(*node);
-        return ESN_OK;
-    }
-    return ESN_ERR_NO_SUCH_MEMBER;
-}
-
 std::string_view permissionLevelName(const PermissionLevel level)
 {
     switch (level) {
@@ -1888,28 +1796,10 @@ esn_status ApiBridge::getBool(const esn_handle target, const std::string_view na
         }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
-    if (auto *player = static_cast<Player *>(resolve(target, Kind::Player))) {
-        if (name == "isOp") { *out = player->isOp(); return ESN_OK; }
-        if (name == "isSneaking") { *out = player->isSneaking(); return ESN_OK; }
-        if (name == "isSprinting") { *out = player->isSprinting(); return ESN_OK; }
-        if (name == "isFlying") { *out = player->isFlying(); return ESN_OK; }
-        if (name == "allowFlight") { *out = player->getAllowFlight(); return ESN_OK; }
-        if (name == "isGliding") { *out = player->isGliding(); return ESN_OK; }
-        if (const auto status = permissibleGetBool(*player, name, out); status != ESN_ERR_NO_SUCH_MEMBER) {
-            return status;
-        }
-        return actorGetBool(*player, name, out);
-    }
     if (auto *item = static_cast<Item *>(resolve(target, Kind::Item));
         item && name == "unlimitedLifetime") {
         *out = item->isUnlimitedLifetime();
         return ESN_OK;
-    }
-    if (auto *actor = resolveActor(target)) {
-        if (const auto status = permissibleGetBool(*actor, name, out); status != ESN_ERR_NO_SUCH_MEMBER) {
-            return status;
-        }
-        return actorGetBool(*actor, name, out);
     }
     if (auto *source = static_cast<DamageSource *>(resolve(target, Kind::DamageSource))) {
         // True when the responsible actor is not the one that struck, e.g. a shooter and their arrow.
@@ -2003,16 +1893,6 @@ esn_status ApiBridge::getBool(const esn_handle target, const std::string_view na
         if (const auto flag = barFlagFromName(name)) { *out = bar->hasFlag(*flag); return ESN_OK; }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
-    if (auto *sender = static_cast<CommandSender *>(resolve(target, Kind::CommandSender))) {
-        // There is no isOp on CommandSender; the console reports Operator or Console here.
-        if (name == "isOp") {
-            *out = sender->getPermissionLevel() != PermissionLevel::Default;
-            return ESN_OK;
-        }
-        if (name == "isConsole") { *out = sender->asConsole() != nullptr; return ESN_OK; }
-        if (name == "isBlock") { *out = sender->asBlock() != nullptr; return ESN_OK; }
-        return permissibleGetBool(*sender, name, out);
-    }
     if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
         const auto ev = event->getEventName();
         if (ev == "PlayerInteractEvent") {
@@ -2064,18 +1944,6 @@ esn_status ApiBridge::getInt(const esn_handle target, const std::string_view nam
             return *handled;
         }
     }
-    if (auto *player = static_cast<Player *>(resolve(target, Kind::Player))) {
-        // Player derives from Mob, so these need no cast - and therefore no RTTI.
-        if (name == "health") { *out = player->getHealth(); return ESN_OK; }
-        if (name == "maxHealth") { *out = player->getMaxHealth(); return ESN_OK; }
-        if (name == "ping") { *out = player->getPing().count(); return ESN_OK; }
-        // The remote port. address gives the hostname alone, which is not enough to tell two players
-        // behind one NAT apart.
-        if (name == "port") { *out = player->getAddress().getPort(); return ESN_OK; }
-        if (name == "expLevel") { *out = player->getExpLevel(); return ESN_OK; }
-        if (name == "totalExp") { *out = player->getTotalExp(); return ESN_OK; }
-        return actorGetInt(*player, name, out);
-    }
     if (auto *item = static_cast<Item *>(resolve(target, Kind::Item))) {
         if (name == "pickupDelay") { *out = item->getPickupDelay(); return ESN_OK; }
         // Absent rather than null when nothing threw it, so `if (item.thrower)` reads naturally.
@@ -2087,13 +1955,6 @@ esn_status ApiBridge::getInt(const esn_handle target, const std::string_view nam
             *out = *thrower;
             return ESN_OK;
         }
-    }
-    if (auto *mob = resolveMob(target)) {
-        if (name == "health") { *out = mob->getHealth(); return ESN_OK; }
-        if (name == "maxHealth") { *out = mob->getMaxHealth(); return ESN_OK; }
-    }
-    if (auto *actor = resolveActor(target)) {
-        return actorGetInt(*actor, name, out);
     }
     if (auto *server = static_cast<Server *>(resolve(target, Kind::Server))) {
         if (name == "port") { *out = server->getPort(); return ESN_OK; }
@@ -2256,22 +2117,6 @@ esn_status ApiBridge::getInt(const esn_handle target, const std::string_view nam
         if (name == "playerCount") { *out = static_cast<std::int64_t>(bar->getPlayers().size()); return ESN_OK; }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
-    if (auto *player = static_cast<Player *>(resolve(target, Kind::Player)); player && name.starts_with("skin")) {
-        // Skin and cape pixel data is an Image and stays on the C++ side - a JS plugin cannot render it -
-        // but the dimensions are worth having, and 0 distinguishes "no cape" from a 0x0 one.
-        const auto skin = player->getSkin();
-        if (name == "skinWidth") { *out = skin.getImage().getWidth(); return ESN_OK; }
-        if (name == "skinHeight") { *out = skin.getImage().getHeight(); return ESN_OK; }
-        if (name == "skinCapeWidth") {
-            *out = skin.getCapeImage() ? skin.getCapeImage()->getWidth() : 0;
-            return ESN_OK;
-        }
-        if (name == "skinCapeHeight") {
-            *out = skin.getCapeImage() ? skin.getCapeImage()->getHeight() : 0;
-            return ESN_OK;
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
     if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
         const auto ev = event->getEventName();
         if (name == "previousSlot" && ev == "PlayerItemHeldEvent") {
@@ -2367,12 +2212,6 @@ esn_status ApiBridge::getDouble(const esn_handle target, const std::string_view 
         if (name == "averageMillisecondsPerTick") { *out = server->getAverageMillisecondsPerTick(); return ESN_OK; }
         if (name == "currentTickUsage") { *out = server->getCurrentTickUsage(); return ESN_OK; }
         if (name == "averageTickUsage") { *out = server->getAverageTickUsage(); return ESN_OK; }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
-    if (auto *player = static_cast<Player *>(resolve(target, Kind::Player))) {
-        if (name == "expProgress") { *out = player->getExpProgress(); return ESN_OK; }
-        if (name == "flySpeed") { *out = player->getFlySpeed(); return ESN_OK; }
-        if (name == "walkSpeed") { *out = player->getWalkSpeed(); return ESN_OK; }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
@@ -2583,59 +2422,8 @@ esn_status ApiBridge::getString(const esn_handle target, const std::string_view 
         }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
-    if (auto *player = static_cast<Player *>(resolve(target, Kind::Player))) {
-        if (name == "name") { return emitString(player->getName(), buf, cap, needed); }
-        if (name == "uniqueId") { return emitString(player->getUniqueId().str(), buf, cap, needed); }
-        if (name == "xuid") { return emitString(player->getXuid(), buf, cap, needed); }
-        if (name == "locale") { return emitString(player->getLocale(), buf, cap, needed); }
-        if (name == "deviceOs") { return emitString(player->getDeviceOS(), buf, cap, needed); }
-        if (name == "deviceId") { return emitString(player->getDeviceId(), buf, cap, needed); }
-        if (name == "gameVersion") { return emitString(player->getGameVersion(), buf, cap, needed); }
-        if (name == "address") { return emitString(player->getAddress().getHostname(), buf, cap, needed); }
-        if (name == "type") { return emitString(player->getType(), buf, cap, needed); }
-        if (name == "nameTag") { return emitString(player->getNameTag(), buf, cap, needed); }
-        if (name == "scoreTag") { return emitString(player->getScoreTag(), buf, cap, needed); }
-        if (name == "dimension") { return emitString(player->getDimension().getName(), buf, cap, needed); }
-        if (name == "gameMode") { return emitString(gameModeName(player->getGameMode()), buf, cap, needed); }
-        if (name == "permissionLevel") {
-            return emitString(permissionLevelName(player->getPermissionLevel()), buf, cap, needed);
-        }
-        // The skin's identity, not its pixels: an Image cannot cross the ABI usefully.
-        if (name == "skinId") { return emitString(player->getSkin().getId(), buf, cap, needed); }
-        if (name == "capeId") {
-            const auto &cape = player->getSkin().getCapeId();
-            return emitString(cape.value_or(std::string{}), buf, cap, needed);
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
-    if (auto *actor = resolveActor(target)) {
-        if (name == "type") { return emitString(actor->getType(), buf, cap, needed); }
-        if (name == "nameTag") { return emitString(actor->getNameTag(), buf, cap, needed); }
-        if (name == "scoreTag") { return emitString(actor->getScoreTag(), buf, cap, needed); }
-        if (name == "dimension") { return emitString(actor->getDimension().getName(), buf, cap, needed); }
-        // A list cannot cross the ABI as an array, so the tags arrive newline-joined and the runtime
-        // splits them into `scoreboardTags`.
-        if (name == "scoreboardTagList") {
-            std::string joined;
-            for (const auto &tag : actor->getScoreboardTags()) {
-                if (!joined.empty()) {
-                    joined += '\n';
-                }
-                joined += tag;
-            }
-            return emitString(joined, buf, cap, needed);
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
     if (auto *level = static_cast<Level *>(resolve(target, Kind::Level))) {
         if (name == "name") { return emitString(level->getName(), buf, cap, needed); }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
-    if (auto *sender = static_cast<CommandSender *>(resolve(target, Kind::CommandSender))) {
-        if (name == "name") { return emitString(sender->getName(), buf, cap, needed); }
-        if (name == "permissionLevel") {
-            return emitString(permissionLevelName(sender->getPermissionLevel()), buf, cap, needed);
-        }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *stack = static_cast<ItemStack *>(resolve(target, Kind::ItemStack))) {
@@ -3214,54 +3002,6 @@ esn_status ApiBridge::getHandle(const esn_handle target, const std::string_view 
         }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
-    if (auto *player = static_cast<Player *>(resolve(target, Kind::Player))) {
-        if (name == "level") { *out = track(&player->getLevel(), Kind::Level); return ESN_OK; }
-        // A player's own scoreboard, which may differ from the server's main one.
-        if (name == "scoreboard") { *out = track(&player->getScoreboard(), Kind::Scoreboard, true); return ESN_OK; }
-        if (name == "inventory") {
-            *out = track(&player->getInventory(), Kind::PlayerInventory);
-            return ESN_OK;
-        }
-        if (name == "enderChest") {
-            *out = track(&player->getEnderChest(), Kind::Inventory);
-            return ESN_OK;
-        }
-        if (name == "location") {
-            owned_locations_.push_back(player->getLocation());
-            *out = track(&owned_locations_.back(), Kind::Location);
-            return ESN_OK;
-        }
-        if (name == "rotation") {
-            owned_locations_.push_back(player->getLocation());
-            *out = track(&owned_locations_.back(), Kind::Location);
-            return ESN_OK;
-        }
-        if (name == "velocity") {
-            owned_vectors_.push_back(player->getVelocity());
-            *out = track(&owned_vectors_.back(), Kind::Vector);
-            return ESN_OK;
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
-    if (auto *actor = resolveActor(target)) {
-        if (name == "level") { *out = track(&actor->getLevel(), Kind::Level); return ESN_OK; }
-        if (name == "location") {
-            owned_locations_.push_back(actor->getLocation());
-            *out = track(&owned_locations_.back(), Kind::Location);
-            return ESN_OK;
-        }
-        if (name == "rotation") {
-            owned_locations_.push_back(actor->getLocation());
-            *out = track(&owned_locations_.back(), Kind::Location);
-            return ESN_OK;
-        }
-        if (name == "velocity") {
-            owned_vectors_.push_back(actor->getVelocity());
-            *out = track(&owned_vectors_.back(), Kind::Vector);
-            return ESN_OK;
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
     if (auto *item = static_cast<Item *>(resolve(target, Kind::Item)); item && name == "itemStack") {
         // getItemStack hands back a copy, so it is paired with a writeback like an inventory slot.
         *out = trackOwnedItem(item->getItemStack(),
@@ -3306,24 +3046,6 @@ esn_status ApiBridge::getHandle(const esn_handle target, const std::string_view 
         (void)inventory;
         return ESN_ERR_NO_SUCH_MEMBER;
     }
-    if (auto *sender = static_cast<CommandSender *>(resolve(target, Kind::CommandSender))) {
-        // A command block reaches a handler with nothing to say where it is. This is that position.
-        if (name == "block") {
-            auto *as_block = sender->asBlock();
-            if (!as_block) {
-                return ESN_ERR_WRONG_TYPE;
-            }
-            auto block = as_block->getBlock();
-            if (!block) {
-                return ESN_ERR_INTERNAL;
-            }
-            auto *raw = block.get();
-            owned_blocks_.push_back(std::move(block));
-            *out = track(raw, Kind::Block);
-            return ESN_OK;
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
     return find(target) ? ESN_ERR_NO_SUCH_MEMBER : ESN_ERR_STALE_HANDLE;
 }
 
@@ -3366,17 +3088,6 @@ esn_status ApiBridge::setBool(const esn_handle target, const std::string_view na
     if (auto *item = static_cast<Item *>(resolve(target, Kind::Item)); item && name == "unlimitedLifetime") {
         item->setUnlimitedLifetime(value);
         return ESN_OK;
-    }
-    if (auto *player = static_cast<Player *>(resolve(target, Kind::Player))) {
-        if (name == "isOp") { player->setOp(value); return ESN_OK; }
-        if (name == "isSneaking") { player->setSneaking(value); return ESN_OK; }
-        if (name == "isSprinting") { player->setSprinting(value); return ESN_OK; }
-        if (name == "isFlying") { player->setFlying(value); return ESN_OK; }
-        if (name == "allowFlight") { player->setAllowFlight(value); return ESN_OK; }
-        return actorSetBool(*player, name, value);
-    }
-    if (auto *actor = resolveActor(target)) {
-        return actorSetBool(*actor, name, value);
     }
     if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
         if (name == "cancelled") {
@@ -3459,19 +3170,6 @@ esn_status ApiBridge::setInt(const esn_handle target, const std::string_view nam
         if (name == "heldItemSlot") { player_inventory->setHeldItemSlot(static_cast<int>(value)); return ESN_OK; }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
-    if (auto *player = static_cast<Player *>(resolve(target, Kind::Player))) {
-        if (name == "health") { player->setHealth(static_cast<int>(value)); return ESN_OK; }
-        if (name == "maxHealth") { player->setMaxHealth(static_cast<int>(value)); return ESN_OK; }
-        if (name == "expLevel") { player->setExpLevel(static_cast<int>(value)); return ESN_OK; }
-        return actorSetInt(*player, name, value);
-    }
-    if (auto *mob = resolveMob(target)) {
-        if (name == "health") { mob->setHealth(static_cast<int>(value)); return ESN_OK; }
-        if (name == "maxHealth") { mob->setMaxHealth(static_cast<int>(value)); return ESN_OK; }
-    }
-    if (auto *actor = resolveActor(target)) {
-        return actorSetInt(*actor, name, value);
-    }
     if (auto *server = static_cast<Server *>(resolve(target, Kind::Server))) {
         if (name == "maxPlayers") { server->setMaxPlayers(static_cast<int>(value)); return ESN_OK; }
         return ESN_ERR_NO_SUCH_MEMBER;
@@ -3500,12 +3198,6 @@ esn_status ApiBridge::setDouble(const esn_handle target, const std::string_view 
             persistItem(target);
             return ESN_OK;
         }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
-    if (auto *player = static_cast<Player *>(resolve(target, Kind::Player))) {
-        if (name == "flySpeed") { player->setFlySpeed(static_cast<float>(value)); return ESN_OK; }
-        if (name == "walkSpeed") { player->setWalkSpeed(static_cast<float>(value)); return ESN_OK; }
-        if (name == "expProgress") { player->setExpProgress(static_cast<float>(value)); return ESN_OK; }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
@@ -3702,53 +3394,7 @@ esn_status ApiBridge::setString(const esn_handle target, const std::string_view 
         }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
-    if (auto *actor = resolveActor(target)) {
-        if (name == "nameTag") { actor->setNameTag(std::string{value}); return ESN_OK; }
-        if (name == "scoreTag") { actor->setScoreTag(std::string{value}); return ESN_OK; }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
-    if (auto *player = static_cast<Player *>(resolve(target, Kind::Player))) {
-        if (name == "nameTag") { player->setNameTag(std::string{value}); return ESN_OK; }
-        if (name == "scoreTag") { player->setScoreTag(std::string{value}); return ESN_OK; }
-        if (name == "gameMode") {
-            const auto mode = gameModeFromName(value);
-            if (!mode) {
-                return ESN_ERR_WRONG_TYPE;
-            }
-            player->setGameMode(*mode);
-            return ESN_OK;
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
     return find(target) ? ESN_ERR_NO_SUCH_MEMBER : ESN_ERR_STALE_HANDLE;
-}
-
-/**
- * @brief addPermission(node, value) / removePermission(node) / recalculatePermissions().
- *
- * A granted permission is an attachment owned by the permissible, and Endstone hands its pointer
- * back. That pointer is not retained here: keeping one past the callback that made it is exactly the
- * lifetime mistake handles exist to prevent, and a player who disconnects would leave it dangling.
- * removePermission therefore overrides the node to false rather than detaching, which is what gating
- * actually needs; the attachment itself goes when the player does.
- */
-esn_status permissibleInvoke(Plugin &owner, Permissible &who, const std::string_view name,
-                             const std::string &text, const std::function<double(std::size_t, double)> &number)
-{
-    if (name == "addPermission" || name == "removePermission") {
-        if (text.empty()) {
-            return ESN_ERR_BAD_ARGUMENT;
-        }
-        const bool value = name == "addPermission" ? number(0, 1) != 0 : false;
-        (void)who.addAttachment(owner, text, value);
-        who.recalculatePermissions();
-        return ESN_OK;
-    }
-    if (name == "recalculatePermissions") {
-        who.recalculatePermissions();
-        return ESN_OK;
-    }
-    return ESN_ERR_NO_SUCH_MEMBER;
 }
 
 esn_status ApiBridge::invoke(const esn_handle target, const std::string_view name,
@@ -3777,65 +3423,6 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
         }
     }
 
-    if (auto *player = static_cast<Player *>(resolve(target, Kind::Player))) {
-        if (name == "sendErrorMessage") { player->sendErrorMessage(Message{std::string{text}}); return ESN_OK; }
-        if (name == "sendPopup") { player->sendPopup(std::string{text}); return ESN_OK; }
-        if (name == "sendTip") { player->sendTip(std::string{text}); return ESN_OK; }
-        if (name == "kick") { player->kick(std::string{text}); return ESN_OK; }
-        if (name == "performCommand") { (void)player->performCommand(std::string{text}); return ESN_OK; }
-        if (name == "updateCommands") { player->updateCommands(); return ESN_OK; }
-        if (name == "giveExp") { player->giveExp(static_cast<int>(number(0))); return ESN_OK; }
-        if (name == "giveExpLevels") { player->giveExpLevels(static_cast<int>(number(0))); return ESN_OK; }
-        if (name == "transfer") {
-            player->transfer(std::string{text}, static_cast<int>(number(0, 19132)));
-            return ESN_OK;
-        }
-        // Both take another object, which is what handle arguments are for.
-        if (name == "sendMap") {
-            auto *map = static_cast<MapView *>(resolve(handle_at(0), Kind::MapView));
-            if (!map) {
-                return ESN_ERR_BAD_ARGUMENT;
-            }
-            player->sendMap(*map);
-            return ESN_OK;
-        }
-        // Backend for the `scoreboard` property: the ABI's setters carry only scalars, so a
-        // handle-valued write goes through a method the same way `rotation` does.
-        if (name == "setScoreboard") {
-            auto *board = static_cast<Scoreboard *>(resolve(handle_at(0), Kind::Scoreboard));
-            if (!board) {
-                return ESN_ERR_BAD_ARGUMENT;
-            }
-            player->setScoreboard(*board);
-            return ESN_OK;
-        }
-        if (name == "playSound") {
-            player->playSound(player->getLocation(), std::string{text}, static_cast<float>(number(0, 1.0)),
-                              static_cast<float>(number(1, 1.0)));
-            return ESN_OK;
-        }
-        if (name == "stopSound") { player->stopSound(std::string{text}); return ESN_OK; }
-        if (name == "stopAllSounds") { player->stopAllSounds(); return ESN_OK; }
-        if (name == "resetTitle") { player->resetTitle(); return ESN_OK; }
-        if (name == "sendTitle") {
-            player->sendTitle(text, str(1), static_cast<int>(number(0, 10)), static_cast<int>(number(1, 70)),
-                              static_cast<int>(number(2, 20)));
-            return ESN_OK;
-        }
-        if (name == "sendToast") { player->sendToast(text, str(1)); return ESN_OK; }
-        if (name == "spawnParticle") {
-            player->spawnParticle(text, static_cast<float>(number(0)), static_cast<float>(number(1)),
-                                  static_cast<float>(number(2)),
-                                  string_count > 1 ? std::optional<std::string>{str(1)} : std::nullopt);
-            return ESN_OK;
-        }
-        if (const auto status = permissibleInvoke(plugin_, *player, name, text, number);
-            status != ESN_ERR_NO_SUCH_MEMBER) {
-            return status;
-        }
-        // Everything Actor offers, so `Player extends Actor` in the types is not a lie.
-        return actorInvoke(*player, name, text, str, number);
-    }
     if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
         const auto ev = event->getEventName();
         // Backend for `event.knockback = { x, y, z }`, routed as a method because the ABI's setters
@@ -4111,11 +3698,6 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
         }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
-    if (auto *sender = static_cast<CommandSender *>(resolve(target, Kind::CommandSender))) {
-        if (name == "sendMessage") { sender->sendMessage(Message{std::string{text}}); return ESN_OK; }
-        if (name == "sendErrorMessage") { sender->sendErrorMessage(Message{std::string{text}}); return ESN_OK; }
-        return permissibleInvoke(plugin_, *sender, name, text, number);
-    }
     if (auto *inventory = resolveInventory(target)) {
         // An item is described by a type plus optional amount and data, so nothing has to construct an
         // ItemStack from JavaScript. An empty type means "no item", which clears the slot.
@@ -4190,13 +3772,6 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
             if (name == "setItemInOffHand") { player_inventory->setItemInOffHand(described(0)); return ESN_OK; }
         }
         return ESN_ERR_NO_SUCH_MEMBER;
-    }
-    if (auto *actor = resolveActor(target)) {
-        if (const auto status = permissibleInvoke(plugin_, *actor, name, text, number);
-            status != ESN_ERR_NO_SUCH_MEMBER) {
-            return status;
-        }
-        return actorInvoke(*actor, name, text, str, number);
     }
     if (auto *canvas = static_cast<MapCanvas *>(resolve(target, Kind::MapCanvas))) {
         // setPixel(x, y, r, g, b, a) - for a renderer that touches a handful of pixels. Anything

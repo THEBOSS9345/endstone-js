@@ -201,6 +201,7 @@ public:
     esn_handle own(const Location &location) override;
     esn_handle own(const Vector &vector) override;
     Server &server() override;
+    Plugin &owner() override;
 
 private:
     /**

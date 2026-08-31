@@ -34,6 +34,7 @@ class BossBar;
 class CommandSender;
 class DamageSource;
 class Dimension;
+class Inventory;
 class Item;
 class ItemStack;
 class Level;
@@ -42,7 +43,9 @@ class MapCanvas;
 class MapView;
 class Mob;
 class Player;
+class PlayerInventory;
 class Scoreboard;
+class Plugin;
 class Server;
 class Vector;
 }  // namespace endstone
@@ -99,6 +102,8 @@ public:
     /** Runs an item handle's writeback, if it has one. Item stacks are values, not references. */
     virtual void persistItem(esn_handle target) = 0;
     virtual Server &server() = 0;
+    /** The plugin the bridge belongs to - what a permission attachment is owned by. */
+    virtual Plugin &owner() = 0;
 };
 
 /**

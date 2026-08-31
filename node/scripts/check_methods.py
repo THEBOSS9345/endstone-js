@@ -20,12 +20,8 @@ from pathlib import Path
 # Methods the bridge implements in a helper rather than inside an `if (resolve(...))` branch, and the
 # type each helper serves.
 HELPERS = {
-    "actorInvoke": "Actor",
     "bossBarInvoke": "BossBar",
     "scoreboardInvoke": "Scoreboard",
-    # Permissible sits under CommandSender, which every Actor and Player derives from, so the parent
-    # chain carries these the rest of the way.
-    "permissibleInvoke": "CommandSender",
 }
 
 # Names the runtime handles itself and never forwards under that name, so the bridge has no case for
@@ -41,6 +37,8 @@ NAME = re.compile(r'name == "([A-Za-z_]\w*)"')
 
 # A migrated type declares its members in plugin/types/, one file per Endstone header folder. Methods
 # there are `b.method("name", ...)` inside an ESN_TYPE or ESN_SUBTYPE block naming the kind.
+NO_SUCH_TAIL = '\n    return ESN_ERR_NO_SUCH_MEMBER;\n}'
+
 TYPE_BLOCK = re.compile('^ESN_(?:SUB)?TYPE[(][A-Za-z0-9_]+,[ ]*([A-Za-z0-9_]+)', re.M)
 TYPE_METHOD = re.compile('b[.]method[(]"([A-Za-z_][A-Za-z0-9_]*)"')
 
@@ -114,9 +112,14 @@ def bridge_methods(source: str) -> dict[str, set[str]]:
         found.setdefault("Inventory", set()).difference_update(names)
 
     for helper, kind in HELPERS.items():
-        chunk = source[source.index(f"esn_status {helper}") if f"esn_status {helper}" in source
-                       else source.index(f"ApiBridge::{helper}") :]
-        end = chunk.index("\n    return ESN_ERR_NO_SUCH_MEMBER;\n}")
+        # A helper that has been migrated into a descriptor is simply gone.
+        marker = next((m for m in (f"esn_status {helper}", f"ApiBridge::{helper}")
+                       if m in source), None)
+        if marker is None:
+            continue
+        chunk = source[source.index(marker) :]
+        end = chunk.index(NO_SUCH_TAIL)
+        found.setdefault(kind, set()).update(NAME.findall(chunk[:end]))
         found.setdefault(kind, set()).update(NAME.findall(chunk[:end]))
 
     return {k: v for k, v in found.items() if v}
