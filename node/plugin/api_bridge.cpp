@@ -14,6 +14,10 @@
 
 #include "api_bridge.h"
 
+#include "types/bind.h"
+#include "types/block_face.h"
+#include "types/descriptor.h"
+
 #include <cstring>
 #include <optional>
 #include <variant>
@@ -387,17 +391,6 @@ std::string_view blockFaceName(const BlockFace face)
     case BlockFace::East: return "east";
     }
     return "down";
-}
-
-std::optional<BlockFace> blockFaceFromName(const std::string_view name)
-{
-    if (name == "down") return BlockFace::Down;
-    if (name == "up") return BlockFace::Up;
-    if (name == "north") return BlockFace::North;
-    if (name == "south") return BlockFace::South;
-    if (name == "west") return BlockFace::West;
-    if (name == "east") return BlockFace::East;
-    return std::nullopt;
 }
 
 std::string_view interactActionName(const PlayerInteractEvent::Action action)
@@ -1678,6 +1671,110 @@ void ApiBridge::shutdown()
     owned_scoreboards_.clear();
 }
 
+// --- descriptor tables ---------------------------------------------------------------------------
+
+esn_handle ApiBridge::own(std::unique_ptr<Block> block)
+{
+    auto *raw = block.get();
+    owned_blocks_.push_back(std::move(block));
+    return track(raw, Kind::Block);
+}
+
+esn_handle ApiBridge::own(std::unique_ptr<BlockData> data)
+{
+    auto *raw = data.get();
+    owned_block_data_.push_back(std::move(data));
+    return track(raw, Kind::BlockData);
+}
+
+esn_handle ApiBridge::own(std::unique_ptr<BlockState> state)
+{
+    auto *raw = state.get();
+    owned_block_states_.push_back(std::move(state));
+    return track(raw, Kind::BlockState);
+}
+
+esn_handle ApiBridge::own(const Location &location)
+{
+    // A deque, so taking a handle to one entry survives the next push within the same dispatch.
+    owned_locations_.push_back(location);
+    return track(&owned_locations_.back(), Kind::Location);
+}
+
+esn_handle ApiBridge::own(const Vector &vector)
+{
+    owned_vectors_.push_back(vector);
+    return track(&owned_vectors_.back(), Kind::Vector);
+}
+
+Server &ApiBridge::server()
+{
+    return plugin_.getServer();
+}
+
+std::optional<esn_status> ApiBridge::registryGet(const esn_handle target, const std::string_view name,
+                                                 const ValueKind want, Value &out)
+{
+    const auto *entry = find(target);
+    if (entry == nullptr) {
+        return std::nullopt;
+    }
+    // Copied out before the thunk runs: minting a handle can rehash the table and leave `entry`
+    // dangling, and a binding that returns a handle does exactly that.
+    auto *const self = entry->ptr;
+    const auto kind = entry->kind;
+
+    if (const auto *member = findMember(kind, name)) {
+        // A member declared on the string accessor does not answer a request for an int. Falling
+        // through rather than erroring lets the runtime probe the accessors to find the right one.
+        return member->get && member->kind == want ? std::optional{member->get(self, *this, out)} : std::nullopt;
+    }
+    std::string_view suffix;
+    if (const auto *dynamic = findDynamic(kind, name, suffix); dynamic != nullptr && dynamic->kind == want) {
+        return dynamic->get(self, suffix, *this, out);
+    }
+    return std::nullopt;
+}
+
+std::optional<esn_status> ApiBridge::registrySet(const esn_handle target, const std::string_view name,
+                                                 const ValueKind want, const Value &in)
+{
+    const auto *entry = find(target);
+    if (entry == nullptr) {
+        return std::nullopt;
+    }
+    auto *const self = entry->ptr;
+    const auto *member = findMember(entry->kind, name);
+    if (member == nullptr || !member->set || member->kind != want) {
+        return std::nullopt;
+    }
+    const auto status = member->set(self, *this, in);
+    if (status == ESN_OK) {
+        // Item stacks are values, so a write to one is lost unless it is put back where it came from.
+        persistItem(target);
+    }
+    return status;
+}
+
+std::optional<esn_status> ApiBridge::registryCall(const esn_handle target, const std::string_view name,
+                                                  const Args &args, esn_handle *out_handle)
+{
+    const auto *entry = find(target);
+    if (entry == nullptr) {
+        return std::nullopt;
+    }
+    auto *const self = entry->ptr;
+    const auto *member = findMember(entry->kind, name);
+    if (member == nullptr || !member->call) {
+        return std::nullopt;
+    }
+    const auto status = member->call(self, args, out_handle);
+    if (status == ESN_OK) {
+        persistItem(target);
+    }
+    return status;
+}
+
 // --- property dispatch ---------------------------------------------------------------------------
 //
 // String comparison per access is deliberate: it keeps the ABI fixed and makes adding a property a
@@ -1860,6 +1957,15 @@ esn_status ApiBridge::getBool(const esn_handle target, const std::string_view na
     if (!out) {
         return ESN_ERR_BAD_ARGUMENT;
     }
+    {
+        Value value;
+        if (const auto handled = registryGet(target, name, ValueKind::Bool, value)) {
+            if (*handled == ESN_OK) {
+                *out = value.boolean;
+            }
+            return *handled;
+        }
+    }
     if (auto *server = static_cast<Server *>(resolve(target, Kind::Server))) {
         if (name == "onlineMode") { *out = server->getOnlineMode(); return ESN_OK; }
         if (name == "isPrimaryThread") { *out = server->isPrimaryThread(); return ESN_OK; }
@@ -2039,6 +2145,15 @@ esn_status ApiBridge::getInt(const esn_handle target, const std::string_view nam
 {
     if (!out) {
         return ESN_ERR_BAD_ARGUMENT;
+    }
+    {
+        Value value;
+        if (const auto handled = registryGet(target, name, ValueKind::Int, value)) {
+            if (*handled == ESN_OK) {
+                *out = value.integer;
+            }
+            return *handled;
+        }
     }
     if (auto *player = static_cast<Player *>(resolve(target, Kind::Player))) {
         // Player derives from Mob, so these need no cast - and therefore no RTTI.
@@ -2244,15 +2359,6 @@ esn_status ApiBridge::getInt(const esn_handle target, const std::string_view nam
         if (name == "playerCount") { *out = static_cast<std::int64_t>(bar->getPlayers().size()); return ESN_OK; }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
-    if (auto *block = static_cast<Block *>(resolve(target, Kind::Block))) {
-        // The network id of this block's palette entry - what an UpdateBlockPacket carries.
-        if (name == "runtimeId") {
-            const auto data = block->getData();
-            *out = data ? static_cast<std::int64_t>(data->getRuntimeId()) : 0;
-            return ESN_OK;
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
     if (auto *player = static_cast<Player *>(resolve(target, Kind::Player)); player && name.starts_with("skin")) {
         // Skin and cape pixel data is an Image and stays on the C++ side - a JS plugin cannot render it -
         // but the dimensions are worth having, and 0 distinguishes "no cape" from a 0x0 one.
@@ -2330,6 +2436,15 @@ esn_status ApiBridge::getDouble(const esn_handle target, const std::string_view 
     if (!out) {
         return ESN_ERR_BAD_ARGUMENT;
     }
+    {
+        Value value;
+        if (const auto handled = registryGet(target, name, ValueKind::Double, value)) {
+            if (*handled == ESN_OK) {
+                *out = value.real;
+            }
+            return *handled;
+        }
+    }
     if (auto *bar = static_cast<BossBar *>(resolve(target, Kind::BossBar))) {
         if (name == "progress") { *out = bar->getProgress(); return ESN_OK; }
         return ESN_ERR_NO_SUCH_MEMBER;
@@ -2390,6 +2505,12 @@ esn_status ApiBridge::getDouble(const esn_handle target, const std::string_view 
 esn_status ApiBridge::getString(const esn_handle target, const std::string_view name, char *buf, const std::size_t cap,
                                 std::size_t *needed)
 {
+    {
+        Value value;
+        if (const auto handled = registryGet(target, name, ValueKind::String, value)) {
+            return *handled == ESN_OK ? emitString(value.text, buf, cap, needed) : *handled;
+        }
+    }
     if (auto *server = static_cast<Server *>(resolve(target, Kind::Server))) {
         if (name == "name") { return emitString(server->getName(), buf, cap, needed); }
         if (name == "version") { return emitString(server->getVersion(), buf, cap, needed); }
@@ -2624,8 +2745,8 @@ esn_status ApiBridge::getString(const esn_handle target, const std::string_view 
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *block = static_cast<Block *>(resolve(target, Kind::Block))) {
-        if (name == "type") { return emitString(block->getType(), buf, cap, needed); }
-        if (name == "dimension") { return emitString(block->getDimension().getName(), buf, cap, needed); }
+        // Everything else about a Block is declared in types/block/block.cpp. This one waits for the
+        // block-state helpers to move with BlockData and BlockState.
         // This block's own palette entry, rather than a type's default.
         if (name == "blockStatesList") {
             const auto data = block->getData();
@@ -2987,6 +3108,15 @@ esn_status ApiBridge::getHandle(const esn_handle target, const std::string_view 
     if (!out) {
         return ESN_ERR_BAD_ARGUMENT;
     }
+    {
+        Value value;
+        if (const auto handled = registryGet(target, name, ValueKind::Handle, value)) {
+            if (*handled == ESN_OK) {
+                *out = value.handle;
+            }
+            return *handled;
+        }
+    }
     if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
         if (name == "player") {
             if (auto *player = eventPlayer(event)) {
@@ -3278,14 +3408,6 @@ esn_status ApiBridge::getHandle(const esn_handle target, const std::string_view 
                               [item](const endstone::ItemStack &changed) { item->setItemStack(changed); });
         return ESN_OK;
     }
-    if (auto *block = static_cast<Block *>(resolve(target, Kind::Block))) {
-        if (name == "location") {
-            owned_locations_.push_back(block->getLocation());
-            *out = track(&owned_locations_.back(), Kind::Location);
-            return ESN_OK;
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
     if (auto *state = static_cast<BlockState *>(resolve(target, Kind::BlockState))) {
         if (name == "location") {
             owned_locations_.push_back(state->getLocation());
@@ -3571,6 +3693,14 @@ esn_status ApiBridge::setDouble(const esn_handle target, const std::string_view 
 
 esn_status ApiBridge::setString(const esn_handle target, const std::string_view name, const std::string_view value)
 {
+    {
+        Value incoming;
+        incoming.kind = ValueKind::String;
+        incoming.text = std::string{value};
+        if (const auto handled = registrySet(target, name, ValueKind::String, incoming)) {
+            return *handled;
+        }
+    }
     if (auto *bar = static_cast<BossBar *>(resolve(target, Kind::BossBar))) {
         if (name == "title") { bar->setTitle(std::string{value}); return ESN_OK; }
         if (name == "color") {
@@ -3764,7 +3894,6 @@ esn_status ApiBridge::setString(const esn_handle target, const std::string_view 
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *block = static_cast<Block *>(resolve(target, Kind::Block))) {
-        if (name == "type") { (void)block->setType(std::string{value}); return ESN_OK; }
         if (name == "blockStatesList") {
             const auto current = block->getData();
             BlockStates states = current ? current->getBlockStates() : BlockStates{};
@@ -3842,6 +3971,14 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
         return index < handle_count && handles ? handles[index] : 0;
     };
     const auto text = str(0);
+
+    {
+        const Args args{*this,      target,       strings,      string_count, numbers,
+                        number_count, handles,    handle_count};
+        if (const auto handled = registryCall(target, name, args, out_handle)) {
+            return *handled;
+        }
+    }
 
     if (auto *player = static_cast<Player *>(resolve(target, Kind::Player))) {
         if (name == "sendErrorMessage") { player->sendErrorMessage(Message{std::string{text}}); return ESN_OK; }
@@ -4263,52 +4400,6 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
             return status;
         }
         return actorInvoke(*actor, name, text, str, number);
-    }
-    if (auto *block = static_cast<Block *>(resolve(target, Kind::Block))) {
-        if (name == "getRelative" && out_handle) {
-            // A face plus an optional distance, or a plain offset. The interact event already reports
-            // a face as a string, so the natural block.getRelative(event.blockFace) works.
-            auto relative = !text.empty() ? [&] {
-                const auto face = blockFaceFromName(text);
-                return face ? block->getRelative(*face, static_cast<int>(number(0, 1)))
-                            : std::unique_ptr<Block>{};
-            }()
-                                          : block->getRelative(static_cast<int>(number(0)),
-                                                               static_cast<int>(number(1)),
-                                                               static_cast<int>(number(2)));
-            if (!relative) {
-                return ESN_ERR_INTERNAL;
-            }
-            // The Block is created for us, so the bridge owns it until this dispatch ends.
-            auto *raw = relative.get();
-            owned_blocks_.push_back(std::move(relative));
-            *out_handle = track(raw, Kind::Block);
-            return ESN_OK;
-        }
-        // A snapshot of this position, detached from the world. Change its type, then update() to write
-        // it back - which is how you restore a block later, or stage a change and apply it.
-        // A second handle on the same position, released with this dispatch like any other Block.
-        if (name == "clone" && out_handle) {
-            auto copy = block->clone();
-            if (!copy) {
-                return ESN_ERR_INTERNAL;
-            }
-            auto *raw = copy.get();
-            owned_blocks_.push_back(std::move(copy));
-            *out_handle = track(raw, Kind::Block);
-            return ESN_OK;
-        }
-        if (name == "captureState" && out_handle) {
-            auto state = block->captureState();
-            if (!state) {
-                return ESN_ERR_INTERNAL;
-            }
-            auto *raw = state.get();
-            owned_block_states_.push_back(std::move(state));
-            *out_handle = track(raw, Kind::BlockState);
-            return ESN_OK;
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *canvas = static_cast<MapCanvas *>(resolve(target, Kind::MapCanvas))) {
         // setPixel(x, y, r, g, b, a) - for a renderer that touches a handful of pixels. Anything

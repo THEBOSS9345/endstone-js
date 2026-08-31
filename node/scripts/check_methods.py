@@ -39,6 +39,24 @@ BRANCH = re.compile(
 )
 NAME = re.compile(r'name == "([A-Za-z_]\w*)"')
 
+# A migrated type declares its members in plugin/types/, one file per Endstone header folder. Methods
+# there are `b.method("name", ...)` inside an ESN_TYPE block naming the kind they belong to.
+TYPE_BLOCK = re.compile(r"^ESN_TYPE\((\w+),\s*(\w+),\s*(\w+)\)", re.M)
+TYPE_METHOD = re.compile('b[.]method[(]"([A-Za-z_][A-Za-z0-9_]*)"')
+
+
+def descriptor_methods(root: Path) -> dict[str, set[str]]:
+    """Methods declared by the descriptor tables, keyed by the kind their ESN_TYPE block names."""
+    found: dict[str, set[str]] = {}
+    for source in sorted(root.rglob("*.cpp")):
+        text = source.read_text(encoding="utf-8")
+        marks = [(m.start(), m.group(2)) for m in TYPE_BLOCK.finditer(text)]
+        marks.append((len(text), ""))
+        for (start, kind), (end, _) in zip(marks, marks[1:]):
+            if kind:
+                found.setdefault(kind, set()).update(TYPE_METHOD.findall(text[start:end]))
+    return {k: v for k, v in found.items() if v}
+
 
 def enclosing_block(text: str, position: int) -> str | None:
     """The body of the braced block that opens just after `position`."""
@@ -120,9 +138,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bridge", type=Path, required=True)
     parser.add_argument("--runtime", type=Path, required=True)
+    parser.add_argument("--types", type=Path, help="plugin/types, the descriptor tables")
     args = parser.parse_args()
 
     raw_bridge = bridge_methods(args.bridge.read_text(encoding="utf-8"))
+    # A type part-way through migration has methods on both sides, so the two are merged rather than
+    # compared: what matters to the runtime is that the method exists somewhere in the plugin.
+    if args.types and args.types.is_dir():
+        for kind, names in descriptor_methods(args.types).items():
+            raw_bridge.setdefault(kind, set()).update(names)
     raw_runtime, parents = runtime_methods(args.runtime.read_text(encoding="utf-8"))
 
     # Compared after resolving the parent chain, because that is what each side actually offers: the

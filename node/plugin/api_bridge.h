@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -27,6 +28,8 @@
 #include <endstone/plugin/plugin.h>
 
 #include "endstone_node_abi.h"
+#include "types/descriptor.h"
+#include "types/kind.h"
 
 namespace endstone {
 class Actor;
@@ -70,7 +73,7 @@ namespace endstone::node {
  *
  * Everything runs on the BDS server thread, the only thread that runs JavaScript.
  */
-class ApiBridge {
+class ApiBridge : public Binder {
 public:
     /** Both out of line: the owned-object vectors hold types only forward-declared here. */
     explicit ApiBridge(Plugin &plugin);
@@ -189,18 +192,29 @@ public:
     esn_status subscribe(std::string_view event_name, int priority, bool ignore_cancelled, std::uint32_t *out);
     esn_status unsubscribe(std::uint32_t subscription);
 
+    // --- Binder: what a type's binding file may ask of the bridge ---------------------------------
+    // Endstone hands these back as unique_ptr or by value, so the bridge holds them until the
+    // dispatch scope closes and the binding only ever sees the handle.
+    esn_handle own(std::unique_ptr<Block> block) override;
+    esn_handle own(std::unique_ptr<BlockData> data) override;
+    esn_handle own(std::unique_ptr<BlockState> state) override;
+    esn_handle own(const Location &location) override;
+    esn_handle own(const Vector &vector) override;
+    Server &server() override;
+
 private:
-    // Mob is distinct from Actor because only living things have health, and Endstone's actor events
-    // are templated on one or the other (ActorEvent<Mob> vs ActorEvent<Actor>).
-    enum class Kind : std::uint8_t {
-        // Item is a dropped item stack in the world, distinct from ItemStack which is the stack itself.
-        Player, Mob, Actor, Item, Block, Level, DamageSource, ItemStack, Location, Vector, CommandSender,
-        // PlayerInventory is distinct from Inventory only so the equipment slots can be reached; every
-        // generic inventory operation accepts either.
-        Inventory, PlayerInventory, Plugin, MapView, MapCanvas, Server, Dimension, Scoreboard, Event, BossBar,
-        // A block's palette entry (type plus its states), and a detached snapshot of one position.
-        BlockData, BlockState
-    };
+    /**
+     * @brief The descriptor tables, consulted before the hand-written chains below.
+     *
+     * A member declared in plugin/types/ answers here; anything not yet migrated falls through, which
+     * is what lets a type move over one at a time without the server stopping working. Each returns
+     * nullopt to mean "not mine", never an error - an error would end the lookup.
+     */
+    std::optional<esn_status> registryGet(esn_handle target, std::string_view name, ValueKind want, Value &out);
+    std::optional<esn_status> registrySet(esn_handle target, std::string_view name, ValueKind want,
+                                          const Value &in);
+    std::optional<esn_status> registryCall(esn_handle target, std::string_view name, const Args &args,
+                                           esn_handle *out_handle);
 
     /**
      * @brief Boss bar methods. Unlike a scoreboard objective, a bar is addressed by handle.
@@ -291,7 +305,7 @@ private:
     esn_handle trackOwnedItem(ItemStack item, std::function<void(const ItemStack &)> writeback);
 
     /** Runs the writeback for an item handle, if it has one. Called after every successful set. */
-    void persistItem(esn_handle target);
+    void persistItem(esn_handle target) override;
 
     std::unordered_map<esn_handle, std::function<void(const ItemStack &)>> item_writebacks_;
 
@@ -315,7 +329,7 @@ private:
      * Nothing here enforces it - `void *` accepts anything. Narrow to the right type at the call site,
      * as `trackSender` (via `asPlayer()`) and `eventActor` (via the trait's `Mob *` getter) both do.
      */
-    esn_handle track(void *ptr, Kind kind, bool persistent = false);
+    esn_handle track(void *ptr, Kind kind, bool persistent = false) override;
     /** Drops a handle, keeping the persistent index in step. */
     void untrack(esn_handle handle);
     /**
@@ -323,9 +337,9 @@ private:
      * pointer matches an online player. That check avoids RTTI, which is unusable across the plugin
      * boundary, so JavaScript still sees a real Player for things like a damage source's attacker.
      */
-    esn_handle trackActor(Actor *actor);
+    esn_handle trackActor(Actor *actor) override;
     /** Resolves a handle to the requested kind, or nullptr when stale or mismatched. */
-    void *resolve(esn_handle handle, Kind kind) const;
+    void *resolve(esn_handle handle, Kind kind) const override;
     /** Any living or non-living actor, i.e. Kind::Actor or Kind::Mob. Players resolve separately. */
     Actor *resolveActor(esn_handle handle) const;
     /** Only a living actor, so only Kind::Mob. */

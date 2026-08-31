@@ -2,9 +2,13 @@ cmake_minimum_required(VERSION 3.20)
 
 # The Endstone side of the ABI firewall. Built with Endstone's toolchain (libc++ on Linux, MSVC ABI
 # on Windows) and linked only against the header-only Endstone API. It must not link libnode.
-endstone_add_plugin(nodejs plugin.cpp js_plugin_loader.cpp api_bridge.cpp)
+# One binding file per Endstone header folder, so where a member goes is decided by where upstream
+# put it rather than by which accessor happens to carry it. See plugin/types/bind.h.
+file(GLOB_RECURSE NODEJS_TYPE_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/types/*.cpp)
 
-target_include_directories(nodejs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+endstone_add_plugin(nodejs plugin.cpp js_plugin_loader.cpp api_bridge.cpp ${NODEJS_TYPE_SOURCES})
+
+target_include_directories(nodejs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include ${CMAKE_CURRENT_SOURCE_DIR})
 if (NOT WIN32)
     target_link_libraries(nodejs PRIVATE ${CMAKE_DL_LIBS})
 endif ()
@@ -19,8 +23,10 @@ add_custom_command(
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/check_methods.py
         --bridge ${CMAKE_CURRENT_SOURCE_DIR}/api_bridge.cpp
         --runtime ${CMAKE_CURRENT_SOURCE_DIR}/../host/bootstrap.js
+        --types ${CMAKE_CURRENT_SOURCE_DIR}/types
         COMMAND ${CMAKE_COMMAND} -E touch ${METHOD_CHECK_STAMP}
         DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/api_bridge.cpp
+        ${NODEJS_TYPE_SOURCES}
         ${CMAKE_CURRENT_SOURCE_DIR}/../host/bootstrap.js
         ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/check_methods.py
         COMMENT "Checking the method table against the bridge"
