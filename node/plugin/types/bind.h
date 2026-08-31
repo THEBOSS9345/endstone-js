@@ -346,12 +346,13 @@ public:
 
     /** A setter written out by hand, for anything the plain form cannot express. */
     template <typename Getter, typename Fn,
-              std::enable_if_t<!std::is_member_pointer_v<Fn> && std::is_invocable_v<Fn, T &, const Value &>, int> = 0>
+              std::enable_if_t<!std::is_member_pointer_v<Fn> && std::is_invocable_v<Fn, T &, const Value &, Binder &>,
+                               int> = 0>
     void rw(const std::string_view name, Getter getter, Fn fn)
     {
         ro(name, getter);
-        desc_.members[std::string{name}].set = [fn](void *self, Binder &, const Value &in) {
-            return fn(*static_cast<T *>(self), in);
+        desc_.members[std::string{name}].set = [fn](void *self, Binder &binder, const Value &in) {
+            return fn(*static_cast<T *>(self), in, binder);
         };
     }
 

@@ -20,8 +20,11 @@
 #include <endstone/block/block_state.h>
 #include <endstone/level/dimension.h>
 
+#include <endstone/server.h>
+
 #include "types/bind.h"
 #include "types/block_face.h"
+#include "types/block_states.h"
 
 namespace endstone::node {
 
@@ -45,6 +48,28 @@ ESN_TYPE(Block, Block, None)
         const auto data = block.getData();
         return data ? static_cast<std::int64_t>(data->getRuntimeId()) : 0;
     });
+
+    // The palette entry as an object of its own - type plus states, without a position.
+    b.ro("data", &Block::getData);
+
+    // This block's own palette entry, rather than a type's default. Overlaid on write, so setting one
+    // state keeps the rest - turning a stair round must not reset whether it is upside down.
+    b.rw("blockStatesList",
+         [](const Block &block) {
+             const auto data = block.getData();
+             return data ? blockStatesRecord(*data) : std::string{};
+         },
+         [](Block &block, const Value &in, Binder &binder) {
+             const auto current = block.getData();
+             BlockStates states = current ? current->getBlockStates() : BlockStates{};
+             parseBlockStates(in.text, states);
+             const auto data = binder.server().createBlockData(block.getType(), states);
+             if (!data) {
+                 return static_cast<esn_status>(ESN_ERR_BAD_ARGUMENT);
+             }
+             block.setData(*data);
+             return static_cast<esn_status>(ESN_OK);
+         });
 
     // A second handle on the same position, and a snapshot detached from the world. Both come back as
     // unique_ptr, which is all the binding needs to know to take ownership of them.

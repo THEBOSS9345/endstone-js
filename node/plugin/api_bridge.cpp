@@ -16,6 +16,8 @@
 
 #include "types/bind.h"
 #include "types/block_face.h"
+#include "types/block_states.h"
+#include "types/records.h"
 #include "types/descriptor.h"
 
 #include <cstring>
@@ -971,27 +973,6 @@ void ApiBridge::cancelTask(const std::uint32_t task)
 
 namespace {
 
-std::vector<std::string> splitOn(const std::string_view text, const char separator)
-{
-    std::vector<std::string> parts;
-    std::size_t start = 0;
-    while (true) {
-        const auto at = text.find(separator, start);
-        if (at == std::string_view::npos) {
-            parts.emplace_back(text.substr(start));
-            return parts;
-        }
-        parts.emplace_back(text.substr(start, at - start));
-        start = at + 1;
-    }
-}
-
-/** Field `index` of a record, or an empty string. Missing fields are normal: they mean "default". */
-std::string fieldAt(const std::vector<std::string> &fields, const std::size_t index)
-{
-    return index < fields.size() ? fields[index] : std::string{};
-}
-
 float floatAt(const std::vector<std::string> &fields, const std::size_t index, const float fallback)
 {
     const auto text = fieldAt(fields, index);
@@ -1184,7 +1165,6 @@ esn_status ApiBridge::scoreboardInvoke(Scoreboard &board, const std::string_view
 
 namespace {
 
-constexpr char kUnitSeparator = '\x1f';
 
 /** Dates are system_clock; JavaScript wants epoch milliseconds. */
 std::string epochMillis(const BanEntry::Date &date)
@@ -1206,76 +1186,6 @@ std::string epochMillis(const std::optional<BanEntry::Date> &date)
  * runtime could not tell the string "true" from the boolean true, and a state like `upside_down_bit`
  * would come back as the wrong JavaScript type.
  */
-std::string blockStatesRecord(const BlockData &data)
-{
-    std::string out;
-    for (const auto &[key, value] : data.getBlockStates()) {
-        if (!out.empty()) {
-            out += '\n';
-        }
-        out += key;
-        out += kUnitSeparator;
-        std::visit(
-            [&](const auto &held) {
-                using Held = std::decay_t<decltype(held)>;
-                if constexpr (std::is_same_v<Held, bool>) {
-                    out += "b";
-                    out += kUnitSeparator;
-                    out += held ? "1" : "0";
-                }
-                else if constexpr (std::is_same_v<Held, int>) {
-                    out += "i";
-                    out += kUnitSeparator;
-                    out += std::to_string(held);
-                }
-                else {
-                    out += "s";
-                    out += kUnitSeparator;
-                    out += held;
-                }
-            },
-            value);
-    }
-    return out;
-}
-
-/**
- * @brief Reads the "key\x1ftype\x1fvalue" records the runtime sends back, onto `states`.
- *
- * Overlaid rather than replacing: a plugin that sets one state means "change this one", so the rest
- * of the block's palette entry has to survive. The tag decides the variant arm, which is why it
- * travels with the value in both directions - "true" the string and true the boolean are different
- * states and Bedrock cares.
- */
-void parseBlockStates(const std::string_view text, BlockStates &states)
-{
-    if (text.empty()) {
-        return;
-    }
-    for (const auto &line : splitOn(text, '\n')) {
-        const auto fields = splitOn(line, kUnitSeparator);
-        if (fields.size() < 3 || fields[0].empty()) {
-            continue;
-        }
-        const auto &key = fields[0];
-        const auto &value = fields[2];
-        if (fields[1] == "b") {
-            states[key] = value == "1";
-        }
-        else if (fields[1] == "i") {
-            try {
-                states[key] = std::stoi(value);
-            }
-            catch (...) {
-                continue;
-            }
-        }
-        else {
-            states[key] = value;
-        }
-    }
-}
-
 /** name, uuid, xuid, reason, source, created, expiration - empty field for anything absent. */
 template <typename Entry>
 std::string banRecord(const Entry &entry)
@@ -2744,25 +2654,6 @@ esn_status ApiBridge::getString(const esn_handle target, const std::string_view 
         }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
-    if (auto *block = static_cast<Block *>(resolve(target, Kind::Block))) {
-        // Everything else about a Block is declared in types/block/block.cpp. This one waits for the
-        // block-state helpers to move with BlockData and BlockState.
-        // This block's own palette entry, rather than a type's default.
-        if (name == "blockStatesList") {
-            const auto data = block->getData();
-            return emitString(data ? blockStatesRecord(*data) : std::string{}, buf, cap, needed);
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
-    if (auto *state = static_cast<BlockState *>(resolve(target, Kind::BlockState))) {
-        if (name == "type") { return emitString(state->getType(), buf, cap, needed); }
-        if (name == "dimension") { return emitString(state->getDimension().getName(), buf, cap, needed); }
-        if (name == "blockStatesList") {
-            const auto data = state->getData();
-            return emitString(data ? blockStatesRecord(*data) : std::string{}, buf, cap, needed);
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
     if (auto *location = static_cast<Location *>(resolve(target, Kind::Location))) {
         if (name == "dimension") { return emitString(location->getDimension().getName(), buf, cap, needed); }
         return ESN_ERR_NO_SUCH_MEMBER;
@@ -3408,26 +3299,6 @@ esn_status ApiBridge::getHandle(const esn_handle target, const std::string_view 
                               [item](const endstone::ItemStack &changed) { item->setItemStack(changed); });
         return ESN_OK;
     }
-    if (auto *state = static_cast<BlockState *>(resolve(target, Kind::BlockState))) {
-        if (name == "location") {
-            owned_locations_.push_back(state->getLocation());
-            *out = track(&owned_locations_.back(), Kind::Location);
-            return ESN_OK;
-        }
-        // The live block at the snapshot's position, which is not necessarily what the snapshot holds.
-        if (name == "block") {
-            auto live = state->getBlock();
-            if (!live) {
-                *out = 0;
-                return ESN_OK;
-            }
-            auto *raw = live.get();
-            owned_blocks_.push_back(std::move(live));
-            *out = track(raw, Kind::Block);
-            return ESN_OK;
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
     if (auto *dimension = static_cast<Dimension *>(resolve(target, Kind::Dimension))) {
         if (name == "level") { *out = track(&dimension->getLevel(), Kind::Level, true); return ESN_OK; }
         return ESN_ERR_NO_SUCH_MEMBER;
@@ -3889,36 +3760,6 @@ esn_status ApiBridge::setString(const esn_handle target, const std::string_view 
                 return ESN_ERR_WRONG_TYPE;
             }
             player->setGameMode(*mode);
-            return ESN_OK;
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
-    if (auto *block = static_cast<Block *>(resolve(target, Kind::Block))) {
-        if (name == "blockStatesList") {
-            const auto current = block->getData();
-            BlockStates states = current ? current->getBlockStates() : BlockStates{};
-            parseBlockStates(value, states);
-            const auto data = plugin_.getServer().createBlockData(block->getType(), states);
-            if (!data) {
-                return ESN_ERR_BAD_ARGUMENT;
-            }
-            block->setData(*data);
-            return ESN_OK;
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
-    if (auto *state = static_cast<BlockState *>(resolve(target, Kind::BlockState))) {
-        // Only changes the snapshot; update() is what writes it to the world.
-        if (name == "type") { state->setType(std::string{value}); return ESN_OK; }
-        if (name == "blockStatesList") {
-            const auto current = state->getData();
-            BlockStates states = current ? current->getBlockStates() : BlockStates{};
-            parseBlockStates(value, states);
-            const auto data = plugin_.getServer().createBlockData(state->getType(), states);
-            if (!data) {
-                return ESN_ERR_BAD_ARGUMENT;
-            }
-            state->setData(*data);
             return ESN_OK;
         }
         return ESN_ERR_NO_SUCH_MEMBER;
@@ -4413,18 +4254,6 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
         }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
-    if (auto *state = static_cast<BlockState *>(resolve(target, Kind::BlockState))) {
-        // update(force, applyPhysics) - writes the snapshot back to the world. Without force it only
-        // applies if the position is still the type it was captured as, so a racing change is not
-        // clobbered; applyPhysics lets neighbours react, e.g. sand falling.
-        if (name == "update") {
-            const auto force = number(0, 0) != 0;
-            const auto physics = number(1, 0) != 0;
-            (void)state->update(force, physics);
-            return ESN_OK;
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
     if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
         if (name == "cancel") {
             auto *cancellable = eventCancellable(event);
@@ -4513,6 +4342,12 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
 
 esn_status ApiBridge::typeName(const esn_handle target, char *buf, const std::size_t cap, std::size_t *needed)
 {
+    // A migrated type already carries its name in its descriptor, so there is nothing to keep in step.
+    if (const auto *entry = find(target)) {
+        if (const auto *desc = findType(entry->kind)) {
+            return emitString(desc->name, buf, cap, needed);
+        }
+    }
     if (resolve(target, Kind::Player)) {
         return emitString("Player", buf, cap, needed);
     }
