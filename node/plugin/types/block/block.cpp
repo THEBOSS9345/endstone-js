@@ -28,7 +28,7 @@
 
 namespace endstone::node {
 
-ESN_TYPE(Block, Block, None)
+ESN_TYPE(Block, Block)
 {
     b.rw("type", &Block::getType, static_cast<void (Block::*)(std::string)>(&Block::setType));
 

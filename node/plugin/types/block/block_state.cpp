@@ -25,7 +25,7 @@
 
 namespace endstone::node {
 
-ESN_TYPE(BlockState, BlockState, None)
+ESN_TYPE(BlockState, BlockState)
 {
     // Only changes the snapshot; update() is what writes it to the world.
     b.rw("type", &BlockState::getType, &BlockState::setType);

@@ -12,21 +12,30 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Binds include/endstone/block/block_data.h.
+// Binds include/endstone/util/vector.h.
 
-#include <endstone/block/block_data.h>
+#include <endstone/util/vector.h>
 
 #include "types/bind.h"
-#include "types/block_states.h"
 
 namespace endstone::node {
 
-ESN_TYPE(BlockData, BlockData)
+ESN_TYPE(Vector, Vector)
 {
-    b.ro("type", &BlockData::getType);
-    b.ro("runtimeId", [](const BlockData &data) { return static_cast<std::int64_t>(data.getRuntimeId()); });
-    // The palette entry as records; the runtime splits it back into an object.
-    b.ro("blockStatesList", [](const BlockData &data) { return blockStatesRecord(data); });
+    b.ro("x", &Vector::getX);
+    b.ro("y", &Vector::getY);
+    b.ro("z", &Vector::getZ);
+
+    // The containing block, i.e. each component floored. Negative coordinates round the way Minecraft
+    // does rather than the way a cast to int does.
+    b.ro("blockX", &Vector::getBlockX);
+    b.ro("blockY", &Vector::getBlockY);
+    b.ro("blockZ", &Vector::getBlockZ);
+
+    // Properties rather than calls: they take no arguments and read as magnitudes. Squared is there
+    // because comparing distances does not need the square root.
+    b.ro("length", &Vector::length);
+    b.ro("lengthSquared", &Vector::lengthSquared);
 }
 
 }  // namespace endstone::node

@@ -65,7 +65,8 @@ esn_handle Args::handleAt(const std::size_t index) const
     return handles[index];
 }
 
-TypeDesc &declareType(const Kind kind, const std::string_view name, const Kind base)
+TypeDesc &declareType(const Kind kind, const std::string_view name, const Kind base,
+                      void *(*to_base)(void *))
 {
     auto &desc = storage()[static_cast<std::size_t>(kind)];
     if (desc.kind == Kind::None && kind != Kind::None) {
@@ -74,6 +75,7 @@ TypeDesc &declareType(const Kind kind, const std::string_view name, const Kind b
     desc.kind = kind;
     desc.name = std::string{name};
     desc.base = base;
+    desc.to_base = to_base;
     return desc;
 }
 
@@ -83,38 +85,45 @@ const TypeDesc *findType(const Kind kind)
     return desc.kind == Kind::None ? nullptr : &desc;
 }
 
-const MemberDesc *findMember(const Kind kind, const std::string_view name)
+Lookup findMember(const Kind kind, const std::string_view name, void *self)
 {
-    // Bounded by the depth of Endstone's own hierarchy - Player is the deepest at four.
+    // Bounded by the depth of Endstone's own hierarchy - Player is the deepest, at four.
     for (auto current = kind; current != Kind::None;) {
         const auto *desc = findType(current);
         if (desc == nullptr) {
-            return nullptr;
+            return {};
         }
         if (const auto found = desc->members.find(name); found != desc->members.end()) {
-            return &found->second;
+            return Lookup{&found->second, nullptr, self, {}};
         }
+        if (desc->base == Kind::None || desc->to_base == nullptr) {
+            return {};
+        }
+        self = desc->to_base(self);
         current = desc->base;
     }
-    return nullptr;
+    return {};
 }
 
-const DynamicDesc *findDynamic(const Kind kind, const std::string_view name, std::string_view &suffix)
+Lookup findDynamic(const Kind kind, const std::string_view name, void *self)
 {
     for (auto current = kind; current != Kind::None;) {
         const auto *desc = findType(current);
         if (desc == nullptr) {
-            return nullptr;
+            return {};
         }
         for (const auto &entry : desc->dynamic) {
             if (name.size() > entry.prefix.size() && name.starts_with(entry.prefix)) {
-                suffix = name.substr(entry.prefix.size());
-                return &entry;
+                return Lookup{nullptr, &entry, self, name.substr(entry.prefix.size())};
             }
         }
+        if (desc->base == Kind::None || desc->to_base == nullptr) {
+            return {};
+        }
+        self = desc->to_base(self);
         current = desc->base;
     }
-    return nullptr;
+    return {};
 }
 
 const std::vector<const TypeDesc *> &allTypes()

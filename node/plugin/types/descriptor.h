@@ -166,21 +166,36 @@ struct TypeDesc {
     Kind kind{Kind::None};
     std::string name;
     Kind base{Kind::None};
+    /**
+     * Converts a pointer to this type into one to its base.
+     *
+     * Not decoration: a handle holds `void *`, and casting that straight to a base class does no
+     * pointer adjustment. Player inherits from Mob and OfflinePlayer both, so a CommandSender member
+     * reached through a Player has to be given a real CommandSender pointer or it reads the wrong
+     * bytes - and it is layout, not the type system, that decides whether that shows up.
+     */
+    void *(*to_base)(void *){nullptr};
     std::unordered_map<std::string, MemberDesc, StringHash, std::equal_to<>> members;
     std::vector<DynamicDesc> dynamic;
 };
 
 /** Creates or returns the descriptor for a kind. Called from ESN_TYPE blocks at static-init time. */
-TypeDesc &declareType(Kind kind, std::string_view name, Kind base);
+TypeDesc &declareType(Kind kind, std::string_view name, Kind base, void *(*to_base)(void *));
 const TypeDesc *findType(Kind kind);
 
-/** Walks the base chain. Null when the kind is unbound or has no such member. */
-const MemberDesc *findMember(Kind kind, std::string_view name);
-/**
- * The prefixed accessor matching `name`, with the remainder written to `suffix`. Walks the base
- * chain like findMember.
- */
-const DynamicDesc *findDynamic(Kind kind, std::string_view name, std::string_view &suffix);
+/** A member and the pointer to call it with, adjusted for whichever type in the chain declared it. */
+struct Lookup {
+    const MemberDesc *member{nullptr};
+    const DynamicDesc *dynamic{nullptr};
+    void *self{nullptr};
+    std::string_view suffix;
+    explicit operator bool() const { return member != nullptr || dynamic != nullptr; }
+};
+
+/** Walks the base chain, adjusting `self` at every edge. */
+Lookup findMember(Kind kind, std::string_view name, void *self);
+/** The prefixed accessor matching `name`, with the remainder in the result's `suffix`. */
+Lookup findDynamic(Kind kind, std::string_view name, void *self);
 
 /** Every registered kind, for the describe() introspection the runtime builds its tables from. */
 const std::vector<const TypeDesc *> &allTypes();

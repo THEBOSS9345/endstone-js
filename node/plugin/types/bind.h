@@ -441,32 +441,32 @@ private:
 /** Runs one type's binding block during static initialisation. */
 class TypeRegistrar {
 public:
-    TypeRegistrar(const Kind kind, const std::string_view name, const Kind base, void (*bind)(TypeDesc &))
+    TypeRegistrar(const Kind kind, const std::string_view name, const Kind base, void *(*to_base)(void *),
+                  void (*bind)(TypeDesc &))
     {
-        bind(declareType(kind, name, base));
+        bind(declareType(kind, name, base, to_base));
     }
 };
 
 }  // namespace endstone::node
 
 /**
- * Declares what one Endstone type exposes. `Base` is the kind this type derives from, or None.
+ * Declares what one Endstone type exposes, for a type with no bound base.
  *
  * @code
- * ESN_TYPE(Block, Block, None)
+ * ESN_TYPE(Block, Block)
  * {
  *     b.ro("x", &Block::getX);
  * }
  * @endcode
  */
-#define ESN_TYPE(Type, KindValue, BaseKind)                                                             \
-    static void esnBind##Type(::endstone::node::TypeBuilder<::endstone::Type> &b);                       \
-    namespace {                                                                                          \
-    const ::endstone::node::TypeRegistrar esnRegistrar##Type{                                            \
-        ::endstone::node::Kind::KindValue, #Type, ::endstone::node::Kind::BaseKind,                      \
-        [](::endstone::node::TypeDesc &desc) {                                                           \
-            ::endstone::node::TypeBuilder<::endstone::Type> builder{desc};                               \
-            esnBind##Type(builder);                                                                      \
-        }};                                                                                              \
-    }                                                                                                    \
-    static void esnBind##Type([[maybe_unused]] ::endstone::node::TypeBuilder<::endstone::Type> &b)
+#define ESN_TYPE(Type, KindValue)                                                                            static void esnBind##Type(::endstone::node::TypeBuilder<::endstone::Type> &b);                            namespace {                                                                                               const ::endstone::node::TypeRegistrar esnRegistrar##Type{                                                     ::endstone::node::Kind::KindValue, #Type, ::endstone::node::Kind::None, nullptr,                          [](::endstone::node::TypeDesc &desc) {                                                                        ::endstone::node::TypeBuilder<::endstone::Type> builder{desc};                                            esnBind##Type(builder);                                                                               }};                                                                                                   }                                                                                                         static void esnBind##Type([[maybe_unused]] ::endstone::node::TypeBuilder<::endstone::Type> &b)
+
+/**
+ * The same, for a type that derives from another bound one. Members declared on the base are reached
+ * through it, so each is declared exactly once - the way Endstone's own hierarchy has them.
+ *
+ * The upcast is generated here rather than assumed: a handle carries `void *`, and Player derives from
+ * both Mob and OfflinePlayer, so reaching a base member needs the compiler to adjust the pointer.
+ */
+#define ESN_SUBTYPE(Type, KindValue, Base)                                                                   static void esnBind##Type(::endstone::node::TypeBuilder<::endstone::Type> &b);                            namespace {                                                                                               const ::endstone::node::TypeRegistrar esnRegistrar##Type{                                                     ::endstone::node::Kind::KindValue, #Type, ::endstone::node::KindOf<::endstone::Base>::value,              [](void *self) -> void * {                                                                                    return static_cast<::endstone::Base *>(static_cast<::endstone::Type *>(self));                        },                                                                                                        [](::endstone::node::TypeDesc &desc) {                                                                        ::endstone::node::TypeBuilder<::endstone::Type> builder{desc};                                            esnBind##Type(builder);                                                                               }};                                                                                                   }                                                                                                         static void esnBind##Type([[maybe_unused]] ::endstone::node::TypeBuilder<::endstone::Type> &b)

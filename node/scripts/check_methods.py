@@ -40,8 +40,8 @@ BRANCH = re.compile(
 NAME = re.compile(r'name == "([A-Za-z_]\w*)"')
 
 # A migrated type declares its members in plugin/types/, one file per Endstone header folder. Methods
-# there are `b.method("name", ...)` inside an ESN_TYPE block naming the kind they belong to.
-TYPE_BLOCK = re.compile(r"^ESN_TYPE\((\w+),\s*(\w+),\s*(\w+)\)", re.M)
+# there are `b.method("name", ...)` inside an ESN_TYPE or ESN_SUBTYPE block naming the kind.
+TYPE_BLOCK = re.compile('^ESN_(?:SUB)?TYPE[(][A-Za-z0-9_]+,[ ]*([A-Za-z0-9_]+)', re.M)
 TYPE_METHOD = re.compile('b[.]method[(]"([A-Za-z_][A-Za-z0-9_]*)"')
 
 
@@ -50,7 +50,7 @@ def descriptor_methods(root: Path) -> dict[str, set[str]]:
     found: dict[str, set[str]] = {}
     for source in sorted(root.rglob("*.cpp")):
         text = source.read_text(encoding="utf-8")
-        marks = [(m.start(), m.group(2)) for m in TYPE_BLOCK.finditer(text)]
+        marks = [(m.start(), m.group(1)) for m in TYPE_BLOCK.finditer(text)]
         marks.append((len(text), ""))
         for (start, kind), (end, _) in zip(marks, marks[1:]):
             if kind:

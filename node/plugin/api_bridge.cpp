@@ -1634,14 +1634,15 @@ std::optional<esn_status> ApiBridge::registryGet(const esn_handle target, const 
     auto *const self = entry->ptr;
     const auto kind = entry->kind;
 
-    if (const auto *member = findMember(kind, name)) {
+    if (const auto found = findMember(kind, name, self)) {
         // A member declared on the string accessor does not answer a request for an int. Falling
         // through rather than erroring lets the runtime probe the accessors to find the right one.
-        return member->get && member->kind == want ? std::optional{member->get(self, *this, out)} : std::nullopt;
+        const auto *member = found.member;
+        return member->get && member->kind == want ? std::optional{member->get(found.self, *this, out)}
+                                                   : std::nullopt;
     }
-    std::string_view suffix;
-    if (const auto *dynamic = findDynamic(kind, name, suffix); dynamic != nullptr && dynamic->kind == want) {
-        return dynamic->get(self, suffix, *this, out);
+    if (const auto found = findDynamic(kind, name, self); found && found.dynamic->kind == want) {
+        return found.dynamic->get(found.self, found.suffix, *this, out);
     }
     return std::nullopt;
 }
@@ -1653,12 +1654,11 @@ std::optional<esn_status> ApiBridge::registrySet(const esn_handle target, const 
     if (entry == nullptr) {
         return std::nullopt;
     }
-    auto *const self = entry->ptr;
-    const auto *member = findMember(entry->kind, name);
-    if (member == nullptr || !member->set || member->kind != want) {
+    const auto found = findMember(entry->kind, name, entry->ptr);
+    if (!found || !found.member->set || found.member->kind != want) {
         return std::nullopt;
     }
-    const auto status = member->set(self, *this, in);
+    const auto status = found.member->set(found.self, *this, in);
     if (status == ESN_OK) {
         // Item stacks are values, so a write to one is lost unless it is put back where it came from.
         persistItem(target);
@@ -1673,12 +1673,11 @@ std::optional<esn_status> ApiBridge::registryCall(const esn_handle target, const
     if (entry == nullptr) {
         return std::nullopt;
     }
-    auto *const self = entry->ptr;
-    const auto *member = findMember(entry->kind, name);
-    if (member == nullptr || !member->call) {
+    const auto found = findMember(entry->kind, name, entry->ptr);
+    if (!found || !found.member->call) {
         return std::nullopt;
     }
-    const auto status = member->call(self, args, out_handle);
+    const auto status = found.member->call(found.self, args, out_handle);
     if (status == ESN_OK) {
         persistItem(target);
     }
@@ -2096,18 +2095,6 @@ esn_status ApiBridge::getInt(const esn_handle target, const std::string_view nam
     if (auto *actor = resolveActor(target)) {
         return actorGetInt(*actor, name, out);
     }
-    if (auto *location = static_cast<Location *>(resolve(target, Kind::Location))) {
-        if (name == "blockX") { *out = location->getBlockX(); return ESN_OK; }
-        if (name == "blockY") { *out = location->getBlockY(); return ESN_OK; }
-        if (name == "blockZ") { *out = location->getBlockZ(); return ESN_OK; }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
-    if (auto *vector = static_cast<Vector *>(resolve(target, Kind::Vector))) {
-        if (name == "blockX") { *out = vector->getBlockX(); return ESN_OK; }
-        if (name == "blockY") { *out = vector->getBlockY(); return ESN_OK; }
-        if (name == "blockZ") { *out = vector->getBlockZ(); return ESN_OK; }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
     if (auto *server = static_cast<Server *>(resolve(target, Kind::Server))) {
         if (name == "port") { *out = server->getPort(); return ESN_OK; }
         if (name == "portV6") { *out = server->getPortV6(); return ESN_OK; }
@@ -2388,20 +2375,6 @@ esn_status ApiBridge::getDouble(const esn_handle target, const std::string_view 
         if (name == "walkSpeed") { *out = player->getWalkSpeed(); return ESN_OK; }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
-    if (auto *location = static_cast<Location *>(resolve(target, Kind::Location))) {
-        if (name == "x") { *out = location->getX(); return ESN_OK; }
-        if (name == "y") { *out = location->getY(); return ESN_OK; }
-        if (name == "z") { *out = location->getZ(); return ESN_OK; }
-        if (name == "pitch") { *out = location->getPitch(); return ESN_OK; }
-        if (name == "yaw") { *out = location->getYaw(); return ESN_OK; }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
-    if (auto *vector = static_cast<Vector *>(resolve(target, Kind::Vector))) {
-        if (name == "x") { *out = vector->getX(); return ESN_OK; }
-        if (name == "y") { *out = vector->getY(); return ESN_OK; }
-        if (name == "z") { *out = vector->getZ(); return ESN_OK; }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
     if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
         if (name == "damage" && event->getEventName() == "ActorDamageEvent") {
             *out = static_cast<ActorDamageEvent *>(event)->getDamage();
@@ -2652,10 +2625,6 @@ esn_status ApiBridge::getString(const esn_handle target, const std::string_view 
             }
             return emitString(joined, buf, cap, needed);
         }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
-    if (auto *location = static_cast<Location *>(resolve(target, Kind::Location))) {
-        if (name == "dimension") { return emitString(location->getDimension().getName(), buf, cap, needed); }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *level = static_cast<Level *>(resolve(target, Kind::Level))) {
@@ -3345,19 +3314,6 @@ esn_status ApiBridge::getHandle(const esn_handle target, const std::string_view 
                 return ESN_ERR_WRONG_TYPE;
             }
             auto block = as_block->getBlock();
-            if (!block) {
-                return ESN_ERR_INTERNAL;
-            }
-            auto *raw = block.get();
-            owned_blocks_.push_back(std::move(block));
-            *out = track(raw, Kind::Block);
-            return ESN_OK;
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
-    if (auto *location = static_cast<Location *>(resolve(target, Kind::Location))) {
-        if (name == "block") {
-            auto block = location->getBlock();
             if (!block) {
                 return ESN_ERR_INTERNAL;
             }
