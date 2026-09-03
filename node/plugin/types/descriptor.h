@@ -44,8 +44,8 @@ class MapView;
 class Mob;
 class Player;
 class PlayerInventory;
-class Scoreboard;
 class Plugin;
+class Scoreboard;
 class Server;
 class Vector;
 }  // namespace endstone

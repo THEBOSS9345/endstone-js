@@ -322,7 +322,6 @@ const LEGACY_METHODS_BY_TYPE = {
     'setSortOrder', 'clearSlot',
     'setScore', 'addScore', 'resetScores',
   ],
-  Event: ['cancel', 'getExplodedBlock', 'setKnockback', 'setFrom', 'setTo'],
   MapCanvas: ['setPixel'],
 };
 

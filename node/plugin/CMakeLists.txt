@@ -50,3 +50,19 @@ add_custom_command(
         VERBATIM)
 add_custom_target(nodejs_type_check DEPENDS ${TYPE_CHECK_STAMP})
 add_dependencies(nodejs nodejs_type_check)
+
+# Events are where upstream keeps adding, and a release can introduce one without anything noticing.
+# The bindings mirror upstream's folder layout, so the gap is a directory diff.
+set(EVENT_CHECK_STAMP ${CMAKE_CURRENT_BINARY_DIR}/events_checked.stamp)
+add_custom_command(
+        OUTPUT ${EVENT_CHECK_STAMP}
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/check_events.py
+        --bindings ${CMAKE_CURRENT_SOURCE_DIR}/types/events
+        --headers ${CMAKE_CURRENT_SOURCE_DIR}/../../include/endstone/event
+        COMMAND ${CMAKE_COMMAND} -E touch ${EVENT_CHECK_STAMP}
+        DEPENDS ${NODEJS_TYPE_SOURCES}
+        ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/check_events.py
+        COMMENT "Checking every upstream event is bound"
+        VERBATIM)
+add_custom_target(nodejs_event_check DEPENDS ${EVENT_CHECK_STAMP})
+add_dependencies(nodejs nodejs_event_check)

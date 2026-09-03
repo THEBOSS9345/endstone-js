@@ -80,6 +80,8 @@ ESN_KIND(Scoreboard, Scoreboard, false, true);
 ESN_KIND(Level, Level, false, true);
 ESN_KIND(Dimension, Dimension, false, true);
 ESN_KIND(Server, Server, false, true);
+// A plugin lives as long as the server does, so its handle outlives the event that named it.
+ESN_KIND(Plugin, Plugin, false, true);
 
 #undef ESN_KIND
 
@@ -422,6 +424,27 @@ public:
     {
         desc_.members[std::string{name}].call = [fn](void *self, const Args &args, esn_handle *out_handle) {
             return fn(*static_cast<T *>(self), args, out_handle);
+        };
+    }
+
+    /**
+     * A member carried as bytes rather than text.
+     *
+     * A packet payload is not UTF-8, and the string accessor would replace every byte that is not
+     * valid UTF-8 with U+FFFD - so it crosses on the binary one, which is length-counted and passes
+     * NULs through.
+     */
+    template <typename Get, typename Set>
+    void bytes(const std::string_view name, Get get, Set set)
+    {
+        add(name, ValueKind::Bytes, [get](void *self, Binder &, Value &out) {
+            out.kind = ValueKind::Bytes;
+            out.text = get(*static_cast<T *>(self));
+            return ESN_OK;
+        });
+        desc_.members[std::string{name}].set = [set](void *self, Binder &, const Value &in) {
+            set(*static_cast<T *>(self), in.text);
+            return ESN_OK;
         };
     }
 

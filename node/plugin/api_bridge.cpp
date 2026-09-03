@@ -1705,40 +1705,6 @@ esn_status ApiBridge::getBool(const esn_handle target, const std::string_view na
         if (const auto flag = barFlagFromName(name)) { *out = bar->hasFlag(*flag); return ESN_OK; }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
-    if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
-        const auto ev = event->getEventName();
-        if (ev == "PlayerInteractEvent") {
-            auto *interact = static_cast<PlayerInteractEvent *>(event);
-            if (name == "hasBlock") { *out = interact->hasBlock(); return ESN_OK; }
-            if (name == "hasItem") { *out = interact->hasItem(); return ESN_OK; }
-        }
-        if (name == "isMuted" && ev == "PlayerEmoteEvent") {
-            *out = static_cast<PlayerEmoteEvent *>(event)->isMuted();
-            return ESN_OK;
-        }
-        // The state being changed *to*, which is the only thing either weather event carries: without
-        // it a handler cannot tell rain starting from rain stopping.
-        if (name == "raining" && ev == "WeatherChangeEvent") {
-            *out = static_cast<WeatherChangeEvent *>(event)->toWeatherState();
-            return ESN_OK;
-        }
-        if (name == "thundering" && ev == "ThunderChangeEvent") {
-            *out = static_cast<ThunderChangeEvent *>(event)->toThunderState();
-            return ESN_OK;
-        }
-        // Event::isCancellable() is private to EventHandler; the ICancellable cast is the public test.
-        if (name == "isCancellable") { *out = eventCancellable(event) != nullptr; return ESN_OK; }
-        if (name == "isAsynchronous") { *out = event->isAsynchronous(); return ESN_OK; }
-        if (name == "cancelled") {
-            const auto *cancellable = eventCancellable(event);
-            if (!cancellable) {
-                return ESN_ERR_NO_SUCH_MEMBER;
-            }
-            *out = cancellable->isCancelled();
-            return ESN_OK;
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
     return find(target) ? ESN_ERR_NO_SUCH_MEMBER : ESN_ERR_STALE_HANDLE;
 }
 
@@ -1844,59 +1810,6 @@ esn_status ApiBridge::getInt(const esn_handle target, const std::string_view nam
         if (name == "playerCount") { *out = static_cast<std::int64_t>(bar->getPlayers().size()); return ESN_OK; }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
-    if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
-        const auto ev = event->getEventName();
-        if (name == "previousSlot" && ev == "PlayerItemHeldEvent") {
-            *out = static_cast<PlayerItemHeldEvent *>(event)->getPreviousSlot();
-            return ESN_OK;
-        }
-        if (name == "newSlot" && ev == "PlayerItemHeldEvent") {
-            *out = static_cast<PlayerItemHeldEvent *>(event)->getNewSlot();
-            return ESN_OK;
-        }
-        if (name == "blockCount") {
-            if (ev == "ActorExplodeEvent") {
-                *out = static_cast<std::int64_t>(static_cast<ActorExplodeEvent *>(event)->getBlockList().size());
-                return ESN_OK;
-            }
-            if (ev == "BlockExplodeEvent") {
-                *out = static_cast<std::int64_t>(static_cast<BlockExplodeEvent *>(event)->getBlockList().size());
-                return ESN_OK;
-            }
-            return ESN_ERR_NO_SUCH_MEMBER;
-        }
-        if (ev == "ServerListPingEvent") {
-            auto *ping = static_cast<ServerListPingEvent *>(event);
-            if (name == "numPlayers") { *out = ping->getNumPlayers(); return ESN_OK; }
-            if (name == "maxPlayers") { *out = ping->getMaxPlayers(); return ESN_OK; }
-            if (name == "localPort") { *out = ping->getLocalPort(); return ESN_OK; }
-            if (name == "localPortV6") { *out = ping->getLocalPortV6(); return ESN_OK; }
-            if (name == "protocolVersion") { *out = ping->getNetworkProtocolVersion(); return ESN_OK; }
-        }
-        if (name == "packetId" || name == "subClientId") {
-            const auto event_name = event->getEventName();
-            if (event_name == "PacketReceiveEvent") {
-                auto *packet = static_cast<PacketReceiveEvent *>(event);
-                *out = name == "packetId" ? packet->getPacketId() : packet->getSubClientId();
-                return ESN_OK;
-            }
-            if (event_name == "PacketSendEvent") {
-                auto *packet = static_cast<PacketSendEvent *>(event);
-                *out = name == "packetId" ? packet->getPacketId() : packet->getSubClientId();
-                return ESN_OK;
-            }
-            return ESN_ERR_NO_SUCH_MEMBER;
-        }
-        if (name == "chunkX" || name == "chunkZ") {
-            if (event->getEventName() == "ChunkLoadEvent" || event->getEventName() == "ChunkUnloadEvent") {
-                auto &chunk = static_cast<ChunkEvent *>(event)->getChunk();
-                *out = name == "chunkX" ? chunk.getX() : chunk.getZ();
-                return ESN_OK;
-            }
-            return ESN_ERR_NO_SUCH_MEMBER;
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
     return find(target) ? ESN_ERR_NO_SUCH_MEMBER : ESN_ERR_STALE_HANDLE;
 }
 
@@ -1926,13 +1839,6 @@ esn_status ApiBridge::getDouble(const esn_handle target, const std::string_view 
         if (name == "averageMillisecondsPerTick") { *out = server->getAverageMillisecondsPerTick(); return ESN_OK; }
         if (name == "currentTickUsage") { *out = server->getCurrentTickUsage(); return ESN_OK; }
         if (name == "averageTickUsage") { *out = server->getAverageTickUsage(); return ESN_OK; }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
-    if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
-        if (name == "damage" && event->getEventName() == "ActorDamageEvent") {
-            *out = static_cast<ActorDamageEvent *>(event)->getDamage();
-            return ESN_OK;
-        }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
     return find(target) ? ESN_ERR_NO_SUCH_MEMBER : ESN_ERR_STALE_HANDLE;
@@ -2135,142 +2041,6 @@ esn_status ApiBridge::getString(const esn_handle target, const std::string_view 
         if (name == "type") { return emitString(source->getType(), buf, cap, needed); }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
-    if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
-        if (name == "eventName") { return emitString(event->getEventName(), buf, cap, needed); }
-        if (name == "joinMessage") {
-            if (event->getEventName() == "PlayerJoinEvent") {
-                auto *join = static_cast<PlayerJoinEvent *>(event);
-                return emitString(messageToString(join->getJoinMessage()), buf, cap, needed);
-            }
-            return ESN_ERR_NO_SUCH_MEMBER;
-        }
-        if (name == "quitMessage") {
-            if (event->getEventName() == "PlayerQuitEvent") {
-                auto *quit = static_cast<PlayerQuitEvent *>(event);
-                return emitString(messageToString(quit->getQuitMessage()), buf, cap, needed);
-            }
-            return ESN_ERR_NO_SUCH_MEMBER;
-        }
-        if (name == "message") {
-            if (event->getEventName() == "PlayerChatEvent") {
-                auto *chat = static_cast<PlayerChatEvent *>(event);
-                return emitString(chat->getMessage(), buf, cap, needed);
-            }
-            return ESN_ERR_NO_SUCH_MEMBER;
-        }
-        if (name == "format" && event->getEventName() == "PlayerChatEvent") {
-            return emitString(static_cast<PlayerChatEvent *>(event)->getFormat(), buf, cap, needed);
-        }
-        // Who will see the message, as names: getRecipients hands back a copy, so the list is an
-        // observation rather than something a handler can filter.
-        if (name == "recipientNameList" && event->getEventName() == "PlayerChatEvent") {
-            std::string joined;
-            for (const auto *recipient : static_cast<PlayerChatEvent *>(event)->getRecipients()) {
-                if (!recipient) {
-                    continue;
-                }
-                if (!joined.empty()) {
-                    joined += '\n';
-                }
-                joined += recipient->getName();
-            }
-            return emitString(joined, buf, cap, needed);
-        }
-        if (name == "command") {
-            if (event->getEventName() == "PlayerCommandEvent") {
-                auto *command = static_cast<PlayerCommandEvent *>(event);
-                return emitString(command->getCommand(), buf, cap, needed);
-            }
-            if (event->getEventName() == "ServerCommandEvent") {
-                auto *command = static_cast<ServerCommandEvent *>(event);
-                return emitString(command->getCommand(), buf, cap, needed);
-            }
-            return ESN_ERR_NO_SUCH_MEMBER;
-        }
-        const auto ev = event->getEventName();
-        // --- strings on specific events ---------------------------------------------------------
-        if (name == "action" && ev == "PlayerInteractEvent") {
-            return emitString(interactActionName(static_cast<PlayerInteractEvent *>(event)->getAction()), buf, cap,
-                              needed);
-        }
-        if (name == "blockFace" && ev == "PlayerInteractEvent") {
-            return emitString(blockFaceName(static_cast<PlayerInteractEvent *>(event)->getBlockFace()), buf, cap,
-                              needed);
-        }
-        if (name == "direction" && (ev == "BlockPistonExtendEvent" || ev == "BlockPistonRetractEvent")) {
-            return emitString(blockFaceName(static_cast<BlockPistonEvent *>(event)->getDirection()), buf, cap, needed);
-        }
-        if (name == "hand" && ev == "PlayerItemConsumeEvent") {
-            return emitString(equipmentSlotName(static_cast<PlayerItemConsumeEvent *>(event)->getHand()), buf, cap,
-                              needed);
-        }
-        if (name == "newGameMode" && ev == "PlayerGameModeChangeEvent") {
-            return emitString(gameModeName(static_cast<PlayerGameModeChangeEvent *>(event)->getNewGameMode()), buf,
-                              cap, needed);
-        }
-        if (name == "emoteId" && ev == "PlayerEmoteEvent") {
-            return emitString(static_cast<PlayerEmoteEvent *>(event)->getEmoteId(), buf, cap, needed);
-        }
-        if (name == "kickMessage" && ev == "PlayerLoginEvent") {
-            return emitString(static_cast<PlayerLoginEvent *>(event)->getKickMessage(), buf, cap, needed);
-        }
-        if (name == "reason" && ev == "PlayerKickEvent") {
-            return emitString(static_cast<PlayerKickEvent *>(event)->getReason(), buf, cap, needed);
-        }
-        if (name == "loadType" && ev == "ServerLoadEvent") {
-            const auto type = static_cast<ServerLoadEvent *>(event)->getType();
-            return emitString(type == ServerLoadEvent::LoadType::Reload ? "reload" : "startup", buf, cap, needed);
-        }
-        if (name == "messageId" && ev == "ScriptMessageEvent") {
-            return emitString(static_cast<ScriptMessageEvent *>(event)->getMessageId(), buf, cap, needed);
-        }
-        if (name == "scriptMessage" && ev == "ScriptMessageEvent") {
-            return emitString(static_cast<ScriptMessageEvent *>(event)->getMessage(), buf, cap, needed);
-        }
-        if (name == "message" && ev == "BroadcastMessageEvent") {
-            return emitString(messageToString(static_cast<BroadcastMessageEvent *>(event)->getMessage()), buf, cap,
-                              needed);
-        }
-        // --- the server-list entry, every field writable ----------------------------------------
-        if (ev == "ServerListPingEvent") {
-            auto *ping = static_cast<ServerListPingEvent *>(event);
-            if (name == "motd") { return emitString(ping->getMotd(), buf, cap, needed); }
-            if (name == "levelName") { return emitString(ping->getLevelName(), buf, cap, needed); }
-            if (name == "serverGuid") { return emitString(ping->getServerGuid(), buf, cap, needed); }
-            if (name == "gameMode") { return emitString(gameModeName(ping->getGameMode()), buf, cap, needed); }
-            if (name == "minecraftVersion") { return emitString(ping->getMinecraftVersionNetwork(), buf, cap, needed); }
-            if (name == "address") { return emitString(ping->getAddress().getHostname(), buf, cap, needed); }
-        }
-        if (event->getEventName() == "PlayerSkinChangeEvent") {
-            // The skin itself is an Image and stays on the C++ side, but the ids identify it, and the
-            // broadcast message is the part a plugin usually wants to suppress or reword.
-            auto *change = static_cast<PlayerSkinChangeEvent *>(event);
-            if (name == "skinId") { return emitString(change->getNewSkin().getId(), buf, cap, needed); }
-            if (name == "capeId") {
-                const auto &cape = change->getNewSkin().getCapeId();
-                return emitString(cape.value_or(std::string{}), buf, cap, needed);
-            }
-            if (name == "skinChangeMessage") {
-                const auto message = change->getSkinChangeMessage();
-                return emitString(message ? messageToString(*message) : std::string{}, buf, cap, needed);
-            }
-        }
-        if (name == "deathMessage" && event->getEventName() == "PlayerDeathEvent") {
-            const auto message = static_cast<PlayerDeathEvent *>(event)->getDeathMessage();
-            return emitString(message ? messageToString(*message) : std::string{}, buf, cap, needed);
-        }
-        if (name == "address") {
-            if (event->getEventName() == "PacketReceiveEvent") {
-                return emitString(static_cast<PacketReceiveEvent *>(event)->getAddress().getHostname(), buf, cap,
-                                  needed);
-            }
-            if (event->getEventName() == "PacketSendEvent") {
-                return emitString(static_cast<PacketSendEvent *>(event)->getAddress().getHostname(), buf, cap, needed);
-            }
-            return ESN_ERR_NO_SUCH_MEMBER;
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
     return find(target) ? ESN_ERR_NO_SUCH_MEMBER : ESN_ERR_STALE_HANDLE;
 }
 
@@ -2283,18 +2053,6 @@ esn_status ApiBridge::getString(const esn_handle target, const std::string_view 
 esn_status ApiBridge::getBytes(const esn_handle target, const std::string_view name, char *buf,
                                const std::size_t cap, std::size_t *needed)
 {
-    if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
-        if (name == "payload") {
-            const auto ev = event->getEventName();
-            if (ev == "PacketReceiveEvent") {
-                return emitString(static_cast<PacketReceiveEvent *>(event)->getPayload(), buf, cap, needed);
-            }
-            if (ev == "PacketSendEvent") {
-                return emitString(static_cast<PacketSendEvent *>(event)->getPayload(), buf, cap, needed);
-            }
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
     return find(target) ? ESN_ERR_NO_SUCH_MEMBER : ESN_ERR_STALE_HANDLE;
 }
 
@@ -2320,20 +2078,6 @@ esn_status ApiBridge::setBytes(const esn_handle target, const std::string_view n
         }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
-    if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
-        if (name == "payload") {
-            const auto ev = event->getEventName();
-            if (ev == "PacketReceiveEvent") {
-                static_cast<PacketReceiveEvent *>(event)->setPayload(value);
-                return ESN_OK;
-            }
-            if (ev == "PacketSendEvent") {
-                static_cast<PacketSendEvent *>(event)->setPayload(value);
-                return ESN_OK;
-            }
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
     return find(target) ? ESN_ERR_NO_SUCH_MEMBER : ESN_ERR_STALE_HANDLE;
 }
 
@@ -2350,207 +2094,6 @@ esn_status ApiBridge::getHandle(const esn_handle target, const std::string_view 
             }
             return *handled;
         }
-    }
-    if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
-        if (name == "player") {
-            if (auto *player = eventPlayer(event)) {
-                *out = track(player, Kind::Player);
-                return ESN_OK;
-            }
-            // Packet events carry a Player* that is genuinely null before login, so they cannot go in
-            // the trait table - it dereferences. A null player reads as null, not as a missing member.
-            const auto event_name = event->getEventName();
-            if (event_name == "PacketReceiveEvent" || event_name == "PacketSendEvent") {
-                auto *player = event_name == "PacketReceiveEvent"
-                                   ? static_cast<PacketReceiveEvent *>(event)->getPlayer()
-                                   : static_cast<PacketSendEvent *>(event)->getPlayer();
-                *out = player ? track(player, Kind::Player) : 0;
-                return ESN_OK;
-            }
-            return ESN_ERR_NO_SUCH_MEMBER;
-        }
-        if (name == "actor") {
-            Mob *mob = nullptr;
-            if (auto *actor = eventActor(event, &mob)) {
-                *out = mob ? track(mob, Kind::Mob) : track(actor, Kind::Actor);
-                return ESN_OK;
-            }
-            return ESN_ERR_NO_SUCH_MEMBER;
-        }
-        if (name == "damageSource") {
-            const auto event_name = event->getEventName();
-            if (event_name == "ActorDamageEvent") {
-                *out = track(&static_cast<ActorDamageEvent *>(event)->getDamageSource(), Kind::DamageSource);
-                return ESN_OK;
-            }
-            // What killed them, which is the useful half of a death event.
-            if (event_name == "ActorDeathEvent") {
-                *out = track(&static_cast<ActorDeathEvent *>(event)->getDamageSource(), Kind::DamageSource);
-                return ESN_OK;
-            }
-            if (event_name == "PlayerDeathEvent") {
-                *out = track(&static_cast<PlayerDeathEvent *>(event)->getDamageSource(), Kind::DamageSource);
-                return ESN_OK;
-            }
-            return ESN_ERR_NO_SUCH_MEMBER;
-        }
-        if (name == "block") {
-            if (auto *block = eventBlock(event)) {
-                *out = track(block, Kind::Block);
-                return ESN_OK;
-            }
-            return ESN_ERR_NO_SUCH_MEMBER;
-        }
-        const auto ev = event->getEventName();
-        // Blocks carried by events other than the plain BlockEvent ones.
-        if (name == "toBlock" && ev == "BlockFromToEvent") {
-            *out = track(&static_cast<BlockFromToEvent *>(event)->getToBlock(), Kind::Block);
-            return ESN_OK;
-        }
-        if (name == "bed") {
-            if (ev == "PlayerBedEnterEvent") {
-                *out = track(&static_cast<PlayerBedEnterEvent *>(event)->getBed(), Kind::Block);
-                return ESN_OK;
-            }
-            if (ev == "PlayerBedLeaveEvent") {
-                *out = track(&static_cast<PlayerBedLeaveEvent *>(event)->getBed(), Kind::Block);
-                return ESN_OK;
-            }
-            return ESN_ERR_NO_SUCH_MEMBER;
-        }
-        if (name == "blockAgainst" && ev == "BlockPlaceEvent") {
-            *out = track(&static_cast<BlockPlaceEvent *>(event)->getBlockAgainst(), Kind::Block);
-            return ESN_OK;
-        }
-        if (name == "blockReplaced" && ev == "BlockPlaceEvent") {
-            *out = track(&static_cast<BlockPlaceEvent *>(event)->getBlockReplaced(), Kind::Block);
-            return ESN_OK;
-        }
-        // Where an event happened, or where it is going.
-        if (name == "from" || name == "to") {
-            const auto copyLocation = [&](const Location &location) {
-                owned_locations_.push_back(location);
-                *out = track(&owned_locations_.back(), Kind::Location);
-                return ESN_OK;
-            };
-            if (ev == "PlayerMoveEvent" || ev == "PlayerJumpEvent" || ev == "PlayerTeleportEvent" ||
-                ev == "PlayerPortalEvent") {
-                auto *move = static_cast<PlayerMoveEvent *>(event);
-                return copyLocation(name == "from" ? move->getFrom() : move->getTo());
-            }
-            if (ev == "ActorTeleportEvent") {
-                auto *teleport = static_cast<ActorTeleportEvent *>(event);
-                return copyLocation(name == "from" ? teleport->getFrom() : teleport->getTo());
-            }
-            return ESN_ERR_NO_SUCH_MEMBER;
-        }
-        if (name == "location" && ev == "ActorExplodeEvent") {
-            owned_locations_.push_back(static_cast<ActorExplodeEvent *>(event)->getLocation());
-            *out = track(&owned_locations_.back(), Kind::Location);
-            return ESN_OK;
-        }
-        // Items an event hands out. These are live references, so changes reach the world directly.
-        if (name == "item") {
-            if (ev == "PlayerPickupItemEvent") {
-                *out = track(&static_cast<PlayerPickupItemEvent *>(event)->getItem(), Kind::Item);
-                return ESN_OK;
-            }
-            if (ev == "PlayerDropItemEvent") {
-                auto &drop = const_cast<ItemStack &>(static_cast<PlayerDropItemEvent *>(event)->getItem());
-                *out = track(&drop, Kind::ItemStack);
-                return ESN_OK;
-            }
-            if (ev == "PlayerItemConsumeEvent") {
-                auto &item = const_cast<ItemStack &>(static_cast<PlayerItemConsumeEvent *>(event)->getItem());
-                *out = track(&item, Kind::ItemStack);
-                return ESN_OK;
-            }
-            if (ev == "PlayerInteractEvent") {
-                auto *interact = static_cast<PlayerInteractEvent *>(event);
-                if (!interact->hasItem()) {
-                    return ESN_ERR_NO_SUCH_MEMBER;  // absent, so it reads as undefined
-                }
-                auto &item = const_cast<ItemStack &>(*interact->getItem());
-                *out = track(&item, Kind::ItemStack);
-                return ESN_OK;
-            }
-        }
-        if (ev == "BlockCookEvent") {
-            auto *cook = static_cast<BlockCookEvent *>(event);
-            if (name == "source") {
-                *out = track(&const_cast<ItemStack &>(cook->getSource()), Kind::ItemStack);
-                return ESN_OK;
-            }
-            if (name == "result") {
-                // Write-through: setting a property puts the changed stack back as the cooked result.
-                *out = trackOwnedItem(cook->getResult(),
-                                      [cook](const ItemStack &changed) { cook->setResult(changed); });
-                return ESN_OK;
-            }
-        }
-        // The actor on the far side of an interaction, and who caused a knockback.
-        if (name == "actor" && ev == "PlayerInteractActorEvent") {
-            *out = trackActor(&static_cast<PlayerInteractActorEvent *>(event)->getActor());
-            return ESN_OK;
-        }
-        if (name == "source" && ev == "ActorKnockbackEvent") {
-            auto *source = static_cast<ActorKnockbackEvent *>(event)->getSource();
-            *out = source ? trackActor(source) : 0;
-            return ESN_OK;
-        }
-        if (name == "knockback" && ev == "ActorKnockbackEvent") {
-            owned_vectors_.push_back(static_cast<ActorKnockbackEvent *>(event)->getKnockback());
-            *out = track(&owned_vectors_.back(), Kind::Vector);
-            return ESN_OK;
-        }
-        if (name == "plugin") {
-            const auto event_name = event->getEventName();
-            if (event_name == "PluginEnableEvent") {
-                *out = track(&static_cast<PluginEnableEvent *>(event)->getPlugin(), Kind::Plugin);
-                return ESN_OK;
-            }
-            if (event_name == "PluginDisableEvent") {
-                *out = track(&static_cast<PluginDisableEvent *>(event)->getPlugin(), Kind::Plugin);
-                return ESN_OK;
-            }
-            return ESN_ERR_NO_SUCH_MEMBER;
-        }
-        // What the player was holding as the action happened. Events do not carry it, so it is read
-        // from their main hand at dispatch time - which, because handlers run synchronously before the
-        // action is applied, is the item that was in use. Absent rather than null when the hand is
-        // empty, so `if (event.heldItem)` reads naturally.
-        if (name == "heldItem") {
-            auto *player = eventPlayer(event);
-            if (!player) {
-                return ESN_ERR_NO_SUCH_MEMBER;
-            }
-            auto &inventory = player->getInventory();
-            auto item = inventory.getItemInMainHand();
-            if (!item) {
-                return ESN_ERR_NO_SUCH_MEMBER;
-            }
-            *out = trackOwnedItem(std::move(*item), [&inventory](const endstone::ItemStack &changed) {
-                inventory.setItemInMainHand(changed);
-            });
-            return ESN_OK;
-        }
-        // ChunkEvent derives from DimensionEvent, so a chunk load knows its dimension - without this a
-        // multi-world plugin cannot tell an overworld load from a nether one.
-        if (name == "dimension" || name == "level") {
-            const auto event_name = event->getEventName();
-            if (event_name == "ChunkLoadEvent" || event_name == "ChunkUnloadEvent") {
-                auto &dimension = static_cast<ChunkEvent *>(event)->getDimension();
-                *out = name == "dimension" ? track(&dimension, Kind::Dimension, true)
-                                           : track(&dimension.getLevel(), Kind::Level, true);
-                return ESN_OK;
-            }
-            return ESN_ERR_NO_SUCH_MEMBER;
-        }
-        if (name == "map" && event->getEventName() == "MapInitializeEvent") {
-            *out = track(&static_cast<MapInitializeEvent *>(event)->getMap(), Kind::MapView);
-            return ESN_OK;
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
     }
     if (auto *map = static_cast<MapView *>(resolve(target, Kind::MapView))) {
         if (name == "dimension") {
@@ -2625,32 +2168,11 @@ esn_status ApiBridge::setBool(const esn_handle target, const std::string_view na
         item->setUnlimitedLifetime(value);
         return ESN_OK;
     }
-    if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
-        if (name == "cancelled") {
-            auto *cancellable = eventCancellable(event);
-            if (!cancellable) {
-                return ESN_ERR_WRONG_TYPE;
-            }
-            cancellable->setCancelled(value);
-            return ESN_OK;
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
     return find(target) ? ESN_ERR_NO_SUCH_MEMBER : ESN_ERR_STALE_HANDLE;
 }
 
 esn_status ApiBridge::setInt(const esn_handle target, const std::string_view name, const std::int64_t value)
 {
-    if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
-        if (event->getEventName() == "ServerListPingEvent") {
-            auto *ping = static_cast<ServerListPingEvent *>(event);
-            if (name == "numPlayers") { ping->setNumPlayers(static_cast<int>(value)); return ESN_OK; }
-            if (name == "maxPlayers") { ping->setMaxPlayers(static_cast<int>(value)); return ESN_OK; }
-            if (name == "localPort") { ping->setLocalPort(static_cast<int>(value)); return ESN_OK; }
-            if (name == "localPortV6") { ping->setLocalPortV6(static_cast<int>(value)); return ESN_OK; }
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
     if (auto *map = static_cast<MapView *>(resolve(target, Kind::MapView))) {
         if (name == "centerX") { map->setCenterX(static_cast<int>(value)); return ESN_OK; }
         if (name == "centerZ") { map->setCenterZ(static_cast<int>(value)); return ESN_OK; }
@@ -2695,13 +2217,6 @@ esn_status ApiBridge::setDouble(const esn_handle target, const std::string_view 
         }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
-    if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
-        if (name == "damage" && event->getEventName() == "ActorDamageEvent") {
-            static_cast<ActorDamageEvent *>(event)->setDamage(static_cast<float>(value));
-            return ESN_OK;
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
     return find(target) ? ESN_ERR_NO_SUCH_MEMBER : ESN_ERR_STALE_HANDLE;
 }
 
@@ -2735,93 +2250,6 @@ esn_status ApiBridge::setString(const esn_handle target, const std::string_view 
         }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
-    if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
-        if (name == "joinMessage") {
-            if (event->getEventName() == "PlayerJoinEvent") {
-                auto *join = static_cast<PlayerJoinEvent *>(event);
-                join->setJoinMessage(Message{std::string{value}});
-                return ESN_OK;
-            }
-            return ESN_ERR_NO_SUCH_MEMBER;
-        }
-        if (name == "quitMessage") {
-            if (event->getEventName() == "PlayerQuitEvent") {
-                auto *quit = static_cast<PlayerQuitEvent *>(event);
-                quit->setQuitMessage(Message{std::string{value}});
-                return ESN_OK;
-            }
-            return ESN_ERR_NO_SUCH_MEMBER;
-        }
-        if (name == "message") {
-            if (event->getEventName() == "PlayerChatEvent") {
-                auto *chat = static_cast<PlayerChatEvent *>(event);
-                chat->setMessage(std::string{value});
-                return ESN_OK;
-            }
-            return ESN_ERR_NO_SUCH_MEMBER;
-        }
-        if (name == "format" && event->getEventName() == "PlayerChatEvent") {
-            static_cast<PlayerChatEvent *>(event)->setFormat(std::string{value});
-            return ESN_OK;
-        }
-        if (name == "command") {
-            if (event->getEventName() == "PlayerCommandEvent") {
-                auto *command = static_cast<PlayerCommandEvent *>(event);
-                command->setCommand(std::string{value});
-                return ESN_OK;
-            }
-            if (event->getEventName() == "ServerCommandEvent") {
-                auto *command = static_cast<ServerCommandEvent *>(event);
-                command->setCommand(std::string{value});
-                return ESN_OK;
-            }
-            return ESN_ERR_NO_SUCH_MEMBER;
-        }
-        const auto ev = event->getEventName();
-        if (name == "kickMessage" && ev == "PlayerLoginEvent") {
-            static_cast<PlayerLoginEvent *>(event)->setKickMessage(std::string{value});
-            return ESN_OK;
-        }
-        if (name == "reason" && ev == "PlayerKickEvent") {
-            static_cast<PlayerKickEvent *>(event)->setReason(std::string{value});
-            return ESN_OK;
-        }
-        if (name == "message" && ev == "BroadcastMessageEvent") {
-            static_cast<BroadcastMessageEvent *>(event)->setMessage(Message{std::string{value}});
-            return ESN_OK;
-        }
-        if (ev == "ServerListPingEvent") {
-            auto *ping = static_cast<ServerListPingEvent *>(event);
-            if (name == "motd") { ping->setMotd(std::string{value}); return ESN_OK; }
-            if (name == "levelName") { ping->setLevelName(std::string{value}); return ESN_OK; }
-            if (name == "serverGuid") { ping->setServerGuid(std::string{value}); return ESN_OK; }
-            if (name == "minecraftVersion") {
-                ping->setMinecraftVersionNetwork(std::string{value});
-                return ESN_OK;
-            }
-            if (name == "gameMode") {
-                const auto mode = gameModeFromName(value);
-                if (!mode) {
-                    return ESN_ERR_BAD_ARGUMENT;
-                }
-                ping->setGameMode(*mode);
-                return ESN_OK;
-            }
-        }
-        if (name == "skinChangeMessage" && event->getEventName() == "PlayerSkinChangeEvent") {
-            // An empty string suppresses the announcement, matching join and quit messages.
-            auto *change = static_cast<PlayerSkinChangeEvent *>(event);
-            change->setSkinChangeMessage(value.empty() ? std::optional<Message>{} : Message{std::string{value}});
-            return ESN_OK;
-        }
-        if (name == "deathMessage" && event->getEventName() == "PlayerDeathEvent") {
-            // An empty string suppresses the announcement, matching join and quit messages.
-            auto *death = static_cast<PlayerDeathEvent *>(event);
-            death->setDeathMessage(value.empty() ? std::optional<Message>{} : Message{std::string{value}});
-            return ESN_OK;
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
     return find(target) ? ESN_ERR_NO_SUCH_MEMBER : ESN_ERR_STALE_HANDLE;
 }
 
@@ -2851,93 +2279,6 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
         }
     }
 
-    if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
-        const auto ev = event->getEventName();
-        // Backend for `event.knockback = { x, y, z }`, routed as a method because the ABI's setters
-        // only carry scalars.
-        if (name == "setKnockback" && ev == "ActorKnockbackEvent") {
-            static_cast<ActorKnockbackEvent *>(event)->setKnockback(
-                Vector{number(0), number(1), number(2)});
-            return ESN_OK;
-        }
-        // setFrom / setTo - where a move, teleport or portal is coming from and going to. Routed as a
-        // method because a Location is six numbers plus a dimension and the ABI's setters carry one
-        // scalar each. Anything not supplied keeps the event's current value, so assigning a bare
-        // { x, y, z } redirects the destination without disturbing facing or dimension.
-        if (name == "setFrom" || name == "setTo") {
-            const auto place = [&](const Location &current) -> std::optional<Location> {
-                auto *dimension = &current.getDimension();
-                if (const auto requested = str(0); !requested.empty()) {
-                    dimension = current.getDimension().getLevel().getDimension(requested);
-                    if (!dimension) {
-                        return std::nullopt;
-                    }
-                }
-                return Location{*dimension,
-                                static_cast<float>(number(0, current.getX())),
-                                static_cast<float>(number(1, current.getY())),
-                                static_cast<float>(number(2, current.getZ())),
-                                static_cast<float>(number(4, current.getPitch())),
-                                static_cast<float>(number(3, current.getYaw()))};
-            };
-            // PlayerJumpEvent, PlayerTeleportEvent and PlayerPortalEvent all derive from
-            // PlayerMoveEvent, which is what the matching getters already rely on.
-            if (ev == "PlayerMoveEvent" || ev == "PlayerJumpEvent" || ev == "PlayerTeleportEvent" ||
-                ev == "PlayerPortalEvent") {
-                auto *move = static_cast<PlayerMoveEvent *>(event);
-                const auto updated = place(name == "setFrom" ? move->getFrom() : move->getTo());
-                if (!updated) {
-                    return ESN_ERR_BAD_ARGUMENT;
-                }
-                if (name == "setFrom") {
-                    move->setFrom(*updated);
-                }
-                else {
-                    move->setTo(*updated);
-                }
-                return ESN_OK;
-            }
-            if (ev == "ActorTeleportEvent") {
-                auto *teleport = static_cast<ActorTeleportEvent *>(event);
-                const auto updated = place(name == "setFrom" ? teleport->getFrom() : teleport->getTo());
-                if (!updated) {
-                    return ESN_ERR_BAD_ARGUMENT;
-                }
-                if (name == "setFrom") {
-                    teleport->setFrom(*updated);
-                }
-                else {
-                    teleport->setTo(*updated);
-                }
-                return ESN_OK;
-            }
-            return ESN_ERR_NO_SUCH_MEMBER;
-        }
-        // The blocks an explosion is about to destroy, by index. Removing one from the list is not
-        // exposed; cancel the event instead.
-        if (name == "getExplodedBlock" && out_handle) {
-            const auto index = static_cast<std::size_t>(number(0));
-            if (ev == "ActorExplodeEvent") {
-                auto &blocks = static_cast<ActorExplodeEvent *>(event)->getBlockList();
-                if (index >= blocks.size() || !blocks[index]) {
-                    *out_handle = 0;
-                    return ESN_OK;
-                }
-                *out_handle = track(blocks[index].get(), Kind::Block);
-                return ESN_OK;
-            }
-            if (ev == "BlockExplodeEvent") {
-                auto &blocks = static_cast<BlockExplodeEvent *>(event)->getBlockList();
-                if (index >= blocks.size() || !blocks[index]) {
-                    *out_handle = 0;
-                    return ESN_OK;
-                }
-                *out_handle = track(blocks[index].get(), Kind::Block);
-                return ESN_OK;
-            }
-            return ESN_ERR_NO_SUCH_MEMBER;
-        }
-    }
     if (auto *server = static_cast<Server *>(resolve(target, Kind::Server))) {
         // Runs a command as the console, which is how a plugin drives vanilla commands.
         if (name == "dispatchCommand") {
@@ -3138,17 +2479,6 @@ esn_status ApiBridge::invoke(const esn_handle target, const std::string_view nam
         }
         return ESN_ERR_NO_SUCH_MEMBER;
     }
-    if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
-        if (name == "cancel") {
-            auto *cancellable = eventCancellable(event);
-            if (!cancellable) {
-                return ESN_ERR_WRONG_TYPE;
-            }
-            cancellable->cancel();
-            return ESN_OK;
-        }
-        return ESN_ERR_NO_SUCH_MEMBER;
-    }
     return find(target) ? ESN_ERR_NO_SUCH_MEMBER : ESN_ERR_STALE_HANDLE;
 }
 
@@ -3293,9 +2623,6 @@ esn_status ApiBridge::typeName(const esn_handle target, char *buf, const std::si
     }
     if (resolve(target, Kind::Scoreboard)) {
         return emitString("Scoreboard", buf, cap, needed);
-    }
-    if (auto *event = static_cast<Event *>(resolve(target, Kind::Event))) {
-        return emitString(event->getEventName(), buf, cap, needed);
     }
     return ESN_ERR_STALE_HANDLE;
 }
