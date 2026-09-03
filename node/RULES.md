@@ -1,7 +1,7 @@
 # Node.js Scripting Rules
 
 Rules for writing and extending the JavaScript plugin API for Endstone. Applies to every plugin and
-every change to the API surface (the bridge in `plugin/api_bridge.cpp`, the runtime in `host/bootstrap.js`,
+every change to the API surface (the bindings in `plugin/types/`, the runtime in `host/bootstrap.js`,
 and the declarations in `endstone-server-types/index.d.ts`).
 
 ## 1. Plugins never touch the engine
@@ -48,22 +48,40 @@ Simplicity is a hard requirement, not a nicety. The rules that keep it that way:
   `player.location`, `block.location`, `player.velocity`. Reads are `readonly`; writes are plain
   assignment.
 
-- **Adding anything to the API requires four edits in the same change:**
-  1. the bridge in `node/plugin/api_bridge.cpp`,
-  2. the runtime in `node/host/bootstrap.js` (if the runtime must know about it),
-  3. the declaration in `endstone-server-types/index.d.ts`,
-  4. an example that actually calls it, under `node/examples/`.
+- **A member is declared once, in the file named after the Endstone header it comes from.**
+  `include/endstone/block/block.h` is bound by `node/plugin/types/block/block.cpp`. Where a binding
+  goes is therefore never a judgement call: it goes wherever upstream put the thing it binds.
+
+  ```cpp
+  ESN_TYPE(Block, Block)
+  {
+      b.ro("x", &Block::getX);
+      b.rw("type", &Block::getType, static_cast<void (Block::*)(std::string)>(&Block::setType));
+      b.method("clone", &Block::clone);
+  }
+  ```
+
+  The member pointer's signature decides the rest - which accessor carries it, whether the result is a
+  handle, whether the bridge takes ownership of what came back. There is no accessor kind to choose and
+  so none to get wrong, and a signature change upstream is a compile error here rather than a member
+  that quietly stops working.
+
+- **The runtime needs no edit.** It asks the bridge what every type exposes at start-up, through the
+  ABI's `describe`, and builds its tables from the answer. `METHODS_BY_TYPE` no longer exists as a
+  hand-written list; drift between the two halves is impossible rather than merely detected.
+
+- **Adding anything to the API still requires two more edits in the same change:**
+  1. the declaration in `endstone-server-types/index.d.ts`,
+  2. an example that actually calls it, under `node/examples/`.
 
   There is no such thing as a runtime feature without types, or a type without an implementation.
+  `scripts/check_types.py` compares the declarations against the bindings by name and **fails the
+  build** on anything bound but undeclared - a member that works at runtime while being invisible to
+  the person writing a plugin is the failure this prevents.
 
-- **A method also goes in `METHODS_BY_TYPE`, under the type that really implements it.** The runtime
-  will not call a name that is not listed for the handle's type, and listing it under a type the bridge
-  does not implement it for gives you a function that throws. `scripts/check_methods.py` compares the
-  two and **fails the build** on a disagreement, so this is checked rather than remembered.
-
-  Which type owns a method is decided by *which `resolve(target, Kind::X)` branch it sits in* in the
-  bridge - so put it in the right branch rather than guarding inside a wider one, or the check will
-  read it as belonging to the wider type.
+- **An event is bound in the file matching its folder upstream**, and
+  `scripts/check_events.py` fails the build if Endstone declares one that is not bound. That check is
+  the parity guarantee: after an upstream release it names what is missing, by class and by header.
 
 ## 3. Commands are registered at the top level, and they are always `/` commands
 

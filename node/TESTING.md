@@ -1,26 +1,29 @@
 # Test plan
 
-Everything below is **compile-verified only** — the C++ builds with no errors or warnings and
-`tsc --noEmit` passes, but none of it has run against a live server. That's the split: I compile, you
-test in game.
+Every command below **registers and runs** against a live server — Endstone 0.11.10 on Minecraft
+26.45. What is not claimed is that every *expectation* in the tables has been checked by a human: the
+commands execute and report, and the tables say what a correct report looks like. The build verifies
+itself; the tables are for you.
 
 Start the server, then in chat run `/jstest` for the command index. The `testkit` example plugin
 (`node/examples/testkit/`) drives every item here, and each command echoes to chat *and* the server log
 — so a failure shows up as a missing line or an `undefined`, not silence.
 
 ```bash
-node\scripts\test-endstone-node.ps1
+docker run -d -i --name endstone-node -p 19132:19132/udp -v "$PWD/..:/src:ro" -v endstone-build:/build -v endstone-server:/server endstone-node
 ```
 
-`linux-serve.sh` symlinks every example, so `testkit` loads automatically. Expect at start-up:
+The image carries the toolchain, libnode and Endstone, so only `node/` is ever compiled; `/build` is a
+volume, so the second run recompiles nothing it does not have to. `docker-serve.sh` symlinks every
+example, so `testkit` loads automatically. Expect at start-up:
 
 ```
-[Nodejs] Node host ABI version 16
+[Nodejs] Node host ABI version 17
 [Nodejs] loaded 3/3 JavaScript plugin(s)
-[Nodejs] testkit ready: 49 commands, schema r26_u4
+[Nodejs] testkit ready: 54 commands, schema r26_u4
 ```
 
-If the ABI line says anything other than 16, the plugin and host halves are out of step — rebuild.
+If the ABI line says anything other than 17, the plugin and host halves are out of step — rebuild.
 
 ---
 
@@ -224,10 +227,11 @@ can, so a dropped write shows up as a red `§c` line rather than as nothing at a
 | `/jspages` | The same notice for writable books. |
 | `/jsbow` | The same notice for crossbows. |
 
-**Only map metadata actually exists on this build.** Endstone declares `BookMeta`,
+**Only map metadata actually exists, still true as of Endstone 0.11.10.** Endstone declares `BookMeta`,
 `WritableBookMeta` and `CrossbowMeta` in its public headers, but its core maps only
 `minecraft:air` and `minecraft:filled_map` to a metadata subclass — everything else gets the plain
-base. So those three are bound here and cannot succeed until upstream instantiates them. `item.metaType`
+base. So those three are bound here and cannot succeed until upstream instantiates them, at which point
+they start working with no change needed on this side. `item.metaType`
 reports what an item really carries, which is the check to make before writing any of these fields.
 
 This is worth re-testing after each upstream merge: the bindings are already in place, so they will

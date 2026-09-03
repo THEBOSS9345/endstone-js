@@ -17,8 +17,8 @@ through the public plugin API.
 
 TypeScript definitions are a separate project, published to npm as
 [`@endstone-js/server`](https://github.com/THEBOSS9345/endstone-server-types). Its minor version tracks the
-Endstone API version, so `0.11.x` targets API `0.11`. Anything added to `plugin/api_bridge.cpp` needs a
-matching declaration added there, or the types will describe an API that does not exist.
+Endstone API version, so `0.11.x` targets API `0.11`. Anything bound in `plugin/types/` needs a matching
+declaration there; the build fails if one is missing, so the types cannot fall behind the runtime.
 
 ## Architecture
 
@@ -50,6 +50,37 @@ exported surface of the host: esn_abi_version esn_host_create esn_host_destroy
 mangled C++ symbols on it   : (none)
 ```
 
+### What each type exposes
+
+The Endstone side is a set of **descriptor tables**, one file per upstream header folder, under
+[`plugin/types/`](plugin/types). `include/endstone/block/block.h` is bound by `types/block/block.cpp`,
+`include/endstone/event/player/*.h` by `types/events/player.cpp`, and so on. Where a binding goes is
+never a judgement call - it goes wherever upstream put the thing it binds, which is what makes "what
+are we missing?" a directory diff rather than a memory exercise.
+
+A member is one line, and its C++ signature decides everything else:
+
+| the getter returns | the member becomes |
+|---|---|
+| `int`, `float`, `bool`, `std::string` | that accessor |
+| `std::unique_ptr<T>` | a handle, and the bridge takes ownership |
+| `Level &`, `Block *` | a handle, tracked under `T`'s kind |
+| `std::vector<std::string>` | one string, newline-joined |
+| `std::optional<T>` | `T`, or absent - which reads back as `undefined` |
+
+Inheritance is declared, not repeated: `sendMessage` sits on `CommandSender` and a `Player` reaches it
+through `Mob` and `Actor`. Each edge carries a compiler-generated upcast, because a handle holds
+`void *` and casting that to a base does no pointer adjustment - `Player` derives from both `Mob` and
+`OfflinePlayer`, so it is layout rather than the type system that decides whether getting this wrong
+shows up.
+
+Events cannot be resolved to a kind - every one arrives as an `Event` and reports its class through
+`getEventName()` - so they are keyed by that name and the downcast it licenses is generated once. See
+the `dynamic_cast` warning below for why the name is the only way down.
+
+The runtime needs no copy of any of this: it calls the ABI's `describe` at start-up and builds its
+tables from the answer.
+
 The runtime that JavaScript actually sees - the `@endstone-js/server` module, the event and command
 registries, the packet codec - is [`host/bootstrap.js`](host/bootstrap.js). It is a real JavaScript file
 so it can be linted and syntax-checked, and `scripts/embed_js.py` compiles it into the host as a string
@@ -60,8 +91,8 @@ than the server's first start-up. Editing it rebuilds the host; nothing needs re
 
 `@endstone-js/server` is a **virtual module** served from memory by the host - nothing to install, and it
 works identically from CommonJS and ESM. It is shaped after **Endstone's own API**, not Bedrock's
-ScriptAPI, so it reads 1:1 with the Endstone documentation: `Server`, `Logger`, and (once bound) the
-`Player` and `PlayerXxxEvent` family, rather than `world.afterEvents`.
+ScriptAPI, so it reads 1:1 with the Endstone documentation: `Server`, `Player`, `Block`, and the
+`PlayerXxxEvent` family, rather than `world.afterEvents`.
 
 ```js
 import { server, logger } from "@endstone-js/server";   // ESM
@@ -73,14 +104,28 @@ server.broadcastMessage("hello from a JavaScript plugin");
 
 | Object | Members |
 |---|---|
-| `server` | `name`, `version`, `minecraftVersion`, `protocolVersion`, `onlinePlayerCount`, `isAvailable`, `level`, `logger`, `broadcastMessage(text)` |
-| `Level` | `name`, `time` (writable), `actorCount`, `dimensionCount` |
-| `Actor` | `type`, `dimension`, `location` (`x`, `y`, `z`, `pitch`, `yaw`, `blockX`/`blockY`/`blockZ`, `dimension`), `rotation` (writable `{ yaw, pitch }`), `velocity` (`x`, `y`, `z`), `isOnGround`, `isInWater`, `isInLava`, `isDead`, `isValid`, `level`, `nameTag`, `scoreTag`, `isNameTagVisible`, `health`, `maxHealth`, `sendMessage`, `teleport(location)`, `remove()` |
-| `Player` | everything on `Actor`, plus `name`, `uniqueId`, `xuid`, `locale`, `deviceOs`, `deviceId`, `gameVersion`, `address`, `ping`, `isOp`, `isSneaking`, `isSprinting`, `isFlying`, `isGliding`, `allowFlight`, `expLevel`, `expProgress`, `totalExp`, `flySpeed`, `walkSpeed`, `kick`, `performCommand`, `sendPopup`, `sendTip`, `sendTitle`, `resetTitle`, `transfer`, `giveExp`, `playSound`, `stopSound`, `updateCommands` |
-| `Block` | `type` (writable), `dimension`, `location` (`x`, `y`, `z`, ...), `getRelative(offset)` |
-| `Vector3` | `{ x, y, z }`; `location` and `velocity` return these handle-backed objects (a location also carries `pitch`, `yaw`, `blockX`/`blockY`/`blockZ`, `dimension`) |
-| `Vector2` | `{ x, z }`, for horizontal-only positions |
-| `Rotation` | `{ yaw, pitch }`, read and written through the `rotation` field |
+| `server` | `name`, `version`, `minecraftVersion`, `protocolVersion`, `onlinePlayerCount`, `onlinePlayers`, `maxPlayers`, `port`, `level`, `scoreboard`, `logger`, `broadcastMessage`, `dispatchCommand`, `getPlayer`, `createMap`, `createBossBar`, `createScoreboard`, `banPlayer`, `banIp`, `shutdown`, plus the tick counters and registry lookups |
+| `Level` | `name`, `seed`, `time` (writable), `actorCount`, `dimensionCount`, `getDimension(name)` |
+| `Dimension` | `name`, `type`, `level`, `actorCount`, `loadedChunks`, `getBlockAt`, `getHighestBlockAt`, `spawnActor`, `dropItem`, `getActor` |
+| `CommandSender` | `name`, `isOp`, `isConsole`, `isBlock`, `block`, `permissionLevel`, `sendMessage`, `sendErrorMessage`, `hasPermission`, `isPermissionSet`, `addPermission`, `removePermission` |
+| `Actor` | everything on `CommandSender`, plus `type`, `id`, `runtimeId`, `dimension`, `location`, `rotation`, `velocity`, `isOnGround`, `isInWater`, `isInLava`, `isDead`, `isValid`, `level`, `nameTag`, `scoreTag`, `isNameTagVisible`, `scoreboardTags`, `teleport`, `remove()` |
+| `Mob` | everything on `Actor`, plus `health`, `maxHealth`, `isGliding` |
+| `Player` | everything on `Mob`, plus `uniqueId`, `xuid`, `locale`, `deviceOs`, `deviceId`, `gameVersion`, `address`, `port`, `ping`, `gameMode`, `skin`, `inventory`, `enderChest`, `scoreboard`, `isSneaking`, `isSprinting`, `isFlying`, `allowFlight`, `expLevel`, `expProgress`, `totalExp`, `flySpeed`, `walkSpeed`, `kick`, `performCommand`, `sendPopup`, `sendTip`, `sendTitle`, `sendToast`, `sendForm`, `sendMap`, `transfer`, `giveExp`, `playSound`, `spawnParticle` |
+| `Item` | a dropped stack in the world: everything on `Actor`, plus `itemStack`, `pickupDelay`, `unlimitedLifetime`, `thrower` |
+| `Block` | `type` (writable), `x`, `y`, `z`, `dimension`, `location`, `data`, `blockStates`, `runtimeId`, `getRelative`, `captureState`, `clone` |
+| `BlockData` | `type`, `blockStates`, `runtimeId` - a palette entry with no position |
+| `BlockState` | a detached snapshot: `type`, `x`, `y`, `z`, `location`, `data`, `blockStates`, `block`, `update(force, applyPhysics)` |
+| `ItemStack` | `type`, `amount`, `data`, `maxStackSize`, `maxDurability`, `displayName`, `lore`, `damage`, `repairCost`, `unbreakable`, `enchants`, custom NBT through `getTag`/`setTag`, and the book, map and crossbow metadata |
+| `Inventory` | `size`, `isEmpty`, `maxStackSize`, `firstEmpty`, `getItem`, `setItem`, `addItem`, `removeItem`, `clear` |
+| `PlayerInventory` | everything on `Inventory`, plus `heldItemSlot` and the equipment slots - `helmet`, `chestplate`, `leggings`, `boots`, `itemInMainHand`, `itemInOffHand` |
+| `Scoreboard` | `objectives`, `entries`, `addObjective`, `setDisplay`, `setDisplaySlot`, `setSortOrder`, `setScore`, `addScore`, `resetScores` |
+| `BossBar` | `title`, `color`, `style`, `progress`, `visible`, `addPlayer`, `removePlayer`, `removeAll`, `remove` |
+| `MapView` | `id`, `centerX`, `centerZ`, `scale`, `isLocked`, `isVirtual`, `dimension`, `addRenderer(draw)` |
+| `MapCanvas` | `pixels` - a whole 128x128 RGBA frame in one write - and `setPixel` |
+| `DamageSource` | `type`, `isIndirect`, `actor`, `damagingActor` |
+| `Location` | `x`, `y`, `z`, `pitch`, `yaw`, `blockX`/`blockY`/`blockZ`, `dimension`, `block`, `direction` |
+| `Vector` | `x`, `y`, `z`, `blockX`/`blockY`/`blockZ`, `length`, `lengthSquared` - what `velocity` and `direction` return |
+| `Vector3` | `{ x, y, z }`, the shape you write when passing a position in |
 | `logger` | `trace`, `debug`, `info`, `warning`, `error`, `critical` |
 
 Writable members are plain assignment: `player.health = 20`, `level.time = 6000`, `block.type = "minecraft:stone"`.
@@ -137,9 +182,10 @@ so no property needs to be special-cased.
 > `static_cast`. That needs no RTTI and works across the library boundary.
 
 Property access goes through a fixed set of generic typed accessors keyed by name, so exposing more of
-Endstone's API means adding a case in `plugin/api_bridge.cpp` plus a line of JavaScript - never an ABI
-change. String comparison per access is a deliberate trade for that; if a specific property ever shows
-up in a profile, give it its own entry point rather than redesigning the scheme.
+Endstone's API is one line in the file named after the upstream header it comes from - never an ABI
+change, and never an edit to the runtime, which asks the bridge what exists at start-up. See
+[Architecture](#architecture). Name lookup per access is a deliberate trade for that; if a specific
+property ever shows up in a profile, give it its own entry point rather than redesigning the scheme.
 
 Everything reaching the API runs on the BDS server thread, so no marshalling is involved. String
 getters use a size-then-fetch convention and every entry point catches all exceptions, since the
@@ -163,11 +209,15 @@ A `devDependency`, because they are needed to *write* a plugin and never to run 
 comes from the host's memory either way. A plugin without them installed behaves identically, and the
 missing-`node_modules` warning ignores `devDependencies`, so it stays quiet.
 
-Anything added to `plugin/api_bridge.cpp` needs the matching declaration added there, or the types will
-confidently describe an API that does not exist.
+Anything bound in `plugin/types/` needs the matching declaration added there, or the types will
+confidently describe an API that does not exist - which `scripts/check_types.py` turns into a build
+failure rather than a surprise.
 
-**Not yet bound:** blocks, inventory, scoreboard, level and actor beyond `Player`. The accessor design
-above is what makes adding them incremental.
+**Coverage:** every event Endstone declares is bound, along with `Server`, `Level`, `Dimension`,
+`Block`, `BlockData`, `BlockState`, `Actor`, `Mob`, `Player`, `Item`, `ItemStack`, `Inventory`,
+`PlayerInventory`, `Scoreboard`, `BossBar`, `MapView`, `MapCanvas`, `DamageSource`, `Location`,
+`Vector` and `CommandSender`. `scripts/check_events.py` fails the build if an upstream release adds an
+event that is not bound.
 
 ## Writing plugins
 
