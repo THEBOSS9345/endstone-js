@@ -21,6 +21,20 @@
 
 namespace endstone::node {
 
+/** The name the runtime uses for a face. Paired with blockFaceFromName, which reads it back. */
+inline std::string_view blockFaceName(const BlockFace face)
+{
+    switch (face) {
+    case BlockFace::Down: return "down";
+    case BlockFace::Up: return "up";
+    case BlockFace::North: return "north";
+    case BlockFace::South: return "south";
+    case BlockFace::West: return "west";
+    case BlockFace::East: return "east";
+    }
+    return "down";
+}
+
 /**
  * @brief A block face by the name the runtime uses for it.
  *

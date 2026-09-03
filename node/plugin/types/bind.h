@@ -19,6 +19,7 @@
 #include <type_traits>
 #include <utility>
 
+#include <endstone/event/cancellable.h>
 #include <endstone/util/result.h>
 
 #include "types/descriptor.h"
@@ -421,6 +422,34 @@ public:
     {
         desc_.members[std::string{name}].call = [fn](void *self, const Args &args, esn_handle *out_handle) {
             return fn(*static_cast<T *>(self), args, out_handle);
+        };
+    }
+
+    /**
+     * Declares this event cancellable: `cancelled` to read and write, `cancel()` to stop it.
+     *
+     * The cast is what makes it one line - Cancellable<T> derives from ICancellable publicly, so
+     * naming the concrete type is enough and the compiler rejects the call on an event that is not.
+     */
+    void cancellable()
+    {
+        add("isCancellable", ValueKind::Bool, [](void *, Binder &, Value &out) {
+            out.kind = ValueKind::Bool;
+            out.boolean = true;
+            return ESN_OK;
+        });
+        add("cancelled", ValueKind::Bool, [](void *self, Binder &, Value &out) {
+            out.kind = ValueKind::Bool;
+            out.boolean = static_cast<ICancellable *>(static_cast<T *>(self))->isCancelled();
+            return ESN_OK;
+        });
+        desc_.members["cancelled"].set = [](void *self, Binder &, const Value &in) {
+            static_cast<ICancellable *>(static_cast<T *>(self))->setCancelled(in.boolean);
+            return ESN_OK;
+        };
+        desc_.members["cancel"].call = [](void *self, const Args &, esn_handle *) {
+            static_cast<ICancellable *>(static_cast<T *>(self))->cancel();
+            return ESN_OK;
         };
     }
 

@@ -383,19 +383,6 @@ std::optional<GameMode> gameModeFromName(std::string_view name)
 
 // Same reasoning as gameModeName: magic_enum is core-only, so these are mapped by hand. The names are
 // lowercase so JavaScript compares them without worrying about casing.
-std::string_view blockFaceName(const BlockFace face)
-{
-    switch (face) {
-    case BlockFace::Down: return "down";
-    case BlockFace::Up: return "up";
-    case BlockFace::North: return "north";
-    case BlockFace::South: return "south";
-    case BlockFace::West: return "west";
-    case BlockFace::East: return "east";
-    }
-    return "down";
-}
-
 std::string_view interactActionName(const PlayerInteractEvent::Action action)
 {
     switch (action) {
