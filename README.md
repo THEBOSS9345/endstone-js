@@ -9,9 +9,10 @@
 >
 > - **Nothing here is API-stable.** Names, shapes and behaviour change between commits, and there is no
 >   deprecation period.
-> - **Coverage is partial.** Large parts of the Endstone API are not bound yet - ban lists, effects,
->   attributes, enchantments, looking a player up by name, and more. See [`node/RULES.md`](node/RULES.md)
->   and the types package for what exists.
+> - **Coverage is partial.** Every event and most types are bound - ban lists, enchantments, item
+>   metadata and looking a player up by name all work. **Mob effects and attributes are not bound**;
+>   Endstone's own core does not implement them until a release past 0.11.10. See
+>   [`node/RULES.md`](node/RULES.md) and the types package for what exists.
 > - **Only 143 of 229 packets decode end to end**, by design - the protocol schema does not describe how
 >   optional fields signal presence, so decoding stops rather than guessing.
 > - **Expect breakage on a BDS or Endstone update.** Generated protocol definitions must be regenerated,
@@ -51,7 +52,7 @@
 > - plugins as a folder with `package.json` or as a single `.js` file, ESM or CommonJS
 > - real npm packages, resolved per plugin (discord.js is part of the test suite)
 > - the Endstone API exposed to JS: `Server`, `Level`, `Actor`, `Player`, `Block`, `DamageSource`, and
->   all 55 events with working cancellation
+>   all 64 events with working cancellation
 > - TypeScript definitions published as [`@endstone-js/server`](https://github.com/THEBOSS9345/endstone-server-types)
 >
 > See [`node/README.md`](node/README.md) for the architecture and how to build it.
@@ -79,7 +80,7 @@
 </p>
 
 [![Build](https://github.com/EndstoneMC/endstone/actions/workflows/build.yml/badge.svg)](https://github.com/EndstoneMC/endstone/actions/workflows/build.yml)
-[![Minecraft](https://img.shields.io/badge/minecraft-v26.44_(Bedrock)-black)](https://feedback.minecraft.net/hc/en-us/sections/360001186971-Release-Changelogs)
+[![Minecraft](https://img.shields.io/badge/minecraft-v26.45_(Bedrock)-black)](https://feedback.minecraft.net/hc/en-us/sections/360001186971-Release-Changelogs)
 [![PyPI - Version](https://img.shields.io/pypi/v/endstone)](https://pypi.org/project/endstone)
 [![Python](https://img.shields.io/pypi/pyversions/endstone?logo=python&logoColor=white)](https://www.python.org/)
 [![GitHub License](https://img.shields.io/github/license/endstonemc/endstone)](LICENSE)
@@ -185,7 +186,7 @@ We welcome contributions from the community! Whether it's bug reports, feature r
 
 - **Found a bug?** Open an [issue](https://github.com/EndstoneMC/endstone/issues)
 - **Want to contribute code?** Submit a [pull request](https://github.com/EndstoneMC/endstone/pulls)
-- **Want to support the project?** [Become a sponsor](https://github.com/sponsors/EndstoneMC)
+- **Want to support the project?** [Buy me a coffee](https://ko-fi.com/EndstoneMC)
 
 ## License
 
