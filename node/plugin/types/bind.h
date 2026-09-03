@@ -263,6 +263,11 @@ A readValue(const Value &in)
     else if constexpr (std::is_same_v<T, std::string>) {
         return in.text;
     }
+    else if constexpr (detail::IsOptional<T>::value) {
+        // The ABI carries no absent value, so a write always means "set it" - clearing goes through a
+        // method where a type needs one.
+        return T{readValue<typename detail::IsOptional<T>::value_type>(in)};
+    }
     else {
         static_assert(detail::always_false<T>, "no binding rule for this setter argument type");
     }

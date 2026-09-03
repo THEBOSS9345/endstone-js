@@ -31,6 +31,7 @@ RENAMED = {
     "scoreboardTagList": "scoreboardTags",
     "objectiveList": "objectives",
     "recipientNameList": "recipientNames",
+    "loadedChunkList": "loadedChunks",
 }
 
 # Bound, but deliberately not part of the public surface: backends for a property the runtime exposes
@@ -59,6 +60,9 @@ INTERNAL = {
 INTERFACE = {
     "CommandSender": ["ConsoleSender", "PlayerSender", "BlockSender"],
     "Mob": ["Actor"],
+    # `Plugin` in the definitions is the base class a JS plugin writes; what an event hands over is
+    # another plugin's metadata, which is PluginInfo.
+    "Plugin": ["PluginInfo"],
 }
 
 TYPE_BLOCK = re.compile("^ESN_(?:SUB)?TYPE[(]([A-Za-z0-9_]+),[ ]*[A-Za-z0-9_]+", re.M)
