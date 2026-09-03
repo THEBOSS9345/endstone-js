@@ -46,6 +46,13 @@ const char *compiledV8Version();
 int compiledNodeModuleVersion();
 
 /**
+ * Whether Node has already been initialized in this process, in which case it can never be again -
+ * node::InitializeOncePerProcess aborts rather than returning an error, so this must be checked
+ * before create() rather than after it fails.
+ */
+bool initializedOnce();
+
+/**
  * Initializes Node.js for this process and creates one environment. Not repeatable - Node's
  * per-process setup happens once. Returns nullptr on failure, having reported the reason.
  */

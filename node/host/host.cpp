@@ -1194,6 +1194,11 @@ esn_status ESN_CALL esn_host_create(const esn_host_config *config, esn_host **ou
     if (g_host) {
         return ESN_ERR_ALREADY_INITIALIZED;
     }
+    // A destroyed host frees g_host but does not make Node startable again, so this is the case that
+    // /reload hits: the plugin is disabled and re-enabled inside one process.
+    if (embed::initializedOnce()) {
+        return ESN_ERR_ALREADY_INITIALIZED;
+    }
     *out_host = nullptr;
 
     // Nothing below may let an exception escape: libnode is built -fno-exceptions and the caller is

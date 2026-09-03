@@ -358,8 +358,10 @@ boots normally.
 ## Known limitations
 
 - `process.execPath` is the BDS executable, so packages that re-spawn it will not work.
-- Node's per-process initialization is not repeatable: exactly one host per process, and
-  `/reload` will not re-create it. A JS plugin reloads in place with `!reload [name]` in chat, which
-  re-runs its module without touching the host.
+- Node's per-process initialization is not repeatable: exactly one host per process. Endstone's
+  `/reload` disables and re-enables every plugin in the same process, so the host cannot come back -
+  the layer refuses the second start, says so in the log, and stays inert until the server restarts.
+  Reload a JavaScript plugin with `/jsreload [plugin]` instead, which re-runs its module without
+  touching the host.
 - `console.trace` is mapped to a plain debug line rather than printing a stack.
 - `worker_threads` is untested.

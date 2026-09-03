@@ -72,8 +72,25 @@ int compiledNodeModuleVersion()
     return NODE_MODULE_VERSION;
 }
 
+// Sticky for the life of the process, and deliberately not cleared by destroy(): Node cannot be
+// initialized a second time even after TearDownOncePerProcess, and the guard inside
+// InitializeOncePerProcess is an assertion, so reaching it aborts the whole server rather than
+// failing the call. This is the flag that keeps /reload from killing BDS.
+bool g_initialized_once = false;
+
+bool initializedOnce()
+{
+    return g_initialized_once;
+}
+
 Instance *create(const std::vector<std::string> &args, const ErrorSink &on_error)
 {
+    if (g_initialized_once) {
+        if (on_error) {
+            on_error("Node.js has already been initialized in this process and cannot be started again");
+        }
+        return nullptr;
+    }
     auto instance = std::make_unique<Instance>();
 
     // Leave stdio, signal handlers, resource limits and the process title alone: Endstone owns stdin
@@ -89,6 +106,9 @@ Instance *create(const std::vector<std::string> &args, const ErrorSink &on_error
         ::node::ProcessInitializationFlags::kNoUseLargePages |
         ::node::ProcessInitializationFlags::kNoPrintHelpOrVersionOutput);
 
+    // Set before the call, not after: it is the call itself that is unrepeatable, so a failure part
+    // way through still leaves Node unable to start again.
+    g_initialized_once = true;
     instance->init_result = ::node::InitializeOncePerProcess(args, flags);
     if (!instance->init_result) {
         if (on_error) {

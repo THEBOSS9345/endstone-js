@@ -86,7 +86,11 @@ ModuleHandle loadModule(const fs::path &path)
     // ALTERED_SEARCH_PATH makes the host's own directory the first place libnode.dll is looked for.
     return LoadLibraryExW(path.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
 #else
-    return dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+    // NODELETE keeps the mapping even if dlclose is called. Once this library has initialized Node it
+    // owns V8's platform threads, atexit handlers and thread-locals, so unmapping it is unsound - and
+    // the "has Node already started" flag it carries has to survive a disable/enable cycle, or
+    // /reload dlopens a fresh copy that believes Node has never run and aborts the server.
+    return dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL | RTLD_NODELETE);
 #endif
 }
 
@@ -206,8 +210,13 @@ public:
             getLogger().info("Node host destroyed: status={} exit_code={} (after {} pumps)",
                              api_.status_message ? api_.status_message(status) : "?", exit_code, pumps_);
         }
+        // Only unload a host that never got as far as starting Node. Once it has, the library stays
+        // for the life of the process: POSIX keeps the mapping through RTLD_NODELETE, and Windows has
+        // no equivalent, so the FreeLibrary is simply skipped.
         if (module_) {
-            unloadModule(module_);
+            if (!node_started_) {
+                unloadModule(module_);
+            }
             module_ = nullptr;
         }
         getLogger().info("onDisable: thread={} primary={}", currentThreadId(), getServer().isPrimaryThread());
@@ -309,10 +318,20 @@ private:
         config.api = &api_table_;
 
         auto status = api_.create(&config, &host_);
+        if (status == ESN_ERR_ALREADY_INITIALIZED) {
+            // /reload disables and re-enables every plugin inside one process, and Node cannot be
+            // initialized twice there. Staying inert keeps the server up; before this was caught, the
+            // second attempt tripped an assertion inside libnode and took BDS down with it.
+            getLogger().error("JavaScript plugins are unavailable until the server process restarts.");
+            getLogger().error("Node.js can only start once per process, so /reload cannot bring it back.");
+            getLogger().error("Use /jsreload to reload a JavaScript plugin without restarting Node.");
+            return false;
+        }
         if (status != ESN_OK) {
             getLogger().error("esn_host_create failed: {}", api_.status_message(status));
             return false;
         }
+        node_started_ = true;
         // Wire dispatch only once the host exists, then start: subscriptions made by a plugin's
         // onEnable must already have somewhere to deliver to.
         if (api_.dispatch_event) {
@@ -387,6 +406,8 @@ private:
     std::shared_ptr<endstone::Task> task_;
     JsPluginLoader *loader_{nullptr};  // owned by the plugin manager, which outlives us
     ModuleHandle module_{nullptr};
+    /** Whether Node was started through this module, which makes the library unsafe to unload. */
+    bool node_started_{false};
     HostApi api_{};
     esn_host *host_{nullptr};
     std::unique_ptr<endstone::node::ApiBridge> bridge_;
