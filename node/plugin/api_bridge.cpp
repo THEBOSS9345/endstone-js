@@ -1951,6 +1951,14 @@ esn_status ApiBridge::getHandle(const esn_handle target, const std::string_view 
 
 esn_status ApiBridge::setBool(const esn_handle target, const std::string_view name, const bool value)
 {
+    {
+        Value incoming;
+        incoming.kind = ValueKind::Bool;
+        incoming.boolean = value;
+        if (const auto handled = registrySet(target, name, ValueKind::Bool, incoming)) {
+            return *handled;
+        }
+    }
     if (auto *map = static_cast<MapView *>(resolve(target, Kind::MapView))) {
         if (name == "isLocked") { map->setLocked(value); return ESN_OK; }
         if (name == "unlimitedTracking") { map->setUnlimitedTracking(value); return ESN_OK; }
@@ -1978,6 +1986,14 @@ esn_status ApiBridge::setBool(const esn_handle target, const std::string_view na
 
 esn_status ApiBridge::setInt(const esn_handle target, const std::string_view name, const std::int64_t value)
 {
+    {
+        Value incoming;
+        incoming.kind = ValueKind::Int;
+        incoming.integer = value;
+        if (const auto handled = registrySet(target, name, ValueKind::Int, incoming)) {
+            return *handled;
+        }
+    }
     if (auto *map = static_cast<MapView *>(resolve(target, Kind::MapView))) {
         if (name == "centerX") { map->setCenterX(static_cast<int>(value)); return ESN_OK; }
         if (name == "centerZ") { map->setCenterZ(static_cast<int>(value)); return ESN_OK; }
@@ -2013,6 +2029,14 @@ esn_status ApiBridge::setInt(const esn_handle target, const std::string_view nam
 
 esn_status ApiBridge::setDouble(const esn_handle target, const std::string_view name, const double value)
 {
+    {
+        Value incoming;
+        incoming.kind = ValueKind::Double;
+        incoming.real = value;
+        if (const auto handled = registrySet(target, name, ValueKind::Double, incoming)) {
+            return *handled;
+        }
+    }
     if (auto *bar = static_cast<BossBar *>(resolve(target, Kind::BossBar))) {
         // Endstone clamps nothing, and a value outside 0..1 makes the client draw a bar wider than its
         // frame, so it is clamped here rather than in JavaScript where a plugin could skip it.
