@@ -64,6 +64,7 @@
 #include "endstone/core/map/map_view.h"
 #include "endstone/core/message.h"
 #include "endstone/core/metrics.h"
+#include "endstone/core/network/stun_client.h"
 #include "endstone/core/permissions/default_permissions.h"
 #include "endstone/core/player.h"
 #include "endstone/core/plugin/cpp_plugin_loader.h"
@@ -160,6 +161,19 @@ EndstoneServer::EndstoneServer() : logger_(LoggerFactory::getLogger(""))
         toml::table tbl = toml::parse_file("endstone.toml");
         log_commands_ = tbl.at_path("commands.log").value_or(true);
         allow_client_packs_ = tbl.at_path("settings.allow-client-packs").value_or(false);
+        if (const auto *servers = tbl.at_path("network.stun-servers").as_array()) {
+            for (const auto &node : *servers) {
+                auto uri = node.value_or(std::string{});
+                if (uri.empty()) {
+                    continue;
+                }
+                if (!isValidStunServer(uri)) {
+                    EndstoneServer::getLogger().error("Ignoring STUN server '{}': expected [stun:]host[:port].", uri);
+                    continue;
+                }
+                stun_servers_.push_back(std::move(uri));
+            }
+        }
     }
     catch (const toml::parse_error &err) {
         EndstoneServer::getLogger().error("Failed to parse config file: {}", err.what());
@@ -308,6 +322,11 @@ const std::string *EndstoneServer::getContentKey(const PackIdVersion &pack_id) c
 bool EndstoneServer::getAllowClientPacks() const
 {
     return allow_client_packs_;
+}
+
+const std::vector<std::string> &EndstoneServer::getStunServers() const
+{
+    return stun_servers_;
 }
 
 bool EndstoneServer::logCommands() const

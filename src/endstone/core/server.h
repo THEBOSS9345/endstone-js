@@ -19,6 +19,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 
 #include "bedrock/core/utility/pub_sub/subscription.h"
 #include "bedrock/resources/resource_pack_repository_interface.h"
@@ -130,6 +131,7 @@ public:
     void setResourcePackRepository(IResourcePackRepository &repo);
     [[nodiscard]] const std::string *getContentKey(const PackIdVersion &pack_id) const;
     [[nodiscard]] bool getAllowClientPacks() const;
+    [[nodiscard]] const std::vector<std::string> &getStunServers() const;
     [[nodiscard]] bool logCommands() const;
     [[nodiscard]] bool isServerTextEnabled(ServerTextEvent event) const;
 
@@ -178,6 +180,7 @@ private:
     float average_usage_[SharedConstants::TicksPerSecond] = {0.0F};
     // TODO(config): move the following the a separate class/struct
     bool allow_client_packs_ = false;
+    std::vector<std::string> stun_servers_;
     bool log_commands_ = true;
     ServerTextSettings text_settings_;
     ::Bedrock::PubSub::Subscription on_gameplay_user_removed_;

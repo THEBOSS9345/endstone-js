@@ -1,4 +1,4 @@
-version = "1.26.51"
+version = "1.26.52"
 platform = "windows"
 executable = "bedrock_server.exe"
 filename = "bedrock_server"
@@ -185,6 +185,20 @@ extra = 0
 pattern = "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC ? ? ? ? 48 8D AC 24 ? ? ? ? 48 C7 85 ? ? ? ? ? ? ? ? 45 89 C6 48 89 D7"
 
 [[signatures]]
+name = "?update@CircuitSceneGraph@@QEAAXPEAVBlockSource@@@Z"
+relative = false
+extra = 0
+# 1. find the RTTI type descriptor ".?AVPoweredBlockComponent@@" and follow its complete object locator to the
+#    PoweredBlockComponent vtable
+# 2. exactly two functions lea that vtable: CircuitSystem::create<PoweredBlockComponent> (~0x2aa) and
+#    CircuitSceneGraph::update, the huge one (~0x685d) that inlines the whole remove/add/relationship pass
+# 3. confirm update by its head walking mPendingRemoves at this+0x180/0x188, and by its relationship pass
+#    looking up mPowerAssociationMap at this+0x80 and calling removeSource through vtable slot +0x60
+# 4. confirm vs the old named DB (member, takes BlockSource*, returns void)
+# function prologue
+pattern = "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC ? ? ? ? 48 8D AC 24 ? ? ? ? 0F 29 BD ? ? ? ? 0F 29 B5 ? ? ? ? 48 C7 85 ? ? ? ? FE FF FF FF 48 89 95 ? ? ? ? 49 89 CC 48 8B 81 80 01 00 00 48 89 85 ? ? ? ? 48 3B 81 88 01 00 00"
+
+[[signatures]]
 name = "?run@Command@@QEBAXAEBVCommandOrigin@@AEAVCommandOutput@@@Z"
 relative = false
 extra = 0
@@ -310,7 +324,7 @@ extra = 0
 pattern = "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC ? ? ? ? 48 8D AC 24 ? ? ? ? 0F 29 B5 ? ? ? ? 48 C7 85 ? ? ? ? ? ? ? ? 44 88 85 ? ? ? ? 48 89 D6"
 
 [[signatures]]
-name = "?start@DedicatedServer@@QEAA?AW4ServerExitCode@1@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@AEBVActivationArguments@Bedrock@@@Z"
+name = "?start@DedicatedServer@@QEAA?AW4ServerExitCode@@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@AEBVActivationArguments@Bedrock@@@Z"
 relative = false
 extra = 0
 # 1. find bytes "53 74 61 72 74 69 6E 67 20 53 65 72 76 65 72 00" = "Starting Server\0" (unique; prefer this
@@ -490,17 +504,23 @@ rip_relative = true
 rip_offset = 1
 
 [[signatures]]
-name = "?_loadMapData@MapDataManager@@IEAAPEAVMapItemSavedData@@AEBUActorUniqueID@@@Z"
+name = "?_publishMapData@MapDataManager@@IEAAPEAVMapItemSavedData@@AEBUActorUniqueID@@V?$unique_ptr@VMapItemSavedData@@U?$default_delete@VMapItemSavedData@@@std@@@std@@@Z"
 relative = false
 extra = 0
-# 1. find bytes "6D 61 70 5F 00" = "map_\0"; its data xref(s) land in MapItemSavedData::getSerializationKey
-#    (the only function that references it - it prepends "map_" to the stringified ActorUniqueID)
-# 2. getSerializationKey has exactly two callers: MapItemSavedData::save (writes) and _loadMapData (reads)
-#    - _loadMapData is the one that, right after the key call, feeds it to LevelStorage::loadData then
-#    NbtIo::readOrGetEmpty and constructs + deserializes a MapItemSavedData (emplacing it into mMapData)
-# 3. confirm the callee vs the old named DB (member, takes an ActorUniqueID&, returns MapItemSavedData*)
-# function prologue
-pattern = "55 41 57 41 56 56 57 53 48 81 EC ? ? ? ? 48 8D AC 24 ? ? ? ? 48 C7 45 ? ? ? ? ? 49 89 D7 0F 57 C0 0F 29 45"
+# 1. find bytes "6D 61 70 49 64 00" = "mapId\0" (one copy in .rdata); its only code xref is a `lea` in
+#    _deserializeMapData, which loads "map_<id>" through LevelStorage and returns the map as a unique_ptr
+#    through the sret pointer in rdx (`mov r15, rdx` in its prologue)
+# 2. _deserializeMapData has three callers: getMapSavedData, the vector createMapSavedData (an inlined
+#    getMapSavedData) and loadMapDataForDeferredPublish; in getMapSavedData the call right after it,
+#    with (this, &uuid, &unique_ptr), is _publishMapData
+# 3. confirm: _publishMapData has three callers - those getMapSavedData and createMapSavedData sites, and
+#    publishDeferredMapData, whose only caller is Level::_subTick; it emplaces into mMapData (this+0x70),
+#    tests mPreviewIncomplete (byte +0x19) before MapItem::renderBiomePreviewMap, and returns the
+#    inserted map, or null
+# call site in MapDataManager::getMapSavedData (unique)
+pattern = "E8 ? ? ? ? 48 89 D9 48 89 FA 49 89 F0 E8 ? ? ? ? 48 8B 4C 24"
+rip_relative = true
+rip_offset = 15
 
 [[signatures]]
 name = "?compileCommand@MinecraftCommands@@QEAAPEAVCommand@@AEBVHashedString@@AEAVCommandOrigin@@W4CurrentCmdVersion@@V?$function@$$A6AXAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Z@std@@@Z"
@@ -871,3 +891,37 @@ extra = 0
 #    reposts itself via a lambda when off-thread, else writes the 0x47c-capped header and calls SendToHelper
 # 4. confirm vs the old named DB
 pattern = "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC ? ? ? ? 48 8D AC 24 80 00 00 00 48 C7 85 ? ? ? ? FE FF FF FF 4C 89 4D ? 4D 89 C7 48 89 D6 48 89 CF"
+
+[[signatures]]
+# name is arbitrary, this is actually hooking NetherNet::`anonymous namespace'::TransportFactoryImpl
+name = "?createTransportInterface@TransportFactoryImpl@NetherNet@@QEAAPEAVINetherNetTransportInterface@2@AEBUNetworkID@2@AEBUTransportConfiguration@2@PEAVINetherNetTransportInterfaceCallbacks@2@@Z"
+relative = false
+extra = 0
+# 1. find bytes "4E 65 74 68 65 72 4E 65 74 54 72 61 6E 73 70 6F 72 74 46 61 63 74 6F 72 79 2E 63 70 70"
+#    = "NetherNetTransportFactory.cpp" (unique); its xrefs sit inside
+#    NetherNetTransportFactory::createTransport, which fills a TransportConfiguration on the stack
+#    (signaling channel variant, udp min/max, the hard-coded false at +0xc48) and hands it to the factory
+# 2. createTransport has exactly one call that returns the INetherNetTransportInterface* it wraps in the
+#    unique_ptr it returns - that call target is CreateNetherNetTransportInterface (0x13d bytes)
+# 3. CreateNetherNetTransportInterface only forwards: it runs the getGlobalFactory magic static, locks
+#    GLOBAL_FACTORY.mMutex, and makes a single virtual call through mFactory at vtable+0x28 (slot 5),
+#    passing localID/configuration/pCallbacks straight through - that target is createTransportInterface
+# 4. confirm: four args with `this`, a mutex around a map find on the NetworkID that bumps mRef and
+#    returns impl+0x48 on a hit, and on a miss allocates 0x2b8 and runs the SimpleNetworkInterfaceImpl
+#    ctor with the configuration
+pattern = "55 41 57 41 56 41 55 41 54 56 57 53 48 83 EC ? 48 8D 6C 24 ? 48 C7 45 ? ? ? ? ? 4C 89 CB 4D 89 C7 48 89 D6"
+
+[[signatures]]
+name = "?SendBindingErrorResponse@Port@webrtc@@UEAAXPEAVStunMessage@2@AEBVSocketAddress@2@HV?$basic_string_view@DU?$char_traits@D@std@@@std@@@Z"
+relative = false
+extra = 0
+# 1. find bytes "55 6E 61 75 74 68 6F 72 69 7A 65 64 00" = "Unauthorized\0" (STUN_ERROR_REASON_UNAUTHORIZED);
+#    its code xref is the local-ufrag-mismatch tail of webrtc::Port::GetStunMessage, which logs at LS_ERROR
+#    and then dispatches SendBindingErrorResponse through the Port vtable rather than calling it directly
+# 2. so take the vtable slot, not a call target: the function has NO direct code xref from GetStunMessage.
+#    It has exactly one code caller - TurnPort::SendBindingErrorResponse (0x6b bytes), which adds the
+#    realm/nonce attributes and tail-calls the base - plus five data xrefs, one per Port-derived vtable
+# 3. confirm: four args (StunMessage*, const SocketAddress&, int, std::string_view) and the 400/401 branch
+#    that skips AddMessageIntegrity/AddMessageIntegrity32 and runs only AddFingerprint before SendTo
+# 4. confirm vs the old named DB
+pattern = "40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 ? ? ? ? 48 81 EC ? ? ? ? 0F 29 B4 24 ? ? ? ? 48 8B 05 ? ? ? ? 48 33 C4 48 89 85 ? ? ? ? 45 8B F9"

@@ -15,6 +15,7 @@
 #include "bedrock/network/batched_network_peer.h"
 
 #include <cstdint>
+#include <limits>
 #include <string>
 
 #include "bedrock/network/packet.h"
@@ -67,12 +68,19 @@ void patchPacket(const ResourcePackStackPacket &packet)
     }
 }
 
+// Bedrock keys map decorations by tracked actor and replaces on a match; Java keys them by slot.
+// The client rebuilds its list from every packet, so a slot works here too -- at an impossible y.
+MapItemTrackedActor::UniqueId decorationKey(std::size_t slot)
+{
+    return BlockPos{static_cast<int>(slot), std::numeric_limits<int>::min(), 0};
+}
+
 void patchPacket(const ClientboundMapItemDataPacket &packet, endstone::core::EndstonePlayer &player)
 {
     const auto &server = endstone::core::EndstoneServer::getInstance();
     auto *map = static_cast<endstone::core::EndstoneMapView *>(server.getMap(packet.getMapId().raw_id));
-    if (!map) {
-        return;
+    if (!map || map->isVanilla()) {
+        return;  // Nothing renders on top, so BDS already filled in the pixels and the decorations
     }
 
     auto &pk = const_cast<ClientboundMapItemDataPacket &>(packet);
@@ -97,12 +105,12 @@ void patchPacket(const ClientboundMapItemDataPacket &packet, endstone::core::End
         }
     }
 
-    // Tracked actor ids and decorations go on the wire as parallel arrays
+    // Tracked actor ids and decorations go on the wire as parallel arrays.
     pk.payload.unique_ids.clear();
     pk.payload.decorations.clear();
     for (const auto &cursor : render.cursors) {
         if (cursor.isVisible()) {
-            pk.payload.unique_ids.emplace_back(ActorUniqueID::INVALID_ID);
+            pk.payload.unique_ids.emplace_back(decorationKey(pk.payload.decorations.size()));
             pk.payload.decorations.emplace_back(
                 std::make_shared<MapDecoration>(static_cast<MapDecoration::Type>(cursor.getType()), cursor.getX(),
                                                 cursor.getY(), cursor.getDirection(), cursor.getCaption(),
